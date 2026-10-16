@@ -76,55 +76,95 @@ extension CodexBarCLI {
         let command = setup.command
         let tokenContext = setup.tokenContext(config: config, output: output)
         let appAutoVerifier = command.providerRuntime == .app
-        var sections: [String] = []
-        var payload: [ProviderPayload] = []
-        var exitCode: ExitCode = .success
-
-        for p in providerList {
-            let status = setup.includeStatus ? await Self.fetchStatus(for: p) : nil
-            if appAutoVerifier {
-                // Background app Auto intentionally launches the opaque Claude owner CLI only after a successful
-                // user-initiated fetch has established this process's account-scoped availability marker. Recreate
-                // that real app lifecycle before exercising the background route; discard the foreground payload.
-                var establishmentCommand = command
-                establishmentCommand.sourceModeOverride = .cli
-                let establishment = await ProviderInteractionContext.$current.withValue(.userInitiated) {
-                    await Self.fetchUsageOutputs(
-                        provider: p,
-                        status: status,
-                        tokenContext: tokenContext,
-                        command: establishmentCommand)
-                }
-                if establishment.exitCode != .success {
-                    exitCode = establishment.exitCode
-                    sections.append(contentsOf: establishment.sections)
-                    payload.append(contentsOf: establishment.payload)
-                    continue
-                }
-            }
-            // CLI usage should not clear Keychain cooldowns or attempt interactive Keychain prompts.
-            let output = await ProviderInteractionContext.$current.withValue(.background) {
-                await Self.fetchUsageOutputs(
-                    provider: p,
-                    status: status,
-                    tokenContext: tokenContext,
-                    command: command)
-            }
-            if output.exitCode != .success {
-                exitCode = output.exitCode
-            }
-            sections.append(contentsOf: output.sections)
-            payload.append(contentsOf: output.payload)
+        let includeStatus = setup.includeStatus
+        let result = await Self.collectUsageOutputs(providers: providerList) { provider in
+            await Self.fetchSingleProviderUsageOutput(
+                provider: provider,
+                includeStatus: includeStatus,
+                appAutoVerifier: appAutoVerifier,
+                tokenContext: tokenContext,
+                command: command)
         }
 
         Self.printUsageOutput(
             format: command.format,
             toonRequested: output.toonRequested,
-            sections: sections,
-            payload: payload,
+            sections: result.sections,
+            payload: result.payload,
             pretty: output.pretty)
 
-        Self.exit(code: exitCode, output: output, kind: exitCode == .success ? .runtime : .provider)
+        Self.exit(code: result.exitCode, output: output, kind: result.exitCode == .success ? .runtime : .provider)
+    }
+
+    /// Bound provider I/O while preserving the sequential command's output and failure precedence.
+    static func collectUsageOutputs(
+        providers: [UsageProvider],
+        fetch: @escaping @Sendable (UsageProvider) async -> UsageCommandOutput) async -> UsageCommandOutput
+    {
+        await withTaskGroup(of: (Int, UsageCommandOutput, String).self) { group in
+            func enqueue(_ index: Int) {
+                group.addTask {
+                    let diagnostics = CLIStderrBuffer()
+                    let output = await Self.$stderrBuffer.withValue(diagnostics) {
+                        // CLI fetching must not clear Keychain cooldowns or authorize prompts.
+                        await ProviderInteractionContext.$current.withValue(.background) {
+                            await fetch(providers[index])
+                        }
+                    }
+                    return (index, output, diagnostics.contents)
+                }
+            }
+            var next = min(providers.count, 3)
+            for index in 0..<next {
+                enqueue(index)
+            }
+            var results: [(Int, UsageCommandOutput, String)] = []
+            for await result in group {
+                results.append(result)
+                if next < providers.count {
+                    enqueue(next)
+                    next += 1
+                }
+            }
+            var output = UsageCommandOutput()
+            for (_, result, diagnostics) in results.sorted(by: { $0.0 < $1.0 }) {
+                Self.writeStderr(diagnostics)
+                output.merge(result)
+            }
+            return output
+        }
+    }
+
+    private static func fetchSingleProviderUsageOutput(
+        provider: UsageProvider,
+        includeStatus: Bool,
+        appAutoVerifier: Bool,
+        tokenContext: TokenAccountCLIContext,
+        command: UsageCommandContext) async -> UsageCommandOutput
+    {
+        let status = includeStatus ? await Self.fetchStatus(for: provider) : nil
+        if appAutoVerifier {
+            // Background app Auto intentionally launches the opaque Claude owner CLI only after a successful
+            // user-initiated fetch has established this process's account-scoped availability marker. Recreate
+            // that real app lifecycle before exercising the background route; discard the foreground payload.
+            var establishmentCommand = command
+            establishmentCommand.sourceModeOverride = .cli
+            let establishment = await ProviderInteractionContext.$current.withValue(.userInitiated) {
+                await Self.fetchUsageOutputs(
+                    provider: provider,
+                    status: status,
+                    tokenContext: tokenContext,
+                    command: establishmentCommand)
+            }
+            if establishment.exitCode != .success {
+                return establishment
+            }
+        }
+        return await Self.fetchUsageOutputs(
+            provider: provider,
+            status: status,
+            tokenContext: tokenContext,
+            command: command)
     }
 
     /// TOON piggybacks on the JSON fetch/render pipeline (same data, denser rendering at print time)
@@ -180,24 +220,30 @@ extension CodexBarCLI {
         provider: UsageProvider,
         status: ProviderStatusPayload?,
         tokenContext: TokenAccountCLIContext,
-        command: UsageCommandContext) async -> UsageCommandOutput
+        command: UsageCommandContext,
+        publishPartial: CLIServeOperationCoordinator<UsageCommandOutput>
+            .PublishPartial? = nil) async -> UsageCommandOutput
     {
         // Provider-specific by design: Codex can enumerate reconciled live, managed, and profile-home accounts.
         if provider == .codex, command.includeAllCodexAccounts {
-            var output = UsageCommandOutput()
-            let accounts = tokenContext.visibleCodexAccounts().visibleAccounts
+            let projection = tokenContext.visibleCodexAccounts()
+            let accounts = projection.visibleAccounts
             let selections: [CodexVisibleAccount?] = accounts.isEmpty ? [nil] : accounts.map { Optional($0) }
-            for visibleAccount in selections {
-                let result = await Self.fetchUsageOutput(
+            return await Self.collectAccountUsage(
+                provider: provider,
+                // Provider-specific by design: Codex profiles use durable source IDs, not token-account UUIDs.
+                accounts: selections.map { $0.map(DashboardUsageAccount.codex) },
+                inventoryIncomplete: projection.hasUnreadableAddedAccountStore,
+                publishPartial: publishPartial)
+            { index in
+                await Self.fetchUsageOutput(
                     provider: provider,
                     account: nil,
-                    codexVisibleAccount: visibleAccount,
+                    codexVisibleAccount: selections[index],
                     status: status,
                     tokenContext: tokenContext,
                     command: command)
-                output.merge(result)
             }
-            return output
         }
 
         let accounts: [ProviderTokenAccount]
@@ -214,26 +260,23 @@ extension CodexBarCLI {
         }
 
         let selections = Self.accountSelections(from: accounts)
-        var output = UsageCommandOutput()
-        let accountRefreshDelay = TokenAccountSupportCatalog
-            .support(for: provider)?.minimumDelayBetweenAccountRefreshes
-        for (index, account) in selections.enumerated() {
-            if index > 0, let accountRefreshDelay {
-                do {
-                    try await Task.sleep(for: accountRefreshDelay)
-                } catch {
-                    return output
-                }
-            }
-            let result = await Self.fetchUsageOutput(
+        let data = tokenContext.accountsByProvider[provider]
+        let activeID = data.flatMap { $0.accounts.isEmpty ? nil : $0.accounts[$0.clampedActiveIndex()].id }
+        return await Self.collectAccountUsage(
+            provider: provider,
+            accounts: selections.map { account in
+                account.map { .token($0, active: $0.id == activeID) }
+            },
+            minimumDelay: TokenAccountSupportCatalog.support(for: provider)?.minimumDelayBetweenAccountRefreshes,
+            publishPartial: publishPartial)
+        { index in
+            await Self.fetchUsageOutput(
                 provider: provider,
-                account: account,
+                account: selections[index],
                 status: status,
                 tokenContext: tokenContext,
                 command: command)
-            output.merge(result)
         }
-        return output
     }
 
     private static func accountSelections(from accounts: [ProviderTokenAccount]) -> [ProviderTokenAccount?] {

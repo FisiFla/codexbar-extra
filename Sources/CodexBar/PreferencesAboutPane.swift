@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor
 struct AboutPane: View {
     let updater: UpdaterProviding
+    var rootRequests = 0
+    @State private var path: [AboutRoute] = []
     @State private var iconHover = false
     @AppStorage("autoUpdateEnabled") private var autoUpdateEnabled: Bool = true
     @AppStorage(UpdateChannel.userDefaultsKey)
@@ -24,6 +26,23 @@ struct AboutPane: View {
     }
 
     var body: some View {
+        NavigationStack(path: self.$path) {
+            // Pushed pages retitle the window; the root title restores it when they pop.
+            self.form
+                .navigationTitle(SettingsPane.about.title)
+                .navigationDestination(for: AboutRoute.self) { route in
+                    switch route {
+                    case .acknowledgements:
+                        AcknowledgementsView(acknowledgements: Acknowledgement.load())
+                    }
+                }
+        }
+        .onChange(of: self.rootRequests) { _, _ in
+            self.path = []
+        }
+    }
+
+    private var form: some View {
         Form {
             Section {
                 self.hero
@@ -31,41 +50,25 @@ struct AboutPane: View {
                     .listRowBackground(Color.clear)
             }
 
-            Section {
-                if self.updater.isAvailable {
-                    Toggle(L("check_updates_auto"), isOn: self.$autoUpdateEnabled)
-
-                    Picker(selection: self.updateChannelBinding) {
-                        ForEach(UpdateChannel.allCases) { channel in
-                            Text(channel.displayName).tag(channel)
-                        }
-                    } label: {
-                        SettingsRowLabel(L("update_channel"), subtitle: self.updateChannel.description)
-                    }
-                }
-
-                LabeledContent(String(format: L("version_format"), AppVersion.displayString)) {
-                    if self.updater.isAvailable {
-                        Button(L("check_for_updates")) { self.updater.checkForUpdates(nil) }
-                    }
-                }
-                if !self.updater.isAvailable {
-                    AboutUpdatesUnavailableView(
-                        reason: self.updater.unavailableReason ?? L("updates_unavailable"),
-                        command: self.updater.manualUpdateCommand)
-                }
-            } header: {
-                Text(L("section_updates"))
-            }
+            self.updatesSection
 
             Section {
                 AboutLinkRow(
                     icon: "chevron.left.slash.chevron.right",
                     title: L("link_github"),
                     url: "https://github.com/steipete/CodexBar")
-                AboutLinkRow(icon: "globe", title: L("link_website"), url: "https://steipete.me")
+                AboutLinkRow(icon: "globe", title: L("link_website"), url: "https://codexbar.app")
                 AboutLinkRow(icon: "bird", title: L("link_twitter"), url: "https://twitter.com/steipete")
                 AboutLinkRow(icon: "envelope", title: L("link_email"), url: "mailto:peter@steipete.me")
+                NavigationLink(value: AboutRoute.acknowledgements) {
+                    Label {
+                        Text(L("link_acknowledgements"))
+                    } icon: {
+                        Image(systemName: "heart.text.square")
+                            .frame(width: 18)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } header: {
                 Text(L("section_links"))
             } footer: {
@@ -87,6 +90,43 @@ struct AboutPane: View {
         .onChange(of: self.autoUpdateEnabled) { _, newValue in
             self.updater.automaticallyChecksForUpdates = newValue
             self.updater.automaticallyDownloadsUpdates = newValue
+        }
+    }
+
+    private var homebrewUpdater: HomebrewUpdaterController? {
+        self.updater as? HomebrewUpdaterController
+    }
+
+    private var updatesSection: some View {
+        Section {
+            if self.updater.isAvailable || self.homebrewUpdater != nil {
+                Toggle(L("check_updates_auto"), isOn: self.$autoUpdateEnabled)
+            }
+            if self.updater.isAvailable {
+                Picker(selection: self.updateChannelBinding) {
+                    ForEach(UpdateChannel.allCases) { channel in
+                        Text(channel.displayName).tag(channel)
+                    }
+                } label: {
+                    SettingsRowLabel(L("update_channel"), subtitle: self.updateChannel.description)
+                }
+            }
+
+            LabeledContent(String(format: L("version_format"), AppVersion.displayString)) {
+                if self.updater.isAvailable || self.homebrewUpdater != nil {
+                    Button(L("check_for_updates")) { self.updater.checkForUpdates(nil) }
+                        .disabled(self.homebrewUpdater?.phase == .checking || self.homebrewUpdater?
+                            .phase == .installing)
+                }
+            }
+            if let homebrewUpdater = self.homebrewUpdater {
+                AboutHomebrewUpdateStatusView(updater: homebrewUpdater)
+            } else if !self.updater.isAvailable {
+                AboutUpdatesUnavailableView(
+                    reason: self.updater.unavailableReason ?? L("updates_unavailable"))
+            }
+        } header: {
+            Text(L("section_updates"))
         }
     }
 
@@ -147,18 +187,58 @@ struct AboutPane: View {
     }
 }
 
+enum AboutRoute: Hashable {
+    case acknowledgements
+}
+
+@MainActor
+struct AboutHomebrewUpdateStatusView: View {
+    let updater: HomebrewUpdaterController
+
+    var body: some View {
+        switch self.updater.phase {
+        case .idle:
+            EmptyView()
+        case .checking:
+            Self.progressRow(L("Checking for updates…"))
+        case .upToDate:
+            Label(L("CodexBar is up to date"), systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.secondary)
+        case let .available(version):
+            LabeledContent(String(format: L("CodexBar %@ is available"), version)) {
+                Button(String(format: L("Update to %@"), version)) { self.updater.installUpdate() }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("about-homebrew-install-update")
+            }
+        case .installing:
+            Self.progressRow(L("Updating with Homebrew…"))
+        case let .failed(message):
+            AboutUpdatesUnavailableView(
+                reason: L("Managed by Homebrew") + "\n" + message,
+                command: self.updater.manualUpdateCommand)
+        }
+    }
+
+    private static func progressRow(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(title).foregroundStyle(.secondary)
+        }
+    }
+}
+
 @MainActor
 struct AboutUpdatesUnavailableView: View {
     typealias CopyAction = @MainActor @Sendable (String, @escaping @MainActor @Sendable (Bool) -> Void) -> Void
 
     let reason: String
-    let command: ManualUpdateCommand?
+    let command: String?
     let copyAction: CopyAction
     @State private var didCopy = false
 
     init(
         reason: String,
-        command: ManualUpdateCommand? = nil,
+        command: String? = nil,
         copyAction: @escaping CopyAction = Self.copyCommand)
     {
         self.reason = reason
@@ -173,14 +253,14 @@ struct AboutUpdatesUnavailableView: View {
                 .textSelection(.enabled)
             if let command {
                 HStack(spacing: 12) {
-                    Text(command.command)
+                    Text(command)
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.primary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button {
-                        self.copyAction(command.command) { self.didCopy = $0 }
+                        self.copyAction(command) { self.didCopy = $0 }
                     } label: {
                         Label(
                             self.didCopy ? L("Copied") : L("Copy update command"),

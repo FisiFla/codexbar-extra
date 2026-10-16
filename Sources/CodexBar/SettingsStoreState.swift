@@ -1,3 +1,4 @@
+import CodexBarCore
 import Foundation
 
 struct SettingsDefaultsState {
@@ -17,6 +18,7 @@ struct SettingsDefaultsState {
     var sessionQuotaNotificationsEnabled: Bool
     var quotaWarningNotificationsEnabled: Bool
     var predictivePaceWarningNotificationsEnabled: Bool
+    var limitResetNotificationsEnabled: Bool
     var quotaWarningThresholdsRaw: [Int]
     var quotaWarningSessionThresholdsRaw: [Int]
     var quotaWarningWeeklyThresholdsRaw: [Int]
@@ -31,9 +33,12 @@ struct SettingsDefaultsState {
     var usageBarsShowUsed: Bool
     var resetTimesShowAbsolute: Bool
     var providerChangelogLinksEnabled: Bool
+    var highlightMenuCardsOnHover: Bool
     var menuBarShowsBrandIconWithPercent: Bool
     var menuBarHidesCritters: Bool
     var menuBarColorPace: Bool
+    var menuBarPaceReservePositive: Bool
+    var menuBarColorByProvider: Bool
     var menuBarHighContrastOnInactiveDisplays: Bool
     var menuBarDisplayModeRaw: String?
     var menuBarShowsResetTimeWhenExhausted: Bool
@@ -45,6 +50,7 @@ struct SettingsDefaultsState {
     var storedMenuBarLayout: MenuBarLayout?
     var menuBarLayoutConditionals: [MenuBarLayoutConditional]
     var menuBarLayoutOverridesRaw: [String: MenuBarLayout]
+    var menuBarLayoutMonospacedDigits: Bool
     var menuBarLayoutSizeRaw: String
     var menuBarLayoutGapRaw: String
     var menuBarLayoutVerticalAdjustment: Int
@@ -53,7 +59,7 @@ struct SettingsDefaultsState {
     var copilotSeatCreditEntitlementRaw: String
     var costUsageEnabled: Bool
     var codexLocalSessionCostLedgerEnabled: Bool
-    var costUsageHistoryDays: Int
+    var costReportingPeriod: CostReportingPeriod
     var costUsageBucketTimeZoneIdentifier: String
     var openCodexUsageLogsEnabled: Bool
     var hideNativeCodexCostWhenOpenCodexPresent: Bool
@@ -65,6 +71,7 @@ struct SettingsDefaultsState {
     var confettiOnSessionLimitResetsEnabled: Bool
     var confettiOnWeeklyLimitResetsEnabled: Bool
     var menuBarShowsHighestUsage: Bool
+    var unifiedIconSourceRaw: String?
     var claudeOAuthKeychainPromptModeRaw: String?
     var claudeOAuthKeychainReadStrategyRaw: String?
     var claudeOAuthDirectKeychainReadAllowed: Bool
@@ -90,6 +97,7 @@ struct SettingsDefaultsState {
     var selectedMenuProviderRaw: String?
     var providerDetectionCompleted: Bool
     var providersSortedAlphabetically: Bool
+    var providersEnabledOnly: Bool
     var appLanguageRaw: String?
     var terminalAppRaw: String?
     var agentSessionsEnabled: Bool

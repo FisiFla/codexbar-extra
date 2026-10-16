@@ -28,7 +28,7 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
             accounts: [Self.account(id: "account", cacheIdentity: "cache-account")])
         let task = try #require(store.spendDashboardCodexCostCatchUpTask)
         await task.value
-        #expect(sleeps == [1998, 1998])
+        #expect(sleeps == [0, 1998])
     }
 
     @Test(arguments: [CodexCostCatchUpMode.automatic, .accelerated])
@@ -193,11 +193,11 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         }
 
         store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts, mode: .accelerated)
-        let originalToken = try #require(store.spendDashboardCodexCostCatchUpToken)
+        let originalToken = try #require(store.spendDashboardCodexCostCatchUpContext?.token)
 
         store.settings.costUsageHistoryDays = 123
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts)
-        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpToken)
+        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpContext?.token)
 
         #expect(replacementToken == originalToken)
         store.cancelSpendDashboardCodexCostCatchUp()
@@ -339,6 +339,7 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts)
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts, preferredMode: .accelerated)
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts, preferredMode: .automatic)
+        await store.spendDashboardCodexCostCatchUpTask?.value
 
         try #require(store.spendDashboardCodexCostCatchUpTask == nil)
         #expect(store.spendDashboardCodexCostCatchUpActivity == pausedActivity)
@@ -403,11 +404,11 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         defer { store.stopSharedSpendDashboardPublication() }
         let accounts = [Self.account(id: "account", cacheIdentity: "cache-account")]
         store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts, mode: .accelerated)
-        let token = try #require(store.spendDashboardCodexCostCatchUpToken)
+        let token = try #require(store.spendDashboardCodexCostCatchUpContext?.token)
 
         store.refreshSpendDashboard(accounts: accounts)
 
-        #expect(store.spendDashboardCodexCostCatchUpToken == token)
+        #expect(store.spendDashboardCodexCostCatchUpContext?.token == token)
         #expect(store.spendDashboardCodexCostCatchUpMode == .accelerated)
         #expect(!store.spendDashboardCodexCostCatchUpRestartRequested)
     }
@@ -526,11 +527,11 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         let accounts = [Self.account(id: "account", cacheIdentity: "cache-account")]
 
         store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts, mode: .accelerated)
-        let originalToken = store.spendDashboardCodexCostCatchUpToken
+        let originalToken = store.spendDashboardCodexCostCatchUpContext?.token
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts)
 
         #expect(originalToken != nil)
-        #expect(store.spendDashboardCodexCostCatchUpToken == originalToken)
+        #expect(store.spendDashboardCodexCostCatchUpContext?.token == originalToken)
         #expect(store.spendDashboardCodexCostCatchUpMode == .accelerated)
         store.cancelSpendDashboardCodexCostCatchUp()
     }
@@ -572,7 +573,7 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         }
 
         store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts, mode: .automatic)
-        let originalToken = store.spendDashboardCodexCostCatchUpToken
+        let originalToken = store.spendDashboardCodexCostCatchUpContext?.token
         store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts, preferredMode: .accelerated)
 
         #expect(originalToken != nil)
@@ -687,19 +688,19 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         store.startSpendDashboardCodexCostCatchUpIfNeeded(
             accounts: [Self.account(id: "replacement", cacheIdentity: "cache-replacement")], mode: .accelerated)
         let replacementTask = try #require(store.spendDashboardCodexCostCatchUpTask)
-        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpToken)
+        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpContext?.token)
         try await replacementGate.waitForPendingCount(1)
         #expect(store.spendDashboardCodexCostCatchUpPassIsRunning)
 
         oldGate.resume(returning: Self.status(pending: false, key: "old-complete", processedBytes: 100))
         await oldTask.value
 
-        #expect(store.spendDashboardCodexCostCatchUpToken == replacementToken)
+        #expect(store.spendDashboardCodexCostCatchUpContext?.token == replacementToken)
         #expect(store.spendDashboardCodexCostCatchUpPassIsRunning)
         #expect(store.spendDashboardCodexCostCatchUpActivity?.phase == .indexing)
         store.stopSpendDashboardCodexCostCatchUp()
         #expect(store.spendDashboardCodexCostCatchUpTask != nil)
-        #expect(store.spendDashboardCodexCostCatchUpToken == replacementToken)
+        #expect(store.spendDashboardCodexCostCatchUpContext?.token == replacementToken)
         replacementGate.resume(returning: Self.status(pending: false, key: "complete", processedBytes: 100))
         await replacementTask.value
         #expect(store.spendDashboardCodexCostCatchUpTask == nil)
@@ -743,12 +744,12 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         store.startSpendDashboardCodexCostCatchUpIfNeeded(
             accounts: [Self.account(id: "replacement", cacheIdentity: "cache-replacement")], mode: .accelerated)
         let replacementTask = try #require(store.spendDashboardCodexCostCatchUpTask)
-        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpToken)
+        let replacementToken = try #require(store.spendDashboardCodexCostCatchUpContext?.token)
         await oldTask.value
         try await replacementGate.waitForPendingCount(1)
 
         #expect(store.spendDashboardCodexCostCatchUpRevision == revision)
-        #expect(store.spendDashboardCodexCostCatchUpToken == replacementToken)
+        #expect(store.spendDashboardCodexCostCatchUpContext?.token == replacementToken)
         #expect(store.spendDashboardCodexCostCatchUpActivity?.pauseReason == nil)
         #expect(store.spendDashboardCodexCostCatchUpPassIsRunning)
         replacementGate.resume(returning: Self.status(pending: false, key: "complete", processedBytes: 100))
@@ -756,7 +757,7 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         #expect(store.spendDashboardCodexCostCatchUpRevision == revision + 1)
     }
 
-    private static func makeStore(suite: String) throws -> UsageStore {
+    static func makeStore(suite: String) throws -> UsageStore {
         let settings = testSettingsStore(
             suiteName: "UsageStoreSpendDashboardCodexCostCatchUpTests-\(suite)", userDefaults: InMemoryUserDefaults())
         settings.costUsageEnabled = true
@@ -808,7 +809,7 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
         return try #require(receivedHistoryDays)
     }
 
-    private static func account(id: String, cacheIdentity: String) -> CodexSpendScanRequest {
+    static func account(id: String, cacheIdentity: String) -> CodexSpendScanRequest {
         CodexSpendScanRequest(
             id: id,
             displayName: "Codex · \(id)",
@@ -853,5 +854,66 @@ struct UsageStoreSpendDashboardCodexCostCatchUpTests {
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
         Issue.record("Timed out waiting for Spend Dashboard Codex cost catch-up")
+    }
+}
+
+extension UsageStoreSpendDashboardCodexCostCatchUpTests {
+    @Test
+    func `a confirmed complete cache clears a no-progress card without scanning`() async throws {
+        let store = try Self.makeStore(suite: "confirmed-completion")
+        defer { store.cancelSpendDashboardCodexCostCatchUp() }
+        let accounts = [Self.account(id: "account", cacheIdentity: "cache-account")]
+        var advanceCount = 0
+        store._test_spendDashboardCodexCostCatchUpStatusOverride = { _ in
+            Self.status(pending: true, key: "unchanged", processedBytes: 25)
+        }
+        store._test_spendDashboardCodexCostCatchUpAdvanceOverride = { _, _, _ in
+            advanceCount += 1
+            return Self.status(pending: true, key: "unchanged", processedBytes: 25)
+        }
+        store._test_spendDashboardCodexCostCatchUpSleepOverride = { _ in await Task.yield() }
+        store._test_spendDashboardCodexCostCatchUpResourceStateOverride = { (.ac, false, .nominal) }
+        store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts, mode: .accelerated)
+        await Self.waitUntil { store.spendDashboardCodexCostCatchUpTask == nil }
+        #expect(store.spendDashboardCodexCostCatchUpActivity?.pauseReason == .noProgress)
+
+        store._test_spendDashboardCodexCostCatchUpStatusOverride = { _ in
+            .init(pending: false, progressKey: "complete", completionIsConfirmed: true)
+        }
+        store.synchronizeSpendDashboardCodexCostCatchUp(accounts: accounts)
+        await store.spendDashboardCodexCostCatchUpCompletionCheckTask?.value
+        #expect(store.spendDashboardCodexCostCatchUpActivity?.phase == .complete)
+        #expect(store.spendDashboardCodexCostCatchUpTask == nil)
+        #expect(advanceCount == 1)
+    }
+
+    @Test
+    func `a zero-attempt time deferral receives one throttled fresh budget`() async throws {
+        let store = try Self.makeStore(suite: "time-deferral-recovery")
+        defer { store.cancelSpendDashboardCodexCostCatchUp() }
+        let accounts = [Self.account(id: "account", cacheIdentity: "cache-account")]
+        var advances = 0
+        var sleeps: [TimeInterval] = []
+        store._test_spendDashboardCodexCostCatchUpActiveDuration = 1.999
+        store._test_spendDashboardCodexCostCatchUpStatusOverride = { _ in
+            Self.status(pending: true, key: "initial", processedBytes: 25)
+        }
+        store._test_spendDashboardCodexCostCatchUpAdvanceOverride = { _, _, _ in
+            advances += 1
+            return .init(
+                pending: advances < 3,
+                progressKey: advances < 3 ? "advanced" : "complete",
+                yieldedBeforeFileAttempt: advances == 2)
+        }
+        store._test_spendDashboardCodexCostCatchUpSleepOverride = { delay in
+            sleeps.append(delay)
+            await Task.yield()
+        }
+        store._test_spendDashboardCodexCostCatchUpResourceStateOverride = { (.ac, false, .nominal) }
+        store.startSpendDashboardCodexCostCatchUpIfNeeded(accounts: accounts)
+        await Self.waitUntil { store.spendDashboardCodexCostCatchUpTask == nil }
+        #expect(advances == 3)
+        #expect(sleeps.contains { $0 > 0 })
+        #expect(store.spendDashboardCodexCostCatchUpActivity?.phase == .complete)
     }
 }

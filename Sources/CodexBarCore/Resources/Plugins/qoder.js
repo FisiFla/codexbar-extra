@@ -83,7 +83,7 @@ defineProvider({
     cached.sort((a, b) => (b.session.cachedAt ?? 0) - (a.session.cachedAt ?? 0));
     async function* candidates() {
       yield* cached;
-      // Qoder's registered browser order is Chrome-only; retain global then China profile order.
+      // Retain global then China profile order across the supported browsers.
       for (const domain of domains) {
         for await (const session of ctx.browser.sessions(domain)) yield { domain, session };
       }
@@ -124,7 +124,7 @@ defineProvider({
     if (rejected)
       throw ctx.fail.authenticationExpired("Qoder session is invalid or expired. Please sign in to Qoder again.");
     throw ctx.fail.missingCredential(
-      "Qoder session cookie not found. Sign in to qoder.com or qoder.com.cn in Chrome, or paste a Cookie header.",
+      `Qoder session cookie not found. Sign in to qoder.com or qoder.com.cn. Supported browsers: ${ctx.browser.supportedBrowsers}. Or paste a Cookie header.`,
     );
   },
 });

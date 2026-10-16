@@ -9,6 +9,7 @@ import Security
 public struct KeychainPromptContext: Sendable {
     public enum Kind: Sendable {
         case claudeOAuth
+        case museToken
         case codexCookie
         case claudeCookie
         case cursorCookie
@@ -37,9 +38,9 @@ public struct KeychainPromptContext: Sendable {
 
 public enum KeychainPromptHandler {
     final class HandlerStore: @unchecked Sendable {
-        let handler: (KeychainPromptContext) -> Void
+        let handler: ((KeychainPromptContext) -> Void)?
 
-        init(handler: @escaping (KeychainPromptContext) -> Void) {
+        init(handler: ((KeychainPromptContext) -> Void)?) {
             self.handler = handler
         }
     }
@@ -47,17 +48,22 @@ public enum KeychainPromptHandler {
     @TaskLocal private static var taskHandlerStore: HandlerStore?
     public nonisolated(unsafe) static var handler: ((KeychainPromptContext) -> Void)?
 
+    private static var currentHandler: ((KeychainPromptContext) -> Void)? {
+        if let taskHandlerStore { return taskHandlerStore.handler }
+        return self.handler
+    }
+
+    static var isInstalled: Bool {
+        self.currentHandler != nil
+    }
+
     public static func notify(_ context: KeychainPromptContext) {
         _ = self.notifyIfHandled(context)
     }
 
     @discardableResult
     static func notifyIfHandled(_ context: KeychainPromptContext) -> Bool {
-        if let taskHandlerStore {
-            taskHandlerStore.handler(context)
-            return true
-        }
-        guard let handler else { return false }
+        guard let handler = self.currentHandler else { return false }
         handler(context)
         return true
     }
@@ -67,18 +73,14 @@ public enum KeychainPromptHandler {
         _ handler: ((KeychainPromptContext) -> Void)?,
         operation: () throws -> T) rethrows -> T
     {
-        try self.$taskHandlerStore.withValue(handler.map(HandlerStore.init(handler:))) {
-            try operation()
-        }
+        try self.$taskHandlerStore.withValue(HandlerStore(handler: handler), operation: operation)
     }
 
     static func withHandlerForTesting<T>(
         _ handler: ((KeychainPromptContext) -> Void)?,
         operation: () async throws -> T) async rethrows -> T
     {
-        try await self.$taskHandlerStore.withValue(handler.map(HandlerStore.init(handler:))) {
-            try await operation()
-        }
+        try await self.$taskHandlerStore.withValue(HandlerStore(handler: handler), operation: operation)
     }
     #endif
 }
@@ -362,8 +364,8 @@ public enum KeychainAccessPreflight {
               !acls.isEmpty
         else { return .indeterminate }
 
-        let currentPaths = KeychainCacheStore.invokingApplicationPathsForCacheAccess()
-        guard !currentPaths.isEmpty else { return .indeterminate }
+        guard let currentPath = KeychainCacheStore.invokingApplicationPathsForCacheAccess().first
+        else { return .indeterminate }
 
         var inspectionIncomplete = false
         for acl in acls {
@@ -387,10 +389,8 @@ public enum KeychainAccessPreflight {
                 inspectionIncomplete = true
                 continue
             }
-            let validationResults = trustedApplications.flatMap { application in
-                currentPaths.map { currentPath in
-                    self.trustedApplication(application, validatesExecutableAt: currentPath)
-                }
+            let validationResults = trustedApplications.map { application in
+                self.trustedApplication(application, validatesExecutableAt: currentPath)
             }
             switch self.evaluateDecryptACL(
                 trustedApplicationValidationStatuses: validationResults,
@@ -417,11 +417,51 @@ public enum KeychainAccessPreflight {
             named: "SecTrustedApplicationValidateWithPath",
             as: SecTrustedApplicationValidateWithPathFunction.self)
         else { return nil }
+        // Security's immutable handle must stay alive even if its validation outlasts the caller's wait.
+        nonisolated(unsafe) let retainedApplication = application
         return self.validationMemo.validate(
             trustedApplication: self.trustedApplicationRepresentation(application), path: path)
         {
-            path.withCString { validate(application, $0) }
+            self.validateApplication(
+                at: path,
+                selfCheck: {
+                    guard let copy = self.securityFunction(
+                        named: "SecTrustedApplicationCopyRequirement",
+                        as: SecTrustedApplicationCopyRequirementFunction.self)
+                    else { return nil }
+                    var requirement: Unmanaged<SecRequirement>?
+                    // Old ACLs may have no requirement; unavailable SPI and copy errors also use static validation.
+                    guard copy(retainedApplication, &requirement) == errSecSuccess,
+                          let requirement = requirement?.takeRetainedValue()
+                    else { return nil }
+                    var code: SecCode?
+                    let status = SecCodeCopySelf([], &code)
+                    guard status == errSecSuccess else { return status }
+                    guard let code else { return errSecInternalComponent }
+                    // Dynamic default validation checks identity and kernel validity, not sealed bundle resources.
+                    return SecCodeCheckValidity(code, [], requirement)
+                },
+                staticCheck: { path.withCString { validate(retainedApplication, $0) } })
         }
+    }
+
+    static func validateApplication(
+        at path: String,
+        executableURL: URL? = KeychainCacheStore.runningExecutableURLForCacheAccess,
+        selfCheck: () -> OSStatus?,
+        staticCheck: () -> OSStatus?) -> OSStatus?
+    {
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        if let executable = executableURL?.standardizedFileURL.resolvingSymlinksInPath(),
+           candidate == executable ||
+           (candidate == KeychainCacheStore.appBundleURL(containing: executable) &&
+               Bundle(url: candidate)?.executableURL?.resolvingSymlinksInPath() == executable),
+           let status = selfCheck()
+        {
+            // Keep completed requirement mismatches in the legacy rejection vocabulary used by the memo.
+            return status == errSecCSReqFailed ? OSStatus(CSSMERR_CSP_VERIFY_FAILED) : status
+        }
+        return staticCheck()
     }
 
     private static func trustedApplicationRepresentation(_ application: SecTrustedApplication) -> Data? {
@@ -449,6 +489,9 @@ public enum KeychainAccessPreflight {
     private typealias SecTrustedApplicationValidateWithPathFunction = @convention(c) (
         SecTrustedApplication,
         UnsafePointer<CChar>) -> OSStatus
+    private typealias SecTrustedApplicationCopyRequirementFunction = @convention(c) (
+        SecTrustedApplication,
+        UnsafeMutablePointer<Unmanaged<SecRequirement>?>) -> OSStatus
     private typealias SecTrustedApplicationCopyExternalRepresentationFunction = @convention(c) (
         SecTrustedApplication,
         UnsafeMutablePointer<Unmanaged<CFData>?>) -> OSStatus

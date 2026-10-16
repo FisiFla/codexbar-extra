@@ -5,6 +5,7 @@ enum UsageMenuCardContext {
     case menu
     case settings
     case account(Account)
+    case settingsAccount(Account)
 
     struct Account {
         var snapshot: UsageSnapshot?
@@ -18,16 +19,21 @@ enum UsageMenuCardContext {
         var subtitle: String?
         var sourceLabel: String?
         var credits: CreditsSnapshot?
+        var tokenAccountID: UUID?
     }
 
     var account: Account? {
-        guard case let .account(account) = self else { return nil }
-        return account
+        switch self {
+        case let .account(account), let .settingsAccount(account): account
+        case .menu, .settings: nil
+        }
     }
 
     var isSettings: Bool {
-        if case .settings = self { return true }
-        return false
+        switch self {
+        case .settings, .settingsAccount: true
+        case .menu, .account: false
+        }
     }
 }
 
@@ -44,7 +50,8 @@ extension UsageStore {
     func menuCardInput(
         for provider: UsageProvider,
         context: UsageMenuCardContext,
-        now: Date = Date()) -> UsageMenuCardView.Model.Input
+        now: Date = Date(),
+        optionalUsageOverride: Bool? = nil) -> UsageMenuCardView.Model.Input
     {
         let account = context.account
         let isSettings = context.isSettings
@@ -59,11 +66,12 @@ extension UsageStore {
             snapshotOverride: account?.snapshot,
             errorOverride: account?.error,
             creditsOverride: account?.credits,
+            optionalUsageOverride: optionalUsageOverride,
             now: now)
         let supportsTokenCost = codexProjection != nil || descriptor.tokenCost.supportsTokenCost
         let tokenSnapshot: CostUsageTokenSnapshot?
         if isSettings {
-            tokenSnapshot = supportsTokenCost ? self.tokenSnapshot(for: provider) : nil
+            tokenSnapshot = isLive && supportsTokenCost ? self.tokenSnapshot(for: provider) : nil
         } else {
             let projected = isLive || snapshot != nil
                 ? self.tokenSnapshot(fromProviderSnapshot: snapshot, provider: provider)
@@ -88,12 +96,30 @@ extension UsageStore {
             codexProjection: codexProjection,
             account: account,
             now: now)
+        let presentation = isLive ? self.userFacingErrorPresentation(for: provider) : nil
+        let lastError = account?.error ?? codexProjection?.userFacingErrors.usage
+            ?? (isLive && isSettings ? self.userFacingError(for: provider) : presentation?.message)
+        // Settings keeps its error preview intact; menu cards have a dedicated secondary stale-usage line.
+        let lastKnownUsageCapturedAt = isSettings ? nil : presentation?.lastKnownUsageCapturedAt
+        let throughputScope: ProviderModelRateLimitScope? = isLive
+            ? self.settings.modelRateLimitScope(for: provider)
+            : account?.tokenAccountID.map { .tokenAccount($0) }
         return UsageMenuCardView.Model.Input(
             provider: provider,
+            throughputPresentation: snapshot?.throughput.flatMap {
+                var presentation = ProviderCatalog.implementation(for: provider)?.throughputPresentation(
+                    snapshot: $0,
+                    settings: self.settings,
+                    limitScope: throughputScope)
+                if !isLive, throughputScope != self.settings.modelRateLimitScope(for: provider) {
+                    presentation?.action = nil
+                }
+                return presentation
+            },
             metadata: metadata,
             snapshot: snapshot,
             codexProjection: codexProjection,
-            credits: codexProjection?.credits?.snapshot,
+            credits: isSettings && !isLive ? account?.credits : codexProjection?.credits?.snapshot,
             creditsError: isSettings ? codexProjection?.credits?.userFacingError : nil,
             dashboardError: isSettings ? codexProjection?.userFacingErrors.dashboard : nil,
             tokenSnapshot: tokenSnapshot,
@@ -105,12 +131,13 @@ extension UsageStore {
             accountPrivacyOrdinal: account?.privacyOrdinal,
             planOverride: account?.plan ?? .automatic,
             planEmphasis: account?.planEmphasis ?? .none,
-            lastKnownUsageCapturedAt: account?.lastKnownUsageCapturedAt,
+            lastKnownUsageCapturedAt: account?.lastKnownUsageCapturedAt
+                ?? lastKnownUsageCapturedAt
+                ?? (isLive ? self.browserSessionLastKnownUsageCapturedAt(for: provider, snapshot: snapshot) : nil),
             isRefreshing: isSettings ? self.refreshingProviders.contains(provider.instanceID)
                 : self.shouldShowRefreshingMenuCardIndicator(for: provider),
-            lastError: account?.error ?? codexProjection?.userFacingErrors.usage
-                ?? (isLive ? self.userFacingError(for: provider) : nil),
-            limitsAvailability: self.knownLimitsAvailability(for: provider),
+            lastError: lastError,
+            limitsAvailability: isSettings && !isLive ? nil : self.knownLimitsAvailability(for: provider),
             usageBarsShowUsed: self.settings.usageBarsShowUsed,
             resetTimeDisplayStyle: self.settings.resetTimeDisplayStyle,
             tokenCostUsageEnabled: self.settings.isCostUsageEffectivelyEnabled(for: provider),
@@ -122,7 +149,7 @@ extension UsageStore {
                 ? self.settings.isCostUsageEffectivelyEnabled(for: provider)
                 : descriptor.tokenCost.showsCostMenuSection && self.settings.costSummaryShowsSubmenu(for: provider),
             costComparisonPeriodsEnabled: !isSettings && self.settings.costComparisonPeriodsEnabled,
-            showOptionalCreditsAndExtraUsage: self.settings.showOptionalCreditsAndExtraUsage,
+            showOptionalCreditsAndExtraUsage: optionalUsageOverride ?? self.settings.showOptionalCreditsAndExtraUsage,
             copilotBudgetExtrasEnabled: self.settings.copilotBudgetExtrasEnabled,
             showsAllUsageLanes: isSettings,
             sourceLabel: account?.sourceLabel ?? (!isSettings && isLive ? self.sourceLabel(for: provider) : nil),

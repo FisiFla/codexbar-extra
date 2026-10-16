@@ -7,7 +7,7 @@ struct SettingsWindowControllerTests {
     @Test
     func `creates registers and presents an identified Settings window`() {
         _ = NSApplication.shared
-        let selection = self.makeSelection(suffix: "create")
+        let selection = self.makeSelection()
         let window = self.makeWindow()
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenPrimary]
         var events: [String] = []
@@ -44,7 +44,7 @@ struct SettingsWindowControllerTests {
     @Test
     func `reuses the window and switches panes while it remains open`() {
         _ = NSApplication.shared
-        let selection = self.makeSelection(suffix: "reuse")
+        let selection = self.makeSelection()
         let window = self.makeWindow()
         var makeCount = 0
         var registeredWindows: [NSWindow] = []
@@ -71,11 +71,43 @@ struct SettingsWindowControllerTests {
         #expect(registeredWindows.allSatisfy { $0 === window })
         #expect(presentedPanes == [.about, .general])
         #expect(selection.pane == .general)
+        selection.goBack()
+        #expect(selection.pane == .about)
+        selection.goForward()
+        #expect(selection.pane == .general)
+        #expect(makeCount == 1)
+    }
+
+    @Test
+    func `every explicit About open returns pushed About pages to the root`() {
+        _ = NSApplication.shared
+        let selection = self.makeSelection()
+        let window = self.makeWindow()
+        let controller = SettingsWindowController(
+            selection: selection,
+            makeWindow: { window },
+            prepareToPresent: {},
+            registerWindow: { _ in },
+            presentWindow: { _ in },
+            didPresentWindow: { _ in },
+            presentationFailed: {})
+
+        controller.open(pane: .about)
+        #expect(selection.aboutRootRequests == 1)
+
+        // The window and its About navigation state survive close; reopening About must still reset them.
+        window.close()
+        #expect(controller.open(pane: .about) == .reused)
+        #expect(selection.aboutRootRequests == 2)
+
+        controller.open(pane: nil)
+        controller.open(pane: .general)
+        #expect(selection.aboutRootRequests == 2)
     }
 
     @Test
     func `window creation failure resolves the presentation attempt`() {
-        let selection = self.makeSelection(suffix: "failure")
+        let selection = self.makeSelection()
         var events: [String] = []
         let controller = SettingsWindowController(
             selection: selection,
@@ -95,11 +127,8 @@ struct SettingsWindowControllerTests {
         #expect(events == ["prepare", "make", "failed"])
     }
 
-    private func makeSelection(suffix: String) -> PreferencesSelection {
-        let suiteName = "SettingsWindowControllerTests-\(suffix)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return PreferencesSelection(userDefaults: defaults)
+    private func makeSelection() -> PreferencesSelection {
+        PreferencesSelection(userDefaults: InMemoryUserDefaults())
     }
 
     private func makeWindow() -> NSWindow {

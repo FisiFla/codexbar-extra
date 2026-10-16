@@ -9,8 +9,8 @@ struct NotificationsPane: View {
             Section {
                 Toggle(isOn: self.$settings.credentialExpiryNotificationsEnabled) {
                     SettingsRowLabel(
-                        "Credential expiry",
-                        subtitle: "Notify once when a provider account needs you to sign in again.")
+                        L("credential_expiry_notifications_title"),
+                        subtitle: L("credential_expiry_notifications_subtitle"))
                 }
 
                 Toggle(isOn: self.$settings.sessionQuotaNotificationsEnabled) {
@@ -29,6 +29,12 @@ struct NotificationsPane: View {
                     SettingsRowLabel(
                         L("predictive_pace_warnings_title"),
                         subtitle: L("predictive_pace_warnings_subtitle"))
+                }
+
+                Toggle(isOn: self.$settings.limitResetNotificationsEnabled) {
+                    SettingsRowLabel(
+                        L("limit_reset_notifications_title"),
+                        subtitle: L("limit_reset_notifications_subtitle"))
                 }
 
                 let warningSettingsVisibility = QuotaWarningSettingsVisibility(

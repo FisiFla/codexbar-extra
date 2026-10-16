@@ -12,6 +12,8 @@ struct CostUsageStoreReadWorkMetrics: Codable, Equatable, Sendable {
     var fileRows = 0
     var tokenSnapshotRows = 0
     var usageRows = 0
+    var materializedUsageRows = 0
+    var reportBuilds = 0
     var bufferedLines = 0
     var usagePayloadBytes = 0
     var bufferedPayloadBytes = 0
@@ -66,6 +68,14 @@ final class CostUsageStoreReadWorkRecorder: @unchecked Sendable {
         }
     }
 
+    func recordReportBuild() {
+        self.lock.withLock { self.metrics.reportBuilds += 1 }
+    }
+
+    func recordMaterializedUsageRows(count: Int) {
+        self.lock.withLock { self.metrics.materializedUsageRows += count }
+    }
+
     func recordBufferedLine(payloadBytes: Int) {
         self.lock.withLock {
             self.metrics.bufferedLines += 1
@@ -109,17 +119,13 @@ final class CostUsageStoreReadWorkRecorder: @unchecked Sendable {
 }
 
 extension CostUsageStore {
-    private nonisolated static let readWorkRecorderLock = NSLock()
-    private nonisolated(unsafe) static var installedReadWorkRecorder: CostUsageStoreReadWorkRecorder?
-
-    nonisolated static var readWorkRecorderForTesting: CostUsageStoreReadWorkRecorder? {
-        get { self.readWorkRecorderLock.withLock { self.installedReadWorkRecorder } }
-        set { self.readWorkRecorderLock.withLock { self.installedReadWorkRecorder = newValue } }
-    }
-
     var scopedReadWorkRecorderForTesting: CostUsageStoreReadWorkRecorder? {
-        guard let recorder = Self.readWorkRecorderForTesting,
+        #if DEBUG
+        guard let recorder = CostUsageStoreTestHooks.current.readWorkRecorder,
               recorder.databaseURL == self.databaseURL else { return nil }
         return recorder
+        #else
+        return nil
+        #endif
     }
 }

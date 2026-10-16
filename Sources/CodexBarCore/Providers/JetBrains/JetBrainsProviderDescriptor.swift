@@ -31,7 +31,7 @@ public enum JetBrainsProviderDescriptor {
             branding: ProviderBranding(
                 iconStyle: .init(provider: .jetbrains),
                 iconResourceName: "ProviderIcon-jetbrains",
-                color: ProviderColor(red: 255 / 255, green: 51 / 255, blue: 153 / 255),
+                color: ProviderColor(hex: 0xFF3399),
                 confettiPalette: [
                     ProviderColor(hex: 0x6B57FF),
                     ProviderColor(hex: 0x21D789),
@@ -40,6 +40,7 @@ public enum JetBrainsProviderDescriptor {
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "JetBrains AI cost summary is not supported." }),
+            presentation: ProviderUsagePresentation(menuBarBalanceDetailLabels: ["Remaining"]),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .cli],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [JetBrainsStatusFetchStrategy()] })),

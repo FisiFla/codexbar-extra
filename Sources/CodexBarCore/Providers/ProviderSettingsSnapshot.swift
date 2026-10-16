@@ -78,6 +78,12 @@ public struct ProviderSettingsSnapshotContribution: Sendable {
 }
 
 public struct ProviderSettingsSectionRegistration: Sendable {
+    public private(set) var selectedProfileBrowsers: [String]?
+    public var selectedProfileBrowser: String? {
+        guard let browsers = self.selectedProfileBrowsers, browsers.count == 1 else { return nil }
+        return browsers[0]
+    }
+
     public let providerID: ProviderInstanceID
     let sectionTypeID: ObjectIdentifier
     public let defaultContribution: ProviderSettingsSnapshotContribution?
@@ -94,6 +100,24 @@ public struct ProviderSettingsSectionRegistration: Sendable {
         self.defaultContribution = nil
         self.cookieSettingsReader = { _ in nil }
         self.credentialContributionReader = { _ in nil }
+    }
+
+    public init<Key: ProviderSettingsSectionKey>(_ key: Key.Type, selectedProfileBrowser: String)
+        where Key.Section == CookieProviderSettings
+    {
+        self.init(key, selectedProfileBrowsers: [selectedProfileBrowser])
+    }
+
+    public init<Key: ProviderSettingsSectionKey>(_ key: Key.Type, selectedProfileBrowsers: [String])
+        where Key.Section == CookieProviderSettings
+    {
+        self.init(key, cookieSettings: { $0 }, credentialSettings: { context in
+            var settings = CookieProviderSettings(cookieSource: context.config?.cookieSource ?? .auto)
+            settings.selectedBrowserProfile = ProviderBrowserProfile.selected(
+                in: context.config, browsers: selectedProfileBrowsers)
+            return settings
+        })
+        self.selectedProfileBrowsers = selectedProfileBrowsers
     }
 
     public init<Key: ProviderSettingsSectionKey>(

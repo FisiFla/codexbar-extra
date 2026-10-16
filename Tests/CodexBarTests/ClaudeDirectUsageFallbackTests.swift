@@ -63,13 +63,15 @@ struct ClaudeDirectUsageFallbackTests {
             #expect(invocations.contains("direct-auto-updater-disabled"))
             #expect(!invocations.contains("secret-env"))
             #expect(!invocations.contains("remote-registration-would-occur"))
+            #expect(!invocations.contains("user-hook-would-run"))
             #expect(self.log.arguments(for: "direct") == [
-                "--settings", #"{"remoteControlAtStartup":false}"#, "/usage",
+                "--strict-mcp-config",
+                "--settings", #"{"remoteControlAtStartup":false,"disableAllHooks":true}"#, "/usage",
             ])
             let ptyArguments = self.log.arguments(for: "pty")
             #expect(Array(ptyArguments.dropLast()) == [
                 "--allowed-tools", "", "--strict-mcp-config",
-                "--settings", #"{"remoteControlAtStartup":false}"#, "--session-id",
+                "--settings", #"{"remoteControlAtStartup":false,"disableAllHooks":true}"#, "--session-id",
             ])
             let sessionID = try #require(ptyArguments.last)
             #expect(UUID(uuidString: sessionID) != nil)
@@ -84,12 +86,18 @@ struct ClaudeDirectUsageFallbackTests {
         let environment = ClaudeCLISession.launchEnvironment(baseEnv: [
             "DISABLE_AUTOUPDATER": "0",
             ClaudeOAuthCredentialsStore.environmentTokenKey: "oauth-token",
+            ClaudeOAuthCredentialsStore.environmentScopesKey: "user:inference",
             "ANTHROPIC_API_KEY": "api-token",
+            "ANTHROPIC_BASE_URL": "https://example.invalid",
+            "CLAUDE_CONFIG_DIR": "/synthetic/claude-profile",
         ])
 
         #expect(environment["DISABLE_AUTOUPDATER"] == "1")
         #expect(environment[ClaudeOAuthCredentialsStore.environmentTokenKey] == nil)
+        #expect(environment[ClaudeOAuthCredentialsStore.environmentScopesKey] == nil)
         #expect(environment["ANTHROPIC_API_KEY"] == nil)
+        #expect(environment["ANTHROPIC_BASE_URL"] == nil)
+        #expect(environment["CLAUDE_CONFIG_DIR"] == "/synthetic/claude-profile")
     }
 
     @Test
@@ -106,6 +114,19 @@ struct ClaudeDirectUsageFallbackTests {
             #expect(message.lowercased().contains("subscription"))
         }
 
+        try fixture.expectProbeInvocations()
+    }
+
+    @Test
+    func `insights only direct usage keeps original pty failure`() async throws {
+        let fixture = try Self.makeDirectFallbackClaudeCLI(includeInsights: true)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        do {
+            _ = try await fixture.loadUsage()
+            #expect(Bool(false), "Insights cannot replace the PTY error with unavailable limits")
+        } catch let ClaudeStatusProbeError.parseFailed(message) {
+            #expect(message.lowercased().contains("could not load usage data"))
+        }
         try fixture.expectProbeInvocations()
     }
 
@@ -149,11 +170,15 @@ struct ClaudeDirectUsageFallbackTests {
         try fixture.expectProbeInvocations()
     }
 
-    private static func makeDirectFallbackClaudeCLI() throws -> Fixture {
-        try self.makeClaudeCLI(name: "claude-direct-fallback", scriptBody: """
+    private static func makeDirectFallbackClaudeCLI(includeInsights: Bool = false) throws -> Fixture {
+        let insights = #"""
+        printf '%s\n' "What's contributing to your limits usage?" 'Top MCP servers: Claude Browser 10%'
+        """#
+        return try self.makeClaudeCLI(name: "claude-direct-fallback", scriptBody: """
         if [ "$MODE" = "direct" ]; then
           printf 'direct-usage\\n' >> "$LOG_FILE"
           printf '%s\\n' 'You are currently using your subscription to power your Claude Code usage'
+          \(includeInsights ? insights : "")
           exit 0
         fi
         while IFS= read -r line; do
@@ -219,16 +244,21 @@ struct ClaudeDirectUsageFallbackTests {
           printf '%s-arg:%s\\n' "$MODE" "$argument" >> "$LOG_FILE"
         done
         REMOTE_CONTROL_DISABLED=0
+        USER_HOOKS_DISABLED=0
         EXPECT_SETTINGS=0
         for argument in "$@"; do
-          if [ "$EXPECT_SETTINGS" = "1" ] && [ "$argument" = '{"remoteControlAtStartup":false}' ]; then
-            REMOTE_CONTROL_DISABLED=1
+          if [ "$EXPECT_SETTINGS" = "1" ]; then
+            case "$argument" in *'"remoteControlAtStartup":false'*) REMOTE_CONTROL_DISABLED=1 ;; esac
+            case "$argument" in *'"disableAllHooks":true'*) USER_HOOKS_DISABLED=1 ;; esac
           fi
           EXPECT_SETTINGS=0
           if [ "$argument" = "--settings" ]; then EXPECT_SETTINGS=1; fi
         done
         if [ "$REMOTE_CONTROL_DISABLED" != "1" ]; then
           printf '%s-remote-registration-would-occur\\n' "$MODE" >> "$LOG_FILE"
+        fi
+        if [ "$USER_HOOKS_DISABLED" != "1" ]; then
+          printf '%s-user-hook-would-run\\n' "$MODE" >> "$LOG_FILE"
         fi
         if [ "$DISABLE_AUTOUPDATER" = "1" ]; then
           printf '%s-auto-updater-disabled\\n' "$MODE" >> "$LOG_FILE"

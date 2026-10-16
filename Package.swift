@@ -8,7 +8,7 @@ let useLocalSweetCookieKit =
 let sweetCookieKitDependency: Package.Dependency =
     useLocalSweetCookieKit && FileManager.default.fileExists(atPath: sweetCookieKitPath)
     ? .package(path: sweetCookieKitPath)
-    : .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.5.2")
+    : .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.5.8")
 
 let sqlite3LibDir = ProcessInfo.processInfo.environment["CODEXBAR_SQLITE3_LIB_DIR"]?
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -207,6 +207,9 @@ let package = Package(
                 name: "CodexBarWidget",
                 dependencies: ["CodexBarCore"],
                 path: "Sources/CodexBarWidget",
+                resources: [
+                    .process("Resources"),
+                ],
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                 ]),

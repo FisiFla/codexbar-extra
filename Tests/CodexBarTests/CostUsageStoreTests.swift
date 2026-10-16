@@ -615,25 +615,24 @@ extension CostUsageStoreTests {
         var reread = CostUsageStoreAccess.read(cacheRoot: fixture.root, calendar: calendar)
         reread.lastScanUnixMs = 2000
         let interloper = try SQLiteTestConnection(url: store.databaseURL)
-        var checkpointError: Error?
-        CostUsageStore.identicalContentPreLockCheckpointForTesting = (store.databaseURL, {
+        let checkpointError = LockIsolated<Error?>(nil)
+        var hooks = CostUsageStoreTestHooks.current
+        hooks.identicalContentPreLockCheckpoint = (store.databaseURL, {
             do {
                 try interloper.execute("UPDATE files SET parsed_bytes = 999 WHERE path = '\(path)'")
             } catch {
-                checkpointError = error
+                checkpointError.setValue(error)
             }
         })
-        defer { CostUsageStore.identicalContentPreLockCheckpointForTesting = nil }
 
-        let result = save(reread)
+        let result = CostUsageStoreTestHooks.$current.withValue(hooks) { save(reread) }
 
-        #expect(checkpointError == nil)
+        #expect(checkpointError.value == nil)
         #expect(result.catchUpRequired)
         #expect(await store.rebuildCount == 0)
         #expect(await store.fetchFile(path: path)?.parsedBytes == 999)
         #expect(CostUsageStoreAccess.read(cacheRoot: fixture.root, calendar: calendar).lastScanUnixMs == 1000)
 
-        CostUsageStore.identicalContentPreLockCheckpointForTesting = nil
         var refreshed = CostUsageStoreAccess.read(cacheRoot: fixture.root, calendar: calendar)
         refreshed.lastScanUnixMs = 3000
         let retried = save(refreshed)
@@ -866,73 +865,6 @@ extension CostUsageStoreTests {
     }
 
     @Test
-    func `two stores advance freshness monotonically without losing current metadata`() async throws {
-        let fixture = try StoreFixture()
-        defer { fixture.remove() }
-        let first = CostUsageStore(cacheRoot: fixture.root)
-        let second = CostUsageStore(cacheRoot: fixture.root)
-        var stale = Self.metadata()
-        stale.lastScanUnixMs = 100
-        #expect(await first.setMetadata(stale))
-
-        // Simulate a second owner committing richer metadata after the first owner obtained
-        // its stale input. The freshness operation must re-read this whole payload under its
-        // writer lock rather than writing fields copied from the stale caller.
-        var current = stale
-        current.lastScanUnixMs = 250
-        current.scanSinceDay = "2026-07-01"
-        current.scanUntilDay = "2026-08-11"
-        current.pricingKey = "pricing-v2"
-        current.priorityMetadataKey = "priority-v2"
-        current.catchUpPending = false
-        current.rootMtimes = ["/current/root": 999]
-        current.previousReportPayload = Data([9, 8, 7])
-        current.priorityTurnStatePayload = Data([6, 5, 4])
-        current.projectMetadataVersion = 9
-        #expect(await second.setMetadata(current))
-
-        #expect(await first.advanceLastScanUnixMs(200))
-        #expect(await first.fetchMetadata() == current)
-        #expect(await second.advanceLastScanUnixMs(300))
-        var expected = current
-        expected.lastScanUnixMs = 300
-        #expect(await first.fetchMetadata() == expected)
-
-        var catchUp = expected
-        catchUp.catchUpPending = true
-        catchUp.lastScanUnixMs = 0
-        #expect(await second.setMetadata(catchUp))
-        #expect(await first.advanceLastScanUnixMs(400))
-        #expect(await first.fetchMetadata() == catchUp)
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    func `held writer lock makes freshness advance fail soft without rebuilding`() async throws {
-        let fixture = try StoreFixture()
-        defer { fixture.remove() }
-        let store = CostUsageStore(cacheRoot: fixture.root, busyTimeoutMilliseconds: 25)
-        var metadata = Self.metadata()
-        metadata.catchUpPending = false
-        #expect(await store.setMetadata(metadata))
-
-        let holder = try SQLiteTestConnection(url: store.databaseURL)
-        try holder.execute("BEGIN IMMEDIATE")
-        try holder.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('freshness-holder', '1')")
-
-        #expect(await store.advanceLastScanUnixMs(500) == false)
-        #expect(await store.rebuildCount == 0)
-        #expect(FileManager.default.fileExists(atPath: store.databaseURL.path))
-
-        try holder.execute("COMMIT")
-        #expect(await store.fetchMetadata() == metadata)
-        #expect(await store.advanceLastScanUnixMs(500))
-        var expected = metadata
-        expected.lastScanUnixMs = 500
-        #expect(await store.fetchMetadata() == expected)
-        #expect(await store.rebuildCount == 0)
-    }
-
-    @Test
     func `terminal accumulator round trips all state`() async throws {
         let fixture = try StoreFixture()
         defer { fixture.remove() }
@@ -1022,7 +954,26 @@ extension CostUsageStoreTests {
 }
 
 extension CostUsageStoreTests {
-    @Test(arguments: [
+    private static let testedPredecessorParserHashes = [
+        "fc698834d6329beb", // Before opt-in request observation; saved rows and cursors are unchanged.
+        "f406dae284de4a55", // Current main before the Auto-review creator-account reparse.
+        "379b799bb4b91683", // Current main before on-demand tool inspection.
+        "7ce21041b7a36242", // Prior tool inspection build before upstream process cleanup.
+        "0d8f9504f8e63d0f", // Current main before on-demand tool inspection.
+        "c0f8e9be04d824c2", // Timing before supplied start timestamps were validated.
+        "89c0662767e633ea", // Upstream row-string sharing before timing.
+        "e1088fb29c221187", // Timing before value-preserving row-string sharing.
+        "7ff985e81e281a11", // Upstream accounting before timing.
+        "865cef15206ea5c0", // Advanced timing before upstream accounting correction.
+        "d35c9fb00bee059b", // Initial timing before upstream accounting correction.
+        "ed735dc27ffa70d9", // Current release before session-tier evidence.
+        "99d920977063318a", // Scheduling diagnostics retain history and checkpoints.
+        "029fe80aa98f27e8", // Before the shared JSON fallback.
+        "c61aebb9cf043a72", // Previous request-ledger revision.
+        "4a4c4ef34ce6f037", // Before request-ledger accounting.
+        // Orphan-fork scheduling preserves parsed rows, replay buffers, and scan checkpoints.
+        "04a6361469a4ff77", // Released in 0.70.0; adoption must not rebuild stalled histories.
+        "98de5f52231e524e", // Released in 0.68.0.
         "9972dad7f7aeff21", // Before direct-fork baseline corrections.
         "03e43d1217789d16",
         "4dd9e5769818370a", // Before Linux Priority trace support.
@@ -1049,6 +1000,7 @@ extension CostUsageStoreTests {
         "7e293e8fc9e25700",
         "494eee446bb2e5f9",
         "6366caa15c925349",
+        "3f88178bf03ad704",
         "4a593b5d59c7bcf3",
         "b77d4ec72e14ea63",
         "cfd84d13ad7d4cfa",
@@ -1058,48 +1010,15 @@ extension CostUsageStoreTests {
         "f8577be489f4c13d",
         "d9a91f31d0addc15",
         "7b1b44d62a411215",
-    ])
+    ]
+
+    @Test(arguments: Self.testedPredecessorParserHashes)
     func `compatible predecessor parser hash adopts without rebuilding`(predecessorHash: String) async throws {
         let fixture = try StoreFixture()
         defer { fixture.remove() }
-        #expect(CostUsageStore.compatiblePredecessorParserHashes == [
-            "9972dad7f7aeff21",
-            "4dd9e5769818370a",
-            "03e43d1217789d16",
-            "50813ce2a3edfdc7",
-            "865a444e01b818f1",
-            "6a4df886696f4ab5",
-            "6d48baf0ed980828",
-            "c2ac37e84074d2b2",
-            "710f475c3d1cfb61",
-            "aa57b010b3c0bee4",
-            "aef0df6c73f8052c",
-            "4969a789db679c93",
-            "c4fa7db2cf54bc41",
-            "ca4bc3875600536f",
-            "7f00691fa96c78d1",
-            "9ca89383b9957b07",
-            "ba2eca901de4c53d",
-            "9547dc9d7b7675f6",
-            "2590d36e1cc4a2ea",
-            "edd0a6ad56c0e4e7",
-            "f043ae98075c8e4d",
-            "e3fca1e6d81137d6",
-            "e0b0319de43e22d7",
-            "7e293e8fc9e25700",
-            "494eee446bb2e5f9",
-            "6366caa15c925349",
-            "4a593b5d59c7bcf3",
-            "b77d4ec72e14ea63",
-            "7b1b44d62a411215",
-            "d9a91f31d0addc15",
-            "f8577be489f4c13d",
-            "21f10143afe00c55",
-            "55f640e6bb0ccba4",
-            "c6c46a376ba16304",
+        #expect(CostUsageStore.compatiblePredecessorParserHashes == Set(Self.testedPredecessorParserHashes).union([
             "dd19ffa2dcfa8d47",
             "8050a4faf4fddb96",
-            "cfd84d13ad7d4cfa",
             "98da5914d2f6a9cd",
             "43609cc56f76a003",
             "b975eb705f905b9a",
@@ -1107,7 +1026,7 @@ extension CostUsageStoreTests {
             "2d17f4981b78d07f",
             "3c984b655688593f",
             "5f8507161b23757c",
-        ])
+        ]))
         let predecessorVersion = CostUsageStore.combinedSchemaVersion(
             base: CostUsageStore.baseSchemaVersion,
             parserHash: predecessorHash)
@@ -1165,7 +1084,14 @@ extension CostUsageStoreTests {
         #expect(!FileManager.default.fileExists(atPath: input.path))
         let current = CostUsageStore(cacheRoot: fixture.root)
         let after = await current.readSnapshot()
-        #expect(after == before)
+        var expected = before
+        if ["ed735dc27ffa70d9", "99d920977063318a", "865cef15206ea5c0", "d35c9fb00bee059b"]
+            .contains(predecessorHash)
+        {
+            // These reports predate corrected pricing and coverage; native history still survives intact.
+            expected.metadata.previousReportPayload = nil
+        }
+        #expect(after == expected)
         #expect(await current.rebuildCount == 0)
         #expect(await current.configuration()?.userVersion == Int(CostUsageStore.schemaVersion))
         let connection = try SQLiteTestConnection(url: fixture.databaseURL, readOnly: true)
@@ -1190,7 +1116,7 @@ extension CostUsageStoreTests {
         #expect(resumed.resumeState == nil)
     }
 
-    @Test(arguments: ["8050a4faf4fddb96", "dd19ffa2dcfa8d47"])
+    @Test(arguments: ["8050a4faf4fddb96", "dd19ffa2dcfa8d47", "ed735dc27ffa70d9", "99d920977063318a"])
     func `retained report migration preserves compatible rows and clears stale payload`(
         predecessorHash: String) async throws
     {

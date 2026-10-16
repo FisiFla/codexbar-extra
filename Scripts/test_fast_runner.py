@@ -86,6 +86,51 @@ class NativeTestRunnerTests(unittest.TestCase):
         result = self.run_command(["bash", str(ROOT / "Scripts/test_fast.sh"), "--filter", "Example"])
         self.assertEqual(result.returncode, 23, result.stderr)
 
+    def test_make_does_not_launch_swift_when_environment_setup_fails(self):
+        for target in ["test-tty", "test-live"]:
+            with self.subTest(target=target):
+                self.capture.unlink(missing_ok=True)
+                # This fixture directory intentionally has no Scripts/test_environment.sh.
+                result = self.run_command([
+                    "make", "-s", "-C", str(self.directory), "-f", str(ROOT / "Makefile"), target,
+                ])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.capture.exists())
+
+    def test_scrubber_preserves_explicit_build_search_paths(self):
+        for name in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+                     "LIBRARY_PATH", "PKG_CONFIG_PATH"]:
+            with self.subTest(name=name):
+                # Assign inside Bash: macOS can strip DYLD variables when launching system binaries.
+                probe = (f"export {name}=synthetic-build-path\n"
+                         "source Scripts/test_environment.sh\n"
+                         f'[[ "${{{name}:-}}" == synthetic-build-path ]]')
+                result = self.run_command(["bash", "-c", probe])
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_native_runners_use_a_private_home_removed_afterward(self):
+        binary = self.directory / "swift"
+        binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "home = os.environ['HOME']\n"
+            "Path(os.environ['NATIVE_TEST_CAPTURE']).write_text(json.dumps("
+            "{'home': home, 'fixed': os.environ.get('CFFIXED_USER_HOME'), 'existed': os.path.isdir(home)}))\n",
+            encoding="utf-8",
+        )
+        for command in [["bash", "Scripts/test_fast.sh", "--filter", "Example"],
+                        ["make", "-s", "test-fast"], ["make", "-s", "test-skip-build"]]:
+            with self.subTest(command=command):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_command(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                captured = json.loads(self.capture.read_text())
+                self.assertEqual(captured["fixed"], captured["home"])
+                self.assertNotEqual(captured["home"], self.environment["HOME"])
+                self.assertTrue(captured["existed"])
+                self.assertFalse(Path(captured["home"]).exists())
+
     def test_invalid_deadline_fails_before_launch(self):
         for value in ["0", "-1", "invalid"]:
             with self.subTest(value=value):
@@ -115,6 +160,51 @@ class NativeTestRunnerTests(unittest.TestCase):
                 self.assertEqual(environment["CODEXBAR_TEST_SESSION_FILE_ISOLATION"], "1")
                 self.assertIsNone(environment["CODEXBAR_TEST_CODEX_FILE_FIXTURES"])
 
+    def test_all_test_entry_points_scrub_secret_names(self):
+        sensitive_names = [
+            "CODEXBAR_TEST_SENTINEL_SECRET", "service_token", "Api_Key", "clientSECRET",
+            "PASSWORD", "test_Passwd", "a_webhook_url", "CREDENTIAL_path", "CookieJar",
+            "PRIVATE_FILE", "service_PAT", "CODEXBAR_API_KEY", "CODEXBAR_TEST_COOKIE",
+        ]
+        # The fake Swift process records only booleans, never inherited values.
+        binary = self.directory / "swift"
+        binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            f"names = {sensitive_names!r}\n"
+            "Path(os.environ['NATIVE_TEST_CAPTURE']).write_text(json.dumps({\n"
+            "'secrets_absent': all(name not in os.environ for name in names),\n"
+            "'ci_preserved': os.environ.get('CI') == 'true',\n"
+            "'flag_preserved': os.environ.get('CODEXBAR_DISABLE_KEYCHAIN_ACCESS') == '1',\n"
+            "'local_dependency_preserved': os.environ.get('CODEXBAR_USE_LOCAL_SWEETCOOKIEKIT') == '1',\n"
+            "}))\n"
+            "if sys.argv[1:] == ['test', 'list']: print('CodexBarTests.FixtureTests/example()')\n",
+            encoding="utf-8",
+        )
+        self.environment.update(dict.fromkeys(sensitive_names, "sentinel-harness-secret"))
+        self.environment.update(CI="true", CODEXBAR_DISABLE_KEYCHAIN_ACCESS="1",
+                                CODEXBAR_USE_LOCAL_SWEETCOOKIEKIT="1")
+        commands = [
+            ["bash", "Scripts/test.sh"], ["bash", "Scripts/test_fast.sh"],
+            ["bash", "Scripts/test.sh", "--direct-workers", "4"],
+            ["bash", "Scripts/test-plugin-engines.sh"],
+            *[["make", "-s", target] for target in
+              ["test", "test-fast", "test-skip-build", "test-tty", "test-live"]],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.run_command(command)
+                # The synthetic compiler cannot supply a direct runtime; CI must fail closed.
+                expected_code = 2 if "--direct-workers" in command else 0
+                self.assertEqual(result.returncode, expected_code, result.stderr)
+                if expected_code:
+                    self.assertIn("Direct mode refused on CI:", result.stderr)
+                self.assertEqual(json.loads(self.capture.read_text()), {
+                    "secrets_absent": True, "ci_preserved": True, "flag_preserved": True,
+                    "local_dependency_preserved": True,
+                })
+
 
 class TestGroupTests(unittest.TestCase):
     def test_expensive_suites_keep_their_own_deadline_without_losing_selections(self):
@@ -128,9 +218,20 @@ class TestGroupTests(unittest.TestCase):
                 for group in groups:
                     if any(item.suite_name in ISOLATED_SUITES for item in group):
                         self.assertEqual(len(group), 1)
-                sharded = [item for shard in range(2)
-                           for group in shard_groups(groups, shard, 2) for item in group]
-                self.assertCountEqual(sharded, selections)
+                for count in [2, 3]:
+                    sharded = [item for shard in range(count)
+                               for group in shard_groups(groups, shard, count) for item in group]
+                    self.assertCountEqual(sharded, selections)
+
+    def test_shards_balance_groups_and_preserve_each_selection_once(self):
+        for shard_count in [2, 3]:
+            for group_count in [0, 1, 2, 3, 4, 140, 201, 202]:
+                with self.subTest(shard_count=shard_count, group_count=group_count):
+                    groups = [[TestSelection(f"Fixture{i}", f"^Fixture{i}/")] for i in range(group_count)]
+                    shards = [shard_groups(groups, index, shard_count) for index in range(shard_count)]
+                    counts = [len(shard) for shard in shards]
+                    self.assertLessEqual(max(counts) - min(counts), 1)
+                    self.assertCountEqual([group for shard in shards for group in shard], groups)
 
 
 if __name__ == "__main__":

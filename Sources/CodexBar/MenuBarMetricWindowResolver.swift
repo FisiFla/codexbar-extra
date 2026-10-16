@@ -23,6 +23,12 @@ enum MenuBarMetricWindowResolver {
         {
         case let .resolved(window):
             return window
+        case let .automaticCandidates(windows):
+            return AutomaticQuotaSelection.select(
+                candidates: AutomaticQuotaSelection.candidates(windows: windows, snapshot: snapshot),
+                provider: provider,
+                now: now,
+                dataConfidence: snapshot.dataConfidence)?.window
         case .unhandled:
             break
         }
@@ -43,9 +49,11 @@ enum MenuBarMetricWindowResolver {
         case .average:
             return Self.averageWindow(snapshot: snapshot, supportsAverage: supportsAverage)
         case .automatic:
-            return Self.automaticWindow(
-                presentation: presentation,
-                snapshot: snapshot)
+            return AutomaticQuotaSelection.select(
+                candidates: AutomaticQuotaSelection.candidates(snapshot: snapshot),
+                provider: provider,
+                now: now,
+                dataConfidence: snapshot.dataConfidence)?.window
         }
     }
 
@@ -63,27 +71,11 @@ enum MenuBarMetricWindowResolver {
               let primary = snapshot.primary,
               let secondary = snapshot.secondary
         else {
-            return snapshot.primary ?? snapshot.secondary
+            return snapshot.primary ?? snapshot.secondary ?? snapshot.tertiary
         }
 
         let usedPercent = (primary.usedPercent + secondary.usedPercent) / 2
         return RateWindow(usedPercent: usedPercent, windowMinutes: nil, resetsAt: nil, resetDescription: nil)
-    }
-
-    private static func automaticWindow(
-        presentation: ProviderUsagePresentation,
-        snapshot: UsageSnapshot)
-        -> RateWindow?
-    {
-        if presentation.automaticSelectionPrioritizesExhaustedWindow,
-           let exhausted = exhaustedWindow(
-               primary: snapshot.primary,
-               secondary: snapshot.secondary,
-               tertiary: snapshot.tertiary)
-        {
-            return exhausted
-        }
-        return snapshot.primary ?? snapshot.secondary
     }
 
     private static let antigravityQuotaSummaryWindowIDPrefix = "antigravity-quota-summary-"
@@ -171,34 +163,15 @@ enum MenuBarMetricWindowResolver {
         return family
     }
 
-    private static func exhaustedWindow(
-        primary: RateWindow?,
-        secondary: RateWindow?,
-        tertiary: RateWindow?)
-        -> RateWindow?
-    {
-        [primary, secondary, tertiary]
-            .compactMap(\.self)
-            .first { $0.usedPercent >= 100 }
-    }
-
     /// The Claude spend-limit window when the account only exposes an enterprise/extra-usage spend limit
-    /// and has no real session/weekly quota lanes (`primary` nil, a `.spendLimit` window, or an explicitly
-    /// marked placeholder). Lets the automatic and combined metrics surface the spend limit instead of an empty
+    /// and has no real session/weekly quota lanes (`primary` nil or an explicitly marked placeholder). Lets the
+    /// automatic and combined metrics surface the spend limit instead of an empty
     /// or 0% placeholder lane. Returns nil for accounts that expose genuine quota lanes.
     static func claudeSpendLimitWindow(snapshot: UsageSnapshot) -> RateWindow? {
-        let presentation = ProviderDescriptorRegistry.descriptor(for: .claude).presentation
-        switch presentation.menuBarWindow(context: ProviderMenuBarWindowContext(
-            metric: .automatic,
-            snapshot: snapshot,
-            supportsAverage: false,
-            prioritizesExhaustedQuotas: false,
-            now: .now))
-        {
-        case let .resolved(window):
-            return window
-        case .unhandled:
-            return nil
-        }
+        guard snapshot.primary == nil || snapshot.primary?.isSyntheticPlaceholder == true,
+              snapshot.secondary == nil, snapshot.tertiary == nil,
+              snapshot.claudeScopedWeeklyWindow == nil
+        else { return nil }
+        return snapshot.claudeMonthlySpendWindow?.window
     }
 }

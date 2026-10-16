@@ -45,6 +45,21 @@ public enum CostUsageScanExecutor {
         }
     }
 
+    final class LockedState<State>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var state: State
+
+        init(_ state: State) {
+            self.state = state
+        }
+
+        func withLock<Result>(_ body: (inout State) throws -> Result) rethrows -> Result {
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            return try body(&self.state)
+        }
+    }
+
     private final class RunState<Value: Sendable>: @unchecked Sendable {
         private enum Phase {
             case initial
@@ -145,6 +160,9 @@ public enum CostUsageScanExecutor {
         _ work: @escaping @Sendable (_ checkCancellation: @escaping @Sendable () throws -> Void) throws -> T)
         async throws -> T
     {
+        #if DEBUG
+        let storeTestHooks = CostUsageStoreTestHooks.current
+        #endif
         let state = RunState<T>()
         let checkCancellation: @Sendable () throws -> Void = {
             try state.checkCancellation()
@@ -154,7 +172,15 @@ public enum CostUsageScanExecutor {
                 guard state.install(continuation) else { return }
                 queue.async {
                     guard state.begin() else { return }
-                    state.complete(with: Result { try work(checkCancellation) })
+                    state.complete(with: Result {
+                        #if DEBUG
+                        try CostUsageStoreTestHooks.$current.withValue(storeTestHooks) {
+                            try work(checkCancellation)
+                        }
+                        #else
+                        try work(checkCancellation)
+                        #endif
+                    })
                 }
             }
         } onCancel: {

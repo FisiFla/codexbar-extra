@@ -5,12 +5,16 @@ struct ProviderPayload: Encodable {
     let provider: String
     let account: String?
     let cacheAccountKey: String?
+    /// Transport-private metadata; never encoded in the usage contract.
+    var dashboardAccount: DashboardUsageAccount?
+    var dashboardAccountsIncomplete = false
     let version: String?
     let source: String
     let status: ProviderStatusPayload?
     let usage: UsageSnapshot?
     let rateWindowLabels: ProviderWindowLabelsPayload?
     let credits: CreditsSnapshot?
+    let resetCredits: ProviderResetCreditsPayload?
     let antigravityPlanInfo: AntigravityPlanInfoSummary?
     let openaiDashboard: OpenAIDashboardSnapshot?
     let diagnostic: String?
@@ -26,6 +30,7 @@ struct ProviderPayload: Encodable {
         case usage
         case rateWindowLabels
         case credits
+        case resetCredits
         case antigravityPlanInfo
         case openaiDashboard
         case diagnostic
@@ -88,6 +93,7 @@ struct ProviderPayload: Encodable {
         self.usage = usage
         self.rateWindowLabels = Self.makeRateWindowLabels(providerID: providerID, usage: usage)
         self.credits = credits
+        self.resetCredits = usage?.codexResetCredits.map { ProviderResetCreditsPayload($0) }
         self.antigravityPlanInfo = antigravityPlanInfo
         self.openaiDashboard = openaiDashboard
         self.diagnostic = diagnostic
@@ -107,6 +113,17 @@ struct ProviderPayload: Encodable {
             primary: usage.primary == nil ? nil : labels.primary,
             secondary: usage.secondary == nil ? nil : labels.secondary,
             tertiary: usage.tertiary == nil ? nil : labels.tertiary)
+    }
+}
+
+struct ProviderResetCreditsPayload: Encodable {
+    let available: Int
+    let nextExpiresAt: Date?
+
+    init(_ snapshot: CodexRateLimitResetCreditsSnapshot, now: Date = Date()) {
+        let inventory = snapshot.availableInventory(at: now)
+        self.available = inventory.count
+        self.nextExpiresAt = inventory.nextExpiringCredit?.expiresAt
     }
 }
 

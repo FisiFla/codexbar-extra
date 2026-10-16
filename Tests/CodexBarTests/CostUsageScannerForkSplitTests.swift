@@ -3,13 +3,14 @@ import Foundation
 import Testing
 @testable import CodexBarCore
 
+/// Sol fixtures are dated after the 2026-08-21 repricing, so undated expected costs use the same rates.
 struct CostUsageScannerForkSplitTests {
     @Test
     func `source verified short fork requests preserve pricing and persistence`() async throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
 
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
@@ -115,7 +116,7 @@ struct CostUsageScannerForkSplitTests {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
 
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
@@ -213,7 +214,7 @@ struct CostUsageScannerForkSplitTests {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
 
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
@@ -271,7 +272,7 @@ struct CostUsageScannerForkSplitTests {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
 
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.4-mini"
@@ -321,7 +322,7 @@ struct CostUsageScannerForkSplitTests {
 
     @Test
     func `exact codex pricing rows retain persisted order`() {
-        let dayKey = "2026-08-11"
+        let dayKey = "2026-09-11"
         let model = "gpt-5.6-sol"
         let later = CostUsageScanner.CodexUsageRow(
             day: dayKey,
@@ -358,16 +359,17 @@ struct CostUsageScannerForkSplitTests {
     func `source verified standard child retains pricing despite a later fast parent timestamp`() throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
+        let timestamp = Int64(day.timeIntervalSince1970 * 1000)
         let parent = CostUsageScanner.CodexUsageRow(
             day: dayKey,
             model: model,
             turnID: "fast-parent",
             eventIndex: 0,
-            timestampUnixMs: 2,
+            timestampUnixMs: timestamp + 2,
             input: 100_000,
             cached: 0,
             output: 10,
@@ -377,7 +379,7 @@ struct CostUsageScannerForkSplitTests {
             model: model,
             turnID: "standard-child",
             eventIndex: 1,
-            timestampUnixMs: 1,
+            timestampUnixMs: timestamp + 1,
             input: 100_000,
             cached: 0,
             output: 10,
@@ -432,16 +434,17 @@ struct CostUsageScannerForkSplitTests {
     func `zero owned fork rows use an empty suffix without hiding parent cost`() throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
+        let timestamp = Int64(day.timeIntervalSince1970 * 1000)
         let parentRow = CostUsageScanner.CodexUsageRow(
             day: dayKey,
             model: model,
             turnID: "parent",
             eventIndex: 0,
-            timestampUnixMs: 1,
+            timestampUnixMs: timestamp + 1,
             input: 300_000,
             cached: 0,
             output: 10)
@@ -479,10 +482,10 @@ struct CostUsageScannerForkSplitTests {
     }
 
     @Test
-    func `exact rows require complete request pricing coverage`() throws {
+    func `exact rows price only requests with complete pricing`() throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
@@ -516,8 +519,16 @@ struct CostUsageScannerForkSplitTests {
         cache.files = ["/partial-pricing.jsonl": usage]
         cache.days = usage.days
         let report = CostUsageScanner.buildCodexReportFromCache(cache: cache, range: range)
-        #expect(report.data.first?.modelBreakdowns?.first?.costUSD == nil)
-        #expect(report.summary?.totalCostUSD == nil)
+        let pricedCost = try #require(CostUsagePricing.codexCostUSD(
+            model: model,
+            inputTokens: 100_000,
+            cachedInputTokens: 0,
+            outputTokens: 10))
+        // The unpriced request is neither priced at list rates nor folded into an aggregate estimate.
+        #expect(abs((report.data.first?.modelBreakdowns?.first?.costUSD ?? -1) - pricedCost) < 1e-12)
+        #expect(abs((report.summary?.totalCostUSD ?? -1) - pricedCost) < 1e-12)
+        #expect(report.data.first?.unpricedRequestCount == 1)
+        #expect(report.data.first?.pricedRequestCount == 1)
 
         let authoritativeZero = CostUsageScanner.CodexUsageRow(
             day: dayKey,
@@ -538,11 +549,6 @@ struct CostUsageScannerForkSplitTests {
         cache.files = ["/complete-pricing.jsonl": completeUsage]
         cache.days = completeUsage.days
         let complete = CostUsageScanner.buildCodexReportFromCache(cache: cache, range: range)
-        let pricedCost = try #require(CostUsagePricing.codexCostUSD(
-            model: model,
-            inputTokens: 100_000,
-            cachedInputTokens: 0,
-            outputTokens: 10))
         #expect(abs((complete.summary?.totalCostUSD ?? 0) - (pricedCost + 42)) < 1e-12)
     }
 
@@ -550,7 +556,7 @@ struct CostUsageScannerForkSplitTests {
     func `project primary report propagates unresolved same model ownership`() throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let model = "gpt-5.6-sol"
@@ -607,13 +613,17 @@ struct CostUsageScannerForkSplitTests {
         #expect(project.modelBreakdowns?.first?.costUSD == nil)
         #expect(project.totalCostUSD == nil)
         #expect(project.totalTokens == 700_020)
+        let preparedProject = try #require(CostUsageScanner.buildCodexReportProjectionsFromCache(
+            cache: cache,
+            range: range).projects.first)
+        #expect(preparedProject == project)
     }
 
     @Test
     func `project primary report keeps priced models beside explicitly unpriced models`() throws {
         let environment = try CostUsageTestEnvironment()
         defer { environment.cleanup() }
-        let day = try environment.makeLocalNoon(year: 2026, month: 8, day: 11)
+        let day = try environment.makeLocalNoon(year: 2026, month: 9, day: 11)
         let range = CostUsageScanner.CostUsageDayRange(since: day, until: day)
         let dayKey = range.sinceKey
         let pricedModel = "gpt-5.6-sol"

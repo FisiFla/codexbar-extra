@@ -14,6 +14,7 @@ extension SettingsStore {
         _ = self.sessionQuotaNotificationsEnabled
         _ = self.quotaWarningNotificationsEnabled
         _ = self.predictivePaceWarningNotificationsEnabled
+        _ = self.limitResetNotificationsEnabled
         _ = self.quotaWarningThresholds
         _ = self.quotaWarningThresholds(.session)
         _ = self.quotaWarningThresholds(.weekly)
@@ -28,11 +29,14 @@ extension SettingsStore {
         _ = self.usageBarsShowUsed
         _ = self.resetTimesShowAbsolute
         _ = self.providerChangelogLinksEnabled
+        _ = self.highlightMenuCardsOnHover
         _ = self.menuBarShowsBrandIconWithPercent
         _ = self.menuBarHidesCritters
         _ = self.menuBarColorPace
+        _ = self.menuBarPaceReservePositive
+        _ = self.menuBarColorByProvider
         _ = self.menuBarHighContrastOnInactiveDisplays
-        _ = self.menuBarShowsHighestUsage
+        _ = self.unifiedIconSource
         _ = self.menuBarDisplayMode
         _ = self.menuBarShowsResetTimeWhenExhausted
         _ = self.kiroMenuBarDisplayMode
@@ -42,6 +46,7 @@ extension SettingsStore {
         _ = self.menuBarMetricPreferencesRaw
         _ = self.menuBarLayout
         _ = self.menuBarLayoutOverrides
+        _ = self.menuBarLayoutMonospacedDigits
         _ = self.menuBarLayoutSize
         _ = self.menuBarLayoutGap
         _ = self.menuBarLayoutVerticalAdjustment
@@ -98,6 +103,7 @@ extension SettingsStore {
         _ = self.augmentCookieSource
         _ = self.ampCookieSource
         _ = self.t3ChatCookieSource
+        _ = self.museCookieSource
         _ = self.zoomMateCookieSource
         _ = self.ollamaCookieSource
         _ = self.mergeIcons
@@ -124,6 +130,7 @@ extension SettingsStore {
         _ = self.augmentCookieHeader
         _ = self.ampCookieHeader
         _ = self.t3ChatCookieHeader
+        _ = self.museCookieHeader
         _ = self.zoomMateCookieHeader
         _ = self.ollamaCookieHeader
         _ = self.copilotAPIToken

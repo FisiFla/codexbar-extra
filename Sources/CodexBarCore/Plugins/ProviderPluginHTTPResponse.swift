@@ -14,6 +14,11 @@ enum ProviderPluginHTTPResponse {
         let primary: URLRequest
         let optional: URLRequest?
         let retryPolicy: ProviderHTTPRetryPolicy
+        let optionalBudget: Duration?
+        let cookieJar: ProviderPluginCookieJar?
+        let primarySession: String?
+        let optionalSession: String?
+        let hidesResponseCookies: Bool
 
         init(
             rawURL: String,
@@ -22,8 +27,24 @@ enum ProviderPluginHTTPResponse {
             settings: [String: String],
             secrets: [String: String],
             manifest: ProviderPluginManifest,
-            enforcesUserResponsePolicy: Bool) throws
+            enforcesUserResponsePolicy: Bool,
+            redactionValues: ProviderPluginRedactionValues? = nil,
+            cookieJar: ProviderPluginCookieJar? = nil) throws
         {
+            self.cookieJar = cookieJar
+            self.hidesResponseCookies = manifest.cookiePolicy?.selectedProfile == true
+            self.primarySession = options["cookieSession"] as? String
+            let optionalOptions = (options["optionalRequest"] as? [String: Any])?["options"] as? [String: Any]
+            self.optionalSession = optionalOptions?["cookieSession"] as? String
+            Self.redactForm(options, into: redactionValues)
+            if let budget = options["optionalBudgetSeconds"] {
+                guard let number = budget as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue.isFinite, (0...5).contains(number.doubleValue)
+                else { throw ProviderPluginError.http("optionalBudgetSeconds must be a number from 0 through 5") }
+                self.optionalBudget = .seconds(number.doubleValue)
+            } else {
+                self.optionalBudget = nil
+            }
             self.retryPolicy = try ProviderPluginHTTPResponse.retryPolicy(
                 options["retryPolicy"].map(JSONProviderPluginValue.init))
             self.primary = try ProviderPluginHTTPResponse.request(
@@ -33,23 +54,50 @@ enum ProviderPluginHTTPResponse {
                 settings: settings,
                 secrets: secrets,
                 manifest: manifest,
-                enforcesUserResponsePolicy: enforcesUserResponsePolicy)
-            if let optionalURL = options["optionalURL"] {
-                guard method == "GET", let optionalURL = optionalURL as? String else {
-                    throw ProviderPluginError.http("optionalURL requires a string URL and GET")
+                enforcesUserResponsePolicy: enforcesUserResponsePolicy,
+                cookieJar: cookieJar)
+            if let optional = options["optionalRequest"] {
+                guard method == "GET", let value = optional as? [String: Any],
+                      let url = value["url"] as? String, let optionalMethod = value["method"] as? String,
+                      optionalMethod == "GET" || optionalMethod == "POST",
+                      let optionalOptions = value["options"] as? [String: Any]
+                else {
+                    throw ProviderPluginError.http("optional request requires a GET primary and GET or POST options")
                 }
+                Self.redactForm(optionalOptions, into: redactionValues)
                 var request = try ProviderPluginHTTPResponse.request(
-                    rawURL: optionalURL,
-                    options: options,
-                    method: "GET",
+                    rawURL: url,
+                    options: optionalOptions,
+                    method: optionalMethod,
                     settings: settings,
                     secrets: secrets,
                     manifest: manifest,
-                    enforcesUserResponsePolicy: enforcesUserResponsePolicy)
+                    enforcesUserResponsePolicy: enforcesUserResponsePolicy,
+                    cookieJar: cookieJar)
                 request.timeoutInterval = min(request.timeoutInterval, 5)
                 self.optional = request
             } else {
                 self.optional = nil
+            }
+        }
+
+        func transport(_ base: any ProviderHTTPTransport, session: String?) -> any ProviderHTTPTransport {
+            guard let cookieJar, let session else { return base }
+            return ProviderPluginCookieTransport(base: base, jar: cookieJar, id: session)
+        }
+
+        private static func redactForm(_ options: [String: Any], into redactionValues: ProviderPluginRedactionValues?) {
+            if let form = options["form"] as? [String: String] {
+                for value in form.values {
+                    redactionValues?.insert(value)
+                    redactionValues?.insert(FormURLEncoding.encode(value))
+                    if let json = try? JSONSerialization.data(
+                        withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes]),
+                        let escaped = String(data: json, encoding: .utf8)
+                    {
+                        redactionValues?.insert(String(escaped.dropFirst().dropLast()))
+                    }
+                }
             }
         }
     }
@@ -68,9 +116,9 @@ enum ProviderPluginHTTPResponse {
         responseSizeLimit: Int,
         enforcesUserResponsePolicy: Bool,
         rejectsNonSuccessResponses: Bool,
-        beforeAttempt: (@Sendable () async throws -> Void)?,
-        collectionBudget: Duration = .milliseconds(200)) async throws -> Payload
+        contextOptions: ProviderPluginContextOptions = .production) async throws -> Payload
     {
+        let collectionBudget = request.optionalBudget ?? contextOptions.optionalCollectionBudget
         let (starts, started) = AsyncStream<ContinuousClock.Instant>.makeStream(bufferingPolicy: .bufferingNewest(1))
         return try await withThrowingTaskGroup(of: Completion.self) { group in
             defer { group.cancelAll() }
@@ -78,10 +126,10 @@ enum ProviderPluginHTTPResponse {
                 defer { started.finish() }
                 return try await .primary(self.response(
                     for: request.primary,
-                    transport: transport,
+                    transport: request.transport(transport, session: request.primarySession),
                     retryPolicy: request.retryPolicy,
-                    beforeAttempt: {
-                        try await beforeAttempt?()
+                    beforeAttempt: { request in
+                        try await contextOptions.beforeHTTPAttempt?(request)
                         started.yield(.now)
                         started.finish()
                     }))
@@ -90,15 +138,15 @@ enum ProviderPluginHTTPResponse {
                 group.addTask {
                     await .optional(try? self.response(
                         for: optional,
-                        transport: transport,
+                        transport: request.transport(transport, session: request.optionalSession),
                         retryPolicy: .disabled,
-                        beforeAttempt: beforeAttempt))
+                        beforeAttempt: contextOptions.beforeHTTPAttempt))
                 }
                 group.addTask {
                     // Admission and scheduling waits belong to the overall fetch timeout.
                     var iterator = starts.makeAsyncIterator()
                     if let start = await iterator.next() {
-                        try await Task.sleep(until: start.advanced(by: collectionBudget), clock: .continuous)
+                        try await contextOptions.waitForOptionalDeadline(start, collectionBudget)
                     }
                     return .budgetExpired
                 }
@@ -128,7 +176,8 @@ enum ProviderPluginHTTPResponse {
                 responseSizeLimit: responseSizeLimit,
                 enforcesUserResponsePolicy: enforcesUserResponsePolicy,
                 rejectsNonSuccessResponses: rejectsNonSuccessResponses,
-                allowsRetry: request.retryPolicy.maxRetries == 0)
+                allowsRetry: request.retryPolicy.maxRetries == 0,
+                hidesResponseCookies: request.hidesResponseCookies)
             if request.optional != nil {
                 if let optional, (200..<300).contains(primary.statusCode) {
                     payload["optional"] = try? self.checkedPayload(
@@ -137,7 +186,8 @@ enum ProviderPluginHTTPResponse {
                         responseSizeLimit: responseSizeLimit,
                         enforcesUserResponsePolicy: enforcesUserResponsePolicy,
                         rejectsNonSuccessResponses: true,
-                        allowsRetry: false)
+                        allowsRetry: false,
+                        hidesResponseCookies: request.hidesResponseCookies)
                 }
                 if payload["optional"] == nil { payload["optional"] = NSNull() }
             }
@@ -152,7 +202,8 @@ enum ProviderPluginHTTPResponse {
         responseSizeLimit: Int,
         enforcesUserResponsePolicy: Bool,
         rejectsNonSuccessResponses: Bool,
-        allowsRetry: Bool) throws -> [String: Any]
+        allowsRetry: Bool,
+        hidesResponseCookies: Bool) throws -> [String: Any]
     {
         guard response.data.count <= responseSizeLimit else {
             throw ProviderPluginError.http("response exceeded the \(responseSizeLimit)-byte limit")
@@ -166,7 +217,7 @@ enum ProviderPluginHTTPResponse {
         {
             throw ProviderPluginError.http("compressed responses are not allowed")
         }
-        return try self.payload(response, wantsJSON: wantsJSON)
+        return try self.payload(response, wantsJSON: wantsJSON, hidesResponseCookies: hidesResponseCookies)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -177,7 +228,8 @@ enum ProviderPluginHTTPResponse {
         settings: [String: String],
         secrets: [String: String],
         manifest: ProviderPluginManifest,
-        enforcesUserResponsePolicy: Bool) throws -> URLRequest
+        enforcesUserResponsePolicy: Bool,
+        cookieJar: ProviderPluginCookieJar? = nil) throws -> URLRequest
     {
         guard let url = URL(string: rawURL) else {
             throw ProviderPluginError.networkPolicy("request URL is invalid")
@@ -194,12 +246,7 @@ enum ProviderPluginHTTPResponse {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = try Self.timeoutSeconds(options)
-        if method == "POST" {
-            guard let bodyJSON = options["bodyJSON"] as? String else {
-                throw ProviderPluginError.http("POST JSON body is missing")
-            }
-            request.httpBody = Data(bodyJSON.utf8)
-        }
+        if method == "POST" { request.httpBody = try Self.postBody(options) }
         if let headers = options["headers"] as? [String: Any] {
             for (name, rawValue) in headers {
                 guard let value = rawValue as? String else {
@@ -218,7 +265,9 @@ enum ProviderPluginHTTPResponse {
             request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         }
         if method == "POST" {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                options["form"] == nil ? "application/json" : "application/x-www-form-urlencoded",
+                forHTTPHeaderField: "Content-Type")
         }
         if let auth = manifest.auth {
             var secretName = auth.secret
@@ -243,7 +292,22 @@ enum ProviderPluginHTTPResponse {
             }
             request.setValue(value, forHTTPHeaderField: auth.header)
         }
+        try ProviderPluginCookieJar.authenticate(
+            &request, sessionID: options["cookieSession"], required: manifest.usesCookieJar, jar: cookieJar)
         return request
+    }
+
+    private static func postBody(_ options: [String: Any]) throws -> Data {
+        if let form = options["form"] {
+            guard let fields = form as? [String: String], options["bodyJSON"] == nil, options["body"] == nil else {
+                throw ProviderPluginError.http("POST form requires a string-to-string map and no JSON body")
+            }
+            return FormURLEncoding.body(fields)
+        }
+        guard let bodyJSON = options["bodyJSON"] as? String else {
+            throw ProviderPluginError.http("POST JSON body is missing")
+        }
+        return Data(bodyJSON.utf8)
     }
 
     private static func timeoutSeconds(_ options: [String: Any]) throws -> TimeInterval {
@@ -262,14 +326,14 @@ enum ProviderPluginHTTPResponse {
         for request: URLRequest,
         transport: any ProviderHTTPTransport,
         retryPolicy: ProviderHTTPRetryPolicy,
-        beforeAttempt: (@Sendable () async throws -> Void)? = nil) async throws -> ProviderHTTPResponse
+        beforeAttempt: (@Sendable (URLRequest) async throws -> Void)? = nil) async throws -> ProviderHTTPResponse
     {
         let bounded = ProviderHTTPTransportHandler { request in
             try Task.checkCancellation()
             let (starts, started) = AsyncStream<ContinuousClock.Instant>.makeStream()
             let task = Task {
                 defer { started.finish() }
-                try await beforeAttempt?()
+                try await beforeAttempt?(request)
                 try Task.checkCancellation()
                 started.yield(.now)
                 return try await transport.data(for: request)
@@ -321,6 +385,9 @@ enum ProviderPluginHTTPResponse {
         transportErrors: TransportErrors? = nil) -> [String: Any]
     {
         var payload: [String: Any] = ["message": message]
+        if let classified = error as? ProviderFetchClassifiedError {
+            payload["failureKind"] = classified.kind.rawValue
+        }
         if let failure = error as? StatusFailure {
             payload["status"] = failure.response.statusCode
             payload["transportClass"] = "http"
@@ -365,10 +432,14 @@ enum ProviderPluginHTTPResponse {
         }
     }
 
-    static func payload(_ response: ProviderHTTPResponse, wantsJSON: Bool) throws -> [String: Any] {
+    static func payload(_ response: ProviderHTTPResponse, wantsJSON: Bool, hidesResponseCookies: Bool = false)
+        throws -> [String: Any]
+    {
         var headers: [String: String] = [:]
         for (key, value) in response.response.allHeaderFields {
-            headers[String(describing: key).lowercased()] = String(describing: value)
+            let name = String(describing: key).lowercased()
+            if hidesResponseCookies, ["cookie", "set-cookie", "set-cookie2"].contains(name) { continue }
+            headers[name] = String(describing: value)
         }
         var payload: [String: Any] = [
             "status": response.statusCode,

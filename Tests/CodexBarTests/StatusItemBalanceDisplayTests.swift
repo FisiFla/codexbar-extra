@@ -96,7 +96,7 @@ struct StatusItemBalanceDisplayTests {
     }
 
     @Test
-    func `menu bar display text keeps open code subscription percentage`() {
+    func `menu bar display text prefers the most constrained open code subscription quota to zen balance`() {
         let settings = self.makeSettings(
             suiteName: "StatusItemBalanceDisplayTests-opencodego-subscription",
             provider: .opencodego)
@@ -118,7 +118,7 @@ struct StatusItemBalanceDisplayTests {
 
         let displayText = controller.menuBarDisplayText(for: .opencodego, snapshot: snapshot)
 
-        #expect(displayText == "12%")
+        #expect(displayText == "34%")
     }
 
     @Test
@@ -855,7 +855,7 @@ struct StatusItemBalanceDisplayTests {
         #expect(StatusItemController.statusItemAccessibilityTitle(isDebugApp: false) == "CodexBar")
     }
 
-    private func makeSettings(suiteName: String, provider: UsageProvider) -> SettingsStore {
+    func makeSettings(suiteName: String, provider: UsageProvider) -> SettingsStore {
         let settings = testSettingsStore(suiteName: suiteName, userDefaults: InMemoryUserDefaults())
         settings.statusChecksEnabled = false
         settings.refreshFrequency = .manual
@@ -871,7 +871,7 @@ struct StatusItemBalanceDisplayTests {
         return settings
     }
 
-    private func makeStoreAndController(settings: SettingsStore) -> (UsageStore, StatusItemController) {
+    func makeStoreAndController(settings: SettingsStore) -> (UsageStore, StatusItemController) {
         let fetcher = UsageFetcher()
         let store = UsageStore(fetcher: fetcher, browserDetection: BrowserDetection(cacheTTL: 0), settings: settings)
         let controller = StatusItemController(
@@ -941,6 +941,27 @@ struct StatusItemBalanceDisplayTests {
 }
 
 extension StatusItemBalanceDisplayTests {
+    @Test
+    func `merged selection shows the balance only plugin in legacy and stored layouts`() throws {
+        let settings = self.makeSettings(suiteName: #function, provider: .lithosai)
+        settings.menuBarDisplayMode = .percent
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = try UsageSnapshot(
+            primary: nil,
+            secondary: nil,
+            details: [ProviderDetailSection(title: "Billing", rows: [.init(label: "Balance", value: "$2.57")])],
+            updatedAt: Date())
+        store._setSnapshotForTesting(snapshot, provider: .lithosai)
+        let selected = controller.primaryProviderForUnifiedIcon()
+        #expect(selected == .lithosai)
+        #expect(controller.menuBarDisplayText(for: selected, snapshot: snapshot) == "$2.57")
+        let data = controller.menuBarLayoutRenderData(provider: selected, snapshot: snapshot, warningFlash: false)
+        #expect(data.balance == "$2.57")
+        #expect(data.automaticText == "$2.57")
+        #expect(data.automatic == nil)
+    }
+
     @Test
     func `Codex direct layout lanes suppress exhausted windows after reset in status item and preview`() {
         let settings = self.makeSettings(
@@ -1448,11 +1469,18 @@ extension StatusItemBalanceDisplayTests {
         }
     }
 
-    @Test
-    func `stored Poe icon and percent layout shows point balance in status item and preview`() {
+    @Test(arguments: [
+        (UsageProvider.poe, "Balance: 512 points", "512 points"),
+        (UsageProvider.typesafe, "Balance: $4.98", "$4.98"),
+    ])
+    func `stored balance-only icon and percent layout shows balance in status item and preview`(
+        provider: UsageProvider,
+        loginMethod: String,
+        balance: String)
+    {
         let settings = self.makeSettings(
-            suiteName: "StatusItemBalanceDisplayTests-poe-layout-balance",
-            provider: .poe)
+            suiteName: "StatusItemBalanceDisplayTests-\(provider.rawValue)-layout-balance",
+            provider: provider)
         let layout = MenuBarLayout(lines: [[.icon, .percent(window: .automatic)]])
         settings.setMenuBarLayout(layout, for: nil)
         let (store, controller) = self.makeStoreAndController(settings: settings)
@@ -1462,24 +1490,24 @@ extension StatusItemBalanceDisplayTests {
             secondary: nil,
             updatedAt: Date(),
             identity: ProviderIdentitySnapshot(
-                providerID: .poe,
+                providerID: provider.instanceID,
                 accountEmail: nil,
                 accountOrganization: nil,
-                loginMethod: "Balance: 512 points"))
+                loginMethod: loginMethod))
 
-        store._setSnapshotForTesting(snapshot, provider: .poe)
-        store._setErrorForTesting(nil, provider: .poe)
+        store._setSnapshotForTesting(snapshot, provider: provider)
+        store._setErrorForTesting(nil, provider: provider)
 
         let statusItemData = controller.menuBarLayoutRenderData(
-            provider: .poe,
+            provider: provider,
             snapshot: snapshot,
             warningFlash: false)
         let previewData = MenuBarLayoutPreview(
             layout: layout,
-            provider: .poe,
+            provider: provider,
             settings: settings,
             store: store)
-            .liveData(provider: .poe, snapshot: snapshot)
+            .liveData(provider: provider, snapshot: snapshot)
 
         for data in [statusItemData, previewData] {
             let rendered = MenuBarLayoutRenderer().render(
@@ -1496,8 +1524,8 @@ extension StatusItemBalanceDisplayTests {
                     now: Date()))
 
             #expect(data.automatic == nil)
-            #expect(data.automaticText == "512 points")
-            #expect(rendered.attributedTitle.string.hasSuffix("512 points"))
+            #expect(data.automaticText == balance)
+            #expect(rendered.attributedTitle.string.hasSuffix(balance))
         }
     }
 
@@ -1649,5 +1677,27 @@ extension StatusItemBalanceDisplayTests {
         #expect(statusItemData.automatic != nil)
         #expect(statusItemData.automaticText == nil)
         #expect(rendered.attributedTitle.string.hasSuffix("25%"))
+    }
+}
+
+extension StatusItemBalanceDisplayTests {
+    @Test(arguments: AppLanguage.allCases.filter { $0 != .system })
+    func `kiro overage menu text is localized in every supported language`(language: AppLanguage) {
+        let settings = self.makeSettings(
+            suiteName: "StatusItemBalanceDisplayTests-kiro-overage-localized-\(language.rawValue)",
+            provider: .kiro)
+        settings.kiroMenuBarDisplayMode = .overageCostWhenExhausted
+        let (store, controller) = self.makeStoreAndController(settings: settings)
+        defer { controller.releaseStatusItemsForTesting() }
+        let snapshot = Self.exhaustedKiroSnapshot()
+
+        store._setSnapshotForTesting(snapshot, provider: .kiro)
+        store._setErrorForTesting(nil, provider: .kiro)
+
+        CodexBarLocalizationOverride.$appLanguage.withValue(language.rawValue) {
+            let displayText = controller.menuBarDisplayText(for: .kiro, snapshot: snapshot)
+            #expect(displayText == L("%@ over", "$1.61"))
+            if language != .english { #expect(displayText != "$1.61 over") }
+        }
     }
 }

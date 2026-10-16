@@ -28,17 +28,24 @@ public enum KiroProviderDescriptor {
             branding: ProviderBranding(
                 iconStyle: .init(provider: .kiro),
                 iconResourceName: "ProviderIcon-kiro",
-                color: ProviderColor(red: 255 / 255, green: 153 / 255, blue: 0 / 255),
+                color: ProviderColor(hex: 0x9046FF),
                 confettiPalette: [
-                    ProviderColor(hex: 0x8F4AFF),
+                    ProviderColor(hex: 0x9046FF),
                     ProviderColor(hex: 0xCAA9FF),
                     ProviderColor(hex: 0x2B2B2B),
                 ]),
             tokenCost: ProviderTokenCostConfig(
                 supportsTokenCost: false,
                 noDataMessage: { "Kiro cost summary is not supported." }),
-            presentation: ProviderUsagePresentation(menuCard: ProviderMenuCardPresentation(
-                primaryDetailKind: .kiroCredits)),
+            pace: .calendarMonthResetWindow,
+            presentation: ProviderUsagePresentation(
+                menuBarWindowResolver: { context in
+                    guard context.metric == .automatic else { return .unhandled }
+                    return .resolved(
+                        ProviderUsagePresentation.exhausted(context.snapshot.primary, context.snapshot.secondary)
+                            ?? context.snapshot.primary ?? context.snapshot.secondary)
+                },
+                menuCard: ProviderMenuCardPresentation(primaryDetailKind: .kiroCredits)),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .cli],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [KiroCLIFetchStrategy()] })),

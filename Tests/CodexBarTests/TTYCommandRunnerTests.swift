@@ -1,6 +1,11 @@
 import Foundation
 import Testing
 @testable import CodexBarCore
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 @Suite(.serialized)
 struct TTYCommandRunnerEnvTests {
@@ -240,18 +245,22 @@ struct TTYCommandRunnerEnvTests {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("codexbar-tty-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
 
+        // Keep the slave open until the cwd is observed: Darwin can discard unread output on exit.
         let runner = TTYCommandRunner()
         let result = try runner.run(
-            binary: "/bin/pwd",
+            binary: "/bin/sh",
             send: "",
             options: .init(
                 timeout: Self.harnessPTYTimeout,
                 workingDirectory: dir,
-                stopOnSubstrings: [dir.path],
-                returnOnEmptyProcessExit: true))
-        let clean = result.text.replacingOccurrences(of: "\r", with: "")
-        #expect(clean.contains(dir.path))
+                extraArgs: ["-c", "/bin/pwd; read -r reply"],
+                baseEnvironment: [:],
+                stopOnSubstrings: [dir.lastPathComponent]))
+        let clean = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(URL(fileURLWithPath: clean).resolvingSymlinksInPath().path == dir.resolvingSymlinksInPath().path)
+        #expect(result.completion == .outputCondition)
     }
 
     @Test
@@ -291,6 +300,79 @@ struct TTYCommandRunnerEnvTests {
         #expect(outcomes.compactMap { $0.failureDetails == nil ? nil : $0.iteration } == [7])
     }
 
+    @Test(arguments: [EAGAIN, ENOENT, EMFILE])
+    func `openpty failure includes the captured POSIX error`(errorCode: Int32) throws {
+        let failAllocation: @Sendable (inout Int32, inout Int32, inout winsize) -> Int32 = { _, _, _ in
+            errno = errorCode
+            return -1
+        }
+        do {
+            _ = try TTYCommandRunner.$allocatePTY.withValue(failAllocation) {
+                try TTYCommandRunner().run(binary: "/bin/echo", send: "")
+            }
+            Issue.record("Expected PTY allocation to fail")
+        } catch let TTYCommandRunner.Error.launchFailed(message) {
+            #expect(message.contains("errno \(errorCode)"))
+            #expect(message.contains(String(cString: strerror(errorCode))))
+        }
+    }
+
+    @Test
+    func `repeated PTY launches release descriptors on exit failure cancellation and timeout`() throws {
+        func terminalDescriptorCount() throws -> Int {
+            #if canImport(Darwin)
+            let directory = "/dev/fd"
+            #else
+            let directory = "/proc/self/fd"
+            #endif
+            return try FileManager.default.contentsOfDirectory(atPath: directory)
+                .compactMap(Int32.init)
+                .filter { isatty($0) == 1 }.count
+        }
+
+        let baseline = try terminalDescriptorCount()
+        let missingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-pty-directory-\(UUID().uuidString)")
+        for _ in 0..<10 {
+            let result = try TTYCommandRunner().run(
+                binary: "/bin/echo",
+                send: "",
+                options: .init(timeout: Self.harnessPTYTimeout, extraArgs: ["released"], initialDelay: 0))
+            #expect(result.completion == .processExited(status: 0))
+            #expect(try terminalDescriptorCount() <= baseline)
+
+            #expect(throws: TTYCommandRunner.Error.self) {
+                try TTYCommandRunner().run(
+                    binary: "/bin/echo",
+                    send: "",
+                    options: .init(workingDirectory: missingDirectory, initialDelay: 0))
+            }
+            #expect(try terminalDescriptorCount() <= baseline)
+
+            #expect(throws: CancellationError.self) {
+                try TTYCommandRunner().run(
+                    binary: "/bin/cat",
+                    send: "",
+                    options: .init(initialDelay: 0, cancellationCheck: { true }))
+            }
+            #expect(try terminalDescriptorCount() <= baseline)
+
+            do {
+                _ = try TTYCommandRunner().run(
+                    binary: "/bin/cat",
+                    send: "",
+                    options: .init(timeout: 0, initialDelay: 0))
+                Issue.record("Expected the PTY command to time out")
+            } catch TTYCommandRunner.Error.timedOut {}
+            // Hard-stop cleanup owns a bounded asynchronous lease on a duplicate master descriptor.
+            let cleanupDeadline = Date().addingTimeInterval(30)
+            while try terminalDescriptorCount() > baseline, Date() < cleanupDeadline {
+                usleep(20000)
+            }
+            #expect(try terminalDescriptorCount() <= baseline)
+        }
+    }
+
     private static func runFastExitIterations(
         iterationCount: Int,
         concurrencyLimit: Int,
@@ -326,22 +408,32 @@ struct TTYCommandRunnerEnvTests {
     private static func runFastExitIteration(_ iteration: Int) -> FastExitIterationOutcome {
         let expected = "pty-drain-race"
         let runner = TTYCommandRunner()
+        let waitForExit: @Sendable (SpawnedProcessGroup) throws -> Void = { process in
+            // Observe exit without reaping, before the runner has read any output.
+            var info = siginfo_t()
+            var result: Int32
+            repeat {
+                result = waitid(P_PID, id_t(process.pid), &info, WEXITED | WNOWAIT)
+            } while result == -1 && errno == EINTR
+            #expect(result == 0)
+        }
 
         do {
-            let result = try runner.run(
-                binary: "/bin/echo",
-                send: "",
-                options: .init(
-                    timeout: Self.harnessPTYTimeout,
-                    extraArgs: [expected],
-                    initialDelay: 0.05,
-                    stopOnSubstrings: [expected],
-                    settleAfterStop: 0,
-                    returnOnEmptyProcessExit: true))
+            let result = try TTYCommandRunner.$beforeInitialReadForTesting.withValue(waitForExit) {
+                try runner.run(
+                    binary: "/bin/echo",
+                    send: "",
+                    options: .init(
+                        timeout: Self.harnessPTYTimeout,
+                        extraArgs: [expected],
+                        baseEnvironment: [:],
+                        initialDelay: 0,
+                        returnOnEmptyProcessExit: true))
+            }
             let clean = result.text.replacingOccurrences(of: "\r", with: "")
             return FastExitIterationOutcome(
                 iteration: iteration,
-                failureDetails: clean.contains(expected)
+                failureDetails: clean == "\(expected)\n" && result.completion == .processExited(status: 0)
                     ? nil
                     : "PTY output was missing; completion: \(result.completion)")
         } catch {
@@ -654,5 +746,39 @@ struct TTYCommandRunnerEnvTests {
         let data = Data("UpDaTe".utf8)
         let lowered = StreamScanBuffer.lowercasedASCII(data)
         #expect(String(data: lowered, encoding: .utf8) == "update")
+    }
+
+    @Test
+    func `bundled helper resolves from app executable and symlinks`() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("helper-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        let contents = root.appendingPathComponent("Test.app/Contents", isDirectory: true)
+        let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
+        let helpers = contents.appendingPathComponent("Helpers", isDirectory: true)
+        try fm.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: helpers, withIntermediateDirectories: true)
+        let helper = helpers.appendingPathComponent("Watchdog")
+        let cli = helpers.appendingPathComponent("Tool")
+        let gui = macOS.appendingPathComponent("Test")
+        for url in [helper, cli, gui] {
+            try Data("#!/bin/sh\n".utf8).write(to: url)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let link = root.appendingPathComponent("tool-link")
+        try fm.createSymbolicLink(at: link, withDestinationURL: cli)
+
+        let expected = helper.resolvingSymlinksInPath().path
+        for exe in [gui, cli, link] {
+            let found = TTYCommandRunner.bundledHelperPath("Watchdog", executableURL: exe)
+            #expect(found.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path } == expected)
+        }
+        #expect(TTYCommandRunner.bundledHelperPath("Missing", executableURL: gui) == nil)
+        #expect(TTYCommandRunner
+            .bundledHelperPath("Watchdog", executableURL: root.appendingPathComponent("bare")) == nil)
+        for layout in ["Other/MacOS/Tool", "Contents/Other/Tool"] {
+            #expect(TTYCommandRunner.bundledHelperPath(
+                "Watchdog", executableURL: contents.deletingLastPathComponent().appendingPathComponent(layout)) == nil)
+        }
     }
 }

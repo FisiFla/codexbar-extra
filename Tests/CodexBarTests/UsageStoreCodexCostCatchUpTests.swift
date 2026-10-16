@@ -38,7 +38,7 @@ struct UsageStoreCodexCostCatchUpTests {
         }
         store._test_codexCostCatchUpSleepOverride = { delay in
             sleeps += 1
-            #expect(delay == (resource == "normal" ? 1998 : CodexCostCatchUpPolicy.constrainedRetryDelay))
+            #expect(delay == (resource == "normal" ? 0 : CodexCostCatchUpPolicy.constrainedRetryDelay))
             #expect(advances == 0)
             if resource != "normal" {
                 #expect(store.codexCostCatchUpActivity?.phase == .paused)
@@ -107,10 +107,84 @@ struct UsageStoreCodexCostCatchUpTests {
         await store.widgetSnapshotPersistTask?.value
 
         #expect(advances == 1)
-        #expect(sleeps == [1998])
+        #expect(sleeps == [0])
         #expect(store.tokenSnapshot(for: .codex)?.last30DaysTokens == 52)
         #expect(store.tokenSnapshot(for: .codex)?.updatedAt == fixture.base.now)
         #expect(store.codexCostCatchUpActivity?.pauseReason == .noProgress)
+    }
+
+    @Test(arguments: [0.1, 0.75])
+    func `automatic discovery yields after its accumulated time or page budget`(duration: TimeInterval) async throws {
+        let store = try Self.makeStore(suite: "bounded-discovery")
+        defer { store.cancelCodexCostCatchUp() }
+        store.settings.backgroundWorkLowPowerModePreference = .off
+        store._test_codexCostCatchUpResourceStateOverride = { (.ac, false, .nominal) }
+        store._test_codexCostCatchUpStatusOverride = { _ in .init(pending: true, progressKey: "start") }
+        store._test_cachedCodexTokenSnapshotLoaderOverride = { _, _, _ in nil }
+        store._test_codexCostCatchUpActiveDuration = duration
+        var advances = 0
+        store._test_codexCostCatchUpAdvanceOverride = { _, _, _ in
+            advances += 1
+            return .init(pending: true, progressKey: "page-\(advances)")
+        }
+        var delayed = false
+        store._test_codexCostCatchUpSleepOverride = { delay in
+            guard delay > 0 else { return }
+            delayed = true
+            #expect(advances == (duration == 0.1 ? 8 : 3))
+            #expect(abs(delay - Double(advances) * duration * 999) < 0.000001)
+            throw CancellationError()
+        }
+        store.startCodexCostCatchUpIfNeeded()
+        await store.codexCostCatchUpTask?.value
+        #expect(delayed)
+    }
+
+    @Test(arguments: [false, true])
+    func `accelerated work does not accumulate automatic sleep debt`(switchDuringYield: Bool) async throws {
+        let store = try Self.makeStore(suite: "acceleration-debt-\(switchDuringYield)")
+        defer { store.cancelCodexCostCatchUp() }
+        store.settings.backgroundWorkLowPowerModePreference = .off
+        store._test_codexCostCatchUpResourceStateOverride = { (.ac, false, .nominal) }
+        store._test_codexCostCatchUpStatusOverride = { _ in .init(pending: true, progressKey: "start") }
+        store._test_cachedCodexTokenSnapshotLoaderOverride = { _, _, _ in nil }
+        store._test_codexCostCatchUpActiveDuration = 2
+        let expectedAdvances = switchDuringYield ? 4 : 3
+        var advances = 0
+        var switched = false
+        var delayed = false
+        store._test_codexCostCatchUpAdvanceOverride = { _, _, _ in
+            advances += 1
+            guard advances <= expectedAdvances else { throw CancellationError() }
+            if advances == 3, !switchDuringYield {
+                #expect(store.codexCostCatchUpPassIsRunning)
+                switched = true
+                store.startCodexCostCatchUpIfNeeded(mode: .automatic)
+            }
+            return .init(pending: true, progressKey: "page-\(advances)")
+        }
+        store._test_codexCostCatchUpSleepOverride = { delay in
+            if switchDuringYield, advances == 3, !switched {
+                #expect(delay == 0)
+                #expect(!store.codexCostCatchUpPassIsRunning)
+                switched = true
+                store.startCodexCostCatchUpIfNeeded(mode: .automatic)
+                return
+            }
+            guard delay > 0 else { return }
+            delayed = true
+            #expect(delay == 1998)
+            #expect(advances == expectedAdvances)
+            throw CancellationError()
+        }
+        store.startCodexCostCatchUpIfNeeded(mode: .accelerated)
+        let original = try #require(store.codexCostCatchUpTask)
+        await original.value
+        await store.codexCostCatchUpTask?.value
+        #expect(advances == expectedAdvances)
+        #expect(delayed)
+        #expect(switched)
+        #expect(store.codexCostCatchUpMode == .automatic)
     }
 
     @Test
@@ -137,7 +211,7 @@ struct UsageStoreCodexCostCatchUpTests {
         store.startCodexCostCatchUpIfNeeded()
         let task = try #require(store.codexCostCatchUpTask)
         await task.value
-        #expect(sleeps == [1998, 1998])
+        #expect(sleeps == [0, 1998])
     }
 
     @Test(arguments: [CodexCostCatchUpPowerSource.ac, .battery, .unknown])
@@ -163,7 +237,7 @@ struct UsageStoreCodexCostCatchUpTests {
         #expect(store.codexCostCatchUpDecision(
             mode: .automatic,
             previousActiveDuration: nil,
-            resourceState: (.ac, false, .nominal)).action == .runAfter(1998))
+            resourceState: (.ac, false, .nominal)).action == .runAfter(1800))
         #expect(store.codexCostCatchUpDecision(
             mode: .automatic,
             previousActiveDuration: 0.1,
@@ -196,7 +270,7 @@ struct UsageStoreCodexCostCatchUpTests {
         await task.value
         #expect(sleeps.count == 2)
         if mode == .automatic {
-            #expect(sleeps == [1998, 1800])
+            #expect(sleeps == [1800, 1800])
         } else {
             #expect(sleeps == [0, 0])
         }
@@ -273,11 +347,9 @@ struct UsageStoreCodexCostCatchUpTests {
     }
 
     @Test
-    func `bounded catch-up publishes current window before historical completion`() async throws {
+    func `bounded catch-up republishes current window before historical completion`() async throws {
         let store = try Self.makeStore(suite: "publishes-final")
         var snapshotLoadCount = 0
-        var cachedLoadCount = 0
-        var statusLoadCount = 0
         var advanceCount = 0
         var sleepDurations: [TimeInterval] = []
         store._test_codexCostCatchUpActiveDuration = 2
@@ -286,26 +358,25 @@ struct UsageStoreCodexCostCatchUpTests {
             return Self.tokenSnapshot(cost: Double(snapshotLoadCount), now: now)
         }
         store._test_cachedCodexTokenSnapshotLoaderOverride = { now, _, _ in
-            cachedLoadCount += 1
-            return (Self.tokenSnapshot(cost: advanceCount == 2 ? 1 : 2, now: now), now, nil)
+            let cost = advanceCount == 2 ? 1 : Double(2 + advanceCount * 2)
+            return (Self.tokenSnapshot(cost: cost, now: now), now, nil)
         }
         store._test_codexCostCatchUpStatusOverride = { _ in
-            statusLoadCount += 1
-            return CostUsageFetcher.CodexScanCatchUpStatus(
+            CostUsageFetcher.CodexScanCatchUpStatus(
                 pending: advanceCount < 2,
-                progressKey: "status-\(statusLoadCount)")
+                progressKey: "status-\(advanceCount)")
         }
         store._test_codexCostCatchUpAdvanceOverride = { _, _, _ in
             advanceCount += 1
-            if advanceCount == 2 {
-                #expect(store.tokenSnapshot(for: .codex)?.last30DaysCostUSD == 2)
-            }
             return CostUsageFetcher.CodexScanCatchUpStatus(
                 pending: advanceCount < 2,
                 progressKey: "advance-\(advanceCount)")
         }
         store._test_codexCostCatchUpSleepOverride = { duration in
             sleepDurations.append(duration)
+            if advanceCount == 1 {
+                #expect(store.tokenSnapshot(for: .codex)?.last30DaysCostUSD == 4)
+            }
             await Task.yield()
         }
         store._test_codexCostCatchUpResourceStateOverride = {
@@ -313,17 +384,12 @@ struct UsageStoreCodexCostCatchUpTests {
         }
 
         await store.refreshTokenUsage(.codex, force: true)
-        await Self.waitUntil {
-            store.codexCostCatchUpTask == nil && cachedLoadCount == 2
-        }
+        await Self.waitUntil { store.codexCostCatchUpTask == nil }
 
         #expect(advanceCount == 2)
-        #expect(statusLoadCount == 3)
         #expect(snapshotLoadCount == 1)
-        #expect(cachedLoadCount == 2)
-        #expect(sleepDurations == [1998, 1998])
+        #expect(sleepDurations == [0, 1998])
         #expect(store.tokenSnapshot(for: .codex)?.last30DaysCostUSD == 1)
-        #expect(store.tokenSnapshotPublicationRevision(for: .codex) == 3)
         #expect(store.tokenError(for: .codex) == nil)
     }
 
@@ -362,6 +428,88 @@ struct UsageStoreCodexCostCatchUpTests {
         #expect(store.tokenSnapshotPublicationRevision(for: .codex) == 1)
         #expect(store.codexCostCatchUpActivity?.phase == .paused)
         #expect(store.codexCostCatchUpActivity?.pauseReason == .noProgress)
+    }
+
+    @Test(arguments: [false, true])
+    func `an observation-driven refresh does not resume a terminal catch-up pause`(throwsError: Bool) async throws {
+        let store = try Self.makeStore(suite: "terminal-pause-refresh-\(throwsError)")
+        defer { store.cancelCodexCostCatchUp() }
+        store._test_cachedCodexTokenSnapshotLoaderOverride = { _, _, _ in nil }
+        var statusLoadCount = 0
+        var advanceCount = 0
+        store._test_tokenUsageSnapshotLoaderOverride = { _, _, now, _, _ in
+            Self.tokenSnapshot(cost: 1, now: now)
+        }
+        store._test_codexCostCatchUpStatusOverride = { _ in
+            statusLoadCount += 1
+            return .init(pending: true, progressKey: "unchanged")
+        }
+        store._test_codexCostCatchUpAdvanceOverride = { _, _, _ in
+            advanceCount += 1
+            if throwsError {
+                throw NSError(domain: "SyntheticCatchUp", code: 1)
+            }
+            return .init(pending: true, progressKey: "unchanged")
+        }
+        store._test_codexCostCatchUpSleepOverride = { _ in await Task.yield() }
+        store._test_codexCostCatchUpResourceStateOverride = {
+            (.ac, false, .nominal)
+        }
+
+        await store.refreshTokenUsage(.codex, force: true)
+        await Self.waitUntil {
+            store.codexCostCatchUpTask == nil && advanceCount == 1
+        }
+        #expect(store.codexCostCatchUpActivity?.phase == .paused)
+
+        store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+
+        #expect(store.codexCostCatchUpTask == nil)
+        #expect(store.codexCostCatchUpActivity?.phase == .paused)
+        #expect(advanceCount == 1)
+        #expect(statusLoadCount == 1)
+
+        await ProviderInteractionContext.$current.withValue(.userInitiated) {
+            store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+        }
+        #expect(store.codexCostCatchUpTask != nil)
+        await Self.waitUntil {
+            store.codexCostCatchUpTask == nil && advanceCount == 2
+        }
+        #expect(statusLoadCount == 2)
+        #expect(store.codexCostCatchUpActivity?.phase == .paused)
+    }
+
+    @Test(arguments: [false, true])
+    func `an observation-driven refresh resumes a resource-limited catch-up pause`(thermal: Bool) async throws {
+        let store = try Self.makeStore(suite: "resource-pause-refresh")
+        defer { store.cancelCodexCostCatchUp() }
+        store._test_cachedCodexTokenSnapshotLoaderOverride = { _, _, _ in nil }
+        store._test_codexCostCatchUpStatusOverride = { _ in
+            .init(pending: true, progressKey: "unchanged")
+        }
+        store._test_codexCostCatchUpResourceStateOverride = {
+            (.ac, !thermal, thermal ? .serious : .nominal)
+        }
+        var sleeps = 0
+        store._test_codexCostCatchUpSleepOverride = { delay in
+            guard delay > 0 else { return }
+            sleeps += 1
+            #expect(store.codexCostCatchUpActivity?.pauseReason == (thermal ? .thermal : .lowPower))
+            throw CancellationError()
+        }
+
+        store.startCodexCostCatchUpIfNeeded()
+        await Self.waitUntil { store.codexCostCatchUpTask == nil }
+        #expect(store.codexCostCatchUpActivity?.phase == .paused)
+        #expect(store.codexCostCatchUpActivity?.pauseReason == (thermal ? .thermal : .lowPower))
+
+        store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+
+        #expect(store.codexCostCatchUpTask != nil)
+        await Self.waitUntil { store.codexCostCatchUpTask == nil }
+        #expect(sleeps == 2)
+        #expect(store.codexCostCatchUpActivity?.pauseReason == (thermal ? .thermal : .lowPower))
     }
 
     @Test(arguments: [false, true])
@@ -628,6 +776,15 @@ struct UsageStoreCodexCostCatchUpTests {
         #expect(store.codexCostCatchUpActivity?.phase == .paused)
         #expect(store.codexCostCatchUpActivity?.pauseReason == .user)
         #expect(store.codexCostCatchUpActivity?.fractionCompleted == 0.5)
+
+        store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+        #expect(store.codexCostCatchUpTask == nil)
+        #expect(store.codexCostCatchUpActivity?.pauseReason == .user)
+        await ProviderInteractionContext.$current.withValue(.userInitiated) {
+            store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+        }
+        #expect(store.codexCostCatchUpTask != nil)
+        store.cancelCodexCostCatchUp()
     }
 
     @Test
@@ -638,6 +795,9 @@ struct UsageStoreCodexCostCatchUpTests {
         store.codexCostCatchUpRestartRequested = true
 
         store.stopCodexCostCatchUp()
+        ProviderInteractionContext.$current.withValue(.userInitiated) {
+            store.startCodexCostCatchUpIfNeeded(afterRefreshing: .codex)
+        }
 
         #expect(store.codexCostCatchUpStopRequested)
         #expect(!store.codexCostCatchUpRestartRequested)

@@ -42,6 +42,9 @@ struct SpendActivitySeries {
     let rangeStart: Date
     let today: Date
     let calendar: Calendar
+    let dates: [Date?]
+    let visibleIndices: [Int]
+    let coveredDayCount: Int
 
     static func make(
         from points: [SpendDashboardModel.TokenActivityPoint],
@@ -79,11 +82,12 @@ struct SpendActivitySeries {
         var daily = [Int](repeating: 0, count: cellCount)
         var isCovered = [Bool](repeating: false, count: cellCount)
         var isScanned = [Bool](repeating: false, count: cellCount)
+        let dates = (0..<cellCount).map { index in
+            calendar.date(byAdding: .day, value: index, to: start).map { calendar.startOfDay(for: $0) }
+        }
         for index in 0..<cellCount {
             // Midnight DST transitions can leave the aligned start at 01:00. Match the day keys above.
-            guard let date = calendar.date(byAdding: .day, value: index, to: start)
-                .map({ calendar.startOfDay(for: $0) }),
-                rangeStart...today ~= date
+            guard let date = dates[index], rangeStart...today ~= date
             else {
                 continue
             }
@@ -92,6 +96,9 @@ struct SpendActivitySeries {
             daily[index] = total
             isCovered[index] = true
         }
+        let visible = dates.indices.filter { index in
+            dates[index].map { rangeStart...today ~= $0 } ?? false
+        }
         return Self(
             daily: daily,
             isCovered: isCovered,
@@ -99,11 +106,15 @@ struct SpendActivitySeries {
             start: start,
             rangeStart: rangeStart,
             today: today,
-            calendar: calendar)
+            calendar: calendar,
+            dates: dates,
+            visibleIndices: visible,
+            coveredDayCount: visible.count(where: { isCovered[$0] }))
     }
 
     func date(at index: Int) -> Date? {
-        self.calendar.date(byAdding: .day, value: index, to: self.start)
+        if self.dates.indices.contains(index) { return self.dates[index] }
+        return self.calendar.date(byAdding: .day, value: index, to: self.start)
             .map { self.calendar.startOfDay(for: $0) }
     }
 
@@ -112,11 +123,7 @@ struct SpendActivitySeries {
     }
 
     var visibleDayCount: Int {
-        self.daily.indices.filter(self.isVisible).count
-    }
-
-    var coveredDayCount: Int {
-        self.daily.indices.count(where: { self.isVisible($0) && self.isCovered[$0] })
+        self.visibleIndices.count
     }
 
     var hasUnknownCoverage: Bool {
@@ -218,56 +225,35 @@ enum SpendActivityLevels {
             return 1
         }
     }
-
-    static func color(forLevel level: Int) -> Color {
-        switch level {
-        case 4: self.rgb(0x216E39)
-        case 3: self.rgb(0x30A14E)
-        case 2: self.rgb(0x40C463)
-        case 1: self.rgb(0x9BE9A8)
-        default: self.rgb(0xEBEDF0)
-        }
-    }
-
-    static var uniformFill: Color {
-        self.rgb(0x40C463)
-    }
-
-    static var unavailableFill: Color {
-        self.rgb(0xD6DCE5)
-    }
-
-    private static func rgb(_ hex: UInt32) -> Color {
-        Color(
-            red: Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8) & 0xFF) / 255,
-            blue: Double(hex & 0xFF) / 255)
-    }
 }
 
 struct SpendActivityGridGeometry {
-    static let weekdayGutterWidth: CGFloat = 40
-    static let gridSpacing: CGFloat = 8
+    static let minimumCellSize: CGFloat = 10
+    static let cellSpacing: CGFloat = 3
     static let tooltipInset: CGFloat = 8
     static let tooltipGap: CGFloat = 5
     static let tooltipWidth: CGFloat = 148
     static let tooltipHeight: CGFloat = 50
 
     static func gridFrame(containerWidth: CGFloat, columns: Int = SpendActivitySeries.weekCount) -> CGRect {
-        let leading = self.weekdayGutterWidth + self.gridSpacing
-        let width = max(containerWidth - leading, 0)
+        let minimumWidth = CGFloat(max(columns, 0)) * (self.minimumCellSize + self.cellSpacing)
+        let width = max(containerWidth, minimumWidth)
         let pitch = columns > 0 ? width / CGFloat(columns) : 0
-        return CGRect(x: leading, y: 0, width: width, height: pitch * CGFloat(SpendActivitySeries.dayCount))
+        return CGRect(x: 0, y: 0, width: width, height: pitch * CGFloat(SpendActivitySeries.dayCount))
     }
 
-    static func weekdayCenter(row: Int, rowPitch: CGFloat) -> CGFloat {
-        (CGFloat(row) + 0.5) * rowPitch
-    }
-
-    static func tooltipCenterX(anchorX: CGFloat, tooltipWidth: CGFloat, gridWidth: CGFloat) -> CGFloat {
+    static func tooltipCenterX(
+        anchorX: CGFloat,
+        tooltipWidth: CGFloat,
+        gridWidth: CGFloat,
+        visibleRect: CGRect? = nil) -> CGFloat
+    {
+        let lowerEdge = max(visibleRect?.minX ?? 0, 0)
+        let upperEdge = min(visibleRect?.maxX ?? gridWidth, gridWidth)
+        let center = (lowerEdge + upperEdge) / 2
         let halfWidth = tooltipWidth / 2
-        let lower = min(halfWidth + self.tooltipInset, gridWidth / 2)
-        let upper = max(gridWidth - halfWidth - self.tooltipInset, gridWidth / 2)
+        let lower = min(lowerEdge + halfWidth + self.tooltipInset, center)
+        let upper = max(upperEdge - halfWidth - self.tooltipInset, center)
         return min(max(anchorX, lower), upper)
     }
 
@@ -311,30 +297,35 @@ enum SpendActivityGridNavigation {
     }
 }
 
-enum SpendActivityWeekday {
-    static let labeledRows = [1, 3, 5]
-
-    static func label(for row: Int, locale: Locale? = nil) -> String {
-        guard self.labeledRows.contains(row) else { return "" }
-        let formatter = DateFormatter()
-        formatter.locale = locale ?? codexBarLocalizedResourceLocale()
-        guard let symbols = formatter.shortStandaloneWeekdaySymbols, symbols.indices.contains(row) else {
-            return ""
-        }
-        return symbols[row]
-    }
-}
-
 enum SpendActivityDateFormatting {
+    private struct Context: Hashable {
+        let calendar: Calendar
+        let locale: Locale
+        let timeZone: TimeZone
+    }
+
+    private static let formatterLock = NSLock()
+    private nonisolated(unsafe) static var formatters: [Context: DateFormatter] = [:]
+
     static func mediumDateString(_ date: Date, calendar: Calendar? = nil, locale: Locale? = nil) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale ?? codexBarLocalizedResourceLocale()
-        formatter.calendar = calendar ?? Calendar.current
-        if let calendar, let timeZone = calendar.timeZone as TimeZone? {
-            formatter.timeZone = timeZone
+        let context = Context(
+            calendar: calendar ?? .current,
+            locale: locale ?? codexBarLocalizedResourceLocale(),
+            timeZone: calendar?.timeZone ?? NSTimeZone.default)
+        let formatter = self.formatterLock.withLock {
+            if let formatter = self.formatters[context] { return formatter }
+            let formatter = DateFormatter()
+            formatter.locale = context.locale
+            formatter.calendar = context.calendar
+            formatter.timeZone = context.timeZone
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            // Bound retained contexts when users change language or reporting time zone.
+            if self.formatters.count >= 16 { self.formatters.removeAll(keepingCapacity: true) }
+            self.formatters[context] = formatter
+            return formatter
         }
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
+        // Published formatters are immutable; DateFormatter supports concurrent string formatting.
         return formatter.string(from: date)
     }
 }
@@ -352,6 +343,8 @@ struct SpendActivityHeatmapView: View {
     let selectedDay: Date?
     let onSelectDay: ((Date?) -> Void)?
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @AppStorage("spendActivityViewMode") private var mode: SpendActivityViewMode = .daily
     @State private var series: SpendActivitySeries
 
@@ -373,35 +366,22 @@ struct SpendActivityHeatmapView: View {
     var body: some View {
         let hasActivity = (self.series.daily.max() ?? 0) > 0
         let hasUnknownCoverage = self.series.hasUnknownCoverage
-        let totalTokens = Self.saturatingTotal(self.series.daily)
+        let totalTokens = self.series.daily.reduce(0, SpendActivitySeries.saturatingAdd)
         let coverageText = spendDashboardCoverageText(
             covered: self.series.coveredDayCount,
             requested: self.series.visibleDayCount)
-        let weekly = self.series.weeklyActivity()
+        let heading = self.heading(hasActivity: hasActivity, totalTokens: totalTokens, coverageText: coverageText)
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L("Token activity"))
-                        .font(.headline)
-                    if hasActivity {
-                        Text(self.activitySummary(totalTokens: totalTokens, coverageText: coverageText))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if hasUnknownCoverage {
-                        Text("\(L("Unavailable")) · \(coverageText)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    heading.fixedSize(horizontal: true, vertical: false)
+                    Spacer()
+                    self.modePicker
                 }
-                Spacer()
-                Picker(L("View"), selection: self.$mode) {
-                    ForEach(SpendActivityViewMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    heading
+                    self.modePicker
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
             }
 
             if hasActivity || hasUnknownCoverage {
@@ -412,25 +392,21 @@ struct SpendActivityHeatmapView: View {
                         selectedDay: self.selectedDay,
                         onSelectDay: self.onSelectDay)
                     self.dailyLegend
-                case .weekly:
+                case .weekly, .cumulative:
+                    let weekly = self.series.weeklyActivity()
+                    let cumulative = self.mode == .cumulative
                     SpendActivityWeekGrid(
                         series: self.series,
-                        activity: weekly,
-                        cumulative: false)
+                        activity: cumulative ? weekly.cumulative() : weekly,
+                        cumulative: cumulative)
                     self.caption(
-                        L("Each column = 1 week"),
-                        showsUnavailable: weekly.isCovered.contains(false))
-                case .cumulative:
-                    SpendActivityWeekGrid(
-                        series: self.series,
-                        activity: weekly.cumulative(),
-                        cumulative: true)
-                    self.caption(L("Running total"), showsUnavailable: hasUnknownCoverage)
+                        cumulative ? L("Running total") : L("Each column = 1 week"),
+                        showsUnavailable: cumulative ? hasUnknownCoverage : weekly.isCovered.contains(false))
                 }
             } else {
                 Text(L("No activity in the last 12 months"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(.primary.opacity(0.75))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 12)
             }
@@ -444,41 +420,64 @@ struct SpendActivityHeatmapView: View {
         }
     }
 
+    private func heading(hasActivity: Bool, totalTokens: Int, coverageText: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L("Token activity"))
+                .font(.headline)
+            if hasActivity {
+                Text(self.activitySummary(totalTokens: totalTokens, coverageText: coverageText))
+                    .font(.callout)
+                    .foregroundStyle(.primary.opacity(0.75))
+            } else if self.series.hasUnknownCoverage {
+                Text("\(L("Unavailable")) · \(coverageText)")
+                    .font(.callout)
+                    .foregroundStyle(.primary.opacity(0.75))
+            }
+        }
+    }
+
+    private var modePicker: some View {
+        Picker(L("View"), selection: self.$mode) {
+            ForEach(SpendActivityViewMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
+    }
+
     private var dailyLegend: some View {
-        HStack(spacing: 4) {
+        let palette = SpendActivityPalette(colorScheme: self.colorScheme, contrast: self.contrast)
+        return HStack(spacing: 4) {
             Spacer()
             Text(L("Less"))
             ForEach(0...4, id: \.self) { level in
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(SpendActivityLevels.color(forLevel: level))
-                    .frame(width: 9, height: 9)
+                SpendActivitySwatch(palette: palette, level: level)
             }
             Text(L("More"))
             if self.series.hasUnknownCoverage {
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(SpendActivityLevels.unavailableFill)
-                    .frame(width: 9, height: 9)
+                SpendActivitySwatch(palette: palette, level: nil)
                     .padding(.leading, 6)
                 Text(L("Unavailable"))
             }
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
+        .font(.callout)
+        .foregroundStyle(.primary.opacity(0.75))
     }
 
     private func caption(_ text: String, showsUnavailable: Bool) -> some View {
-        HStack(spacing: 4) {
+        let palette = SpendActivityPalette(colorScheme: self.colorScheme, contrast: self.contrast)
+        return HStack(spacing: 4) {
             Text(text)
             Spacer()
             if showsUnavailable {
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(SpendActivityLevels.unavailableFill)
-                    .frame(width: 9, height: 9)
+                SpendActivitySwatch(palette: palette, level: nil)
                 Text(L("Unavailable"))
             }
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
+        .font(.callout)
+        .foregroundStyle(.primary.opacity(0.75))
     }
 
     private func activitySummary(totalTokens: Int, coverageText: String) -> String {
@@ -487,13 +486,6 @@ struct SpendActivityHeatmapView: View {
             ? "\(total) · \(coverageText)"
             : "\(total) \(L("in the last year"))"
     }
-
-    private static func saturatingTotal(_ values: [Int]) -> Int {
-        values.reduce(0) { total, value in
-            let result = total.addingReportingOverflow(value)
-            return result.overflow ? Int.max : result.partialValue
-        }
-    }
 }
 
 private struct SpendActivityDailyGrid: View {
@@ -501,6 +493,8 @@ private struct SpendActivityDailyGrid: View {
     var selectedDay: Date?
     var onSelectDay: ((Date?) -> Void)?
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var hoveredIndex: Int?
     @State private var keyboardIndex: Int?
     @FocusState private var isKeyboardFocused: Bool
@@ -510,18 +504,21 @@ private struct SpendActivityDailyGrid: View {
 
     var body: some View {
         let levels = SpendActivityLevels.dailyLevels(self.series.daily)
-        VStack(alignment: .leading, spacing: 3) {
-            self.monthRow
-            GeometryReader { proxy in
-                let gridFrame = SpendActivityGridGeometry.gridFrame(containerWidth: proxy.size.width)
+        let palette = SpendActivityPalette(colorScheme: self.colorScheme, contrast: self.contrast)
+        SpendActivityScrollableGrid(
+            headerHeight: 21,
+            scrollToIndex: self.keyboardIndex)
+        { size, visibleRect in
+            VStack(alignment: .leading, spacing: 3) {
+                self.monthRow
+                let gridFrame = CGRect(origin: .zero, size: size)
                 let pitch = gridFrame.width / CGFloat(self.columns)
-                let cell = max(pitch - 2, 2)
+                let cell = pitch - SpendActivityGridGeometry.cellSpacing
                 ZStack(alignment: .topLeading) {
-                    self.weekdayLabels(rowPitch: pitch)
                     ZStack(alignment: .topLeading) {
                         Canvas { context, _ in
                             let corner = min(cell * 0.22, 2.5)
-                            for index in 0..<(self.columns * self.rows) where self.isVisibleCell(index) {
+                            for index in 0..<(self.columns * self.rows) where self.series.isVisible(index) {
                                 let col = index / self.rows
                                 let row = index % self.rows
                                 let rect = CGRect(
@@ -529,16 +526,15 @@ private struct SpendActivityDailyGrid: View {
                                     y: CGFloat(row) * pitch + (pitch - cell) / 2,
                                     width: cell,
                                     height: cell)
-                                let fill = self.series.isCovered[index]
-                                    ? SpendActivityLevels.color(forLevel: levels[index])
-                                    : SpendActivityLevels.unavailableFill
-                                context.fill(
-                                    RoundedRectangle(cornerRadius: corner, style: .continuous).path(in: rect),
-                                    with: .color(fill))
+                                palette.drawCell(
+                                    in: &context,
+                                    rect: rect,
+                                    corner: corner,
+                                    level: self.series.isCovered[index] ? levels[index] : nil)
                             }
                         }
                         self.hoverHighlight(cell: cell, pitch: pitch)
-                        self.tooltip(size: gridFrame.size, pitch: pitch)
+                        self.tooltip(size: gridFrame.size, pitch: pitch, visibleRect: visibleRect)
                     }
                     .frame(width: gridFrame.width, height: gridFrame.height)
                     .contentShape(Rectangle())
@@ -553,10 +549,30 @@ private struct SpendActivityDailyGrid: View {
                     .gesture(SpatialTapGesture().onEnded { event in
                         self.handleTap(at: event.location, pitch: pitch)
                     })
-                    .offset(x: gridFrame.minX)
+                }
+                .frame(width: gridFrame.width, height: gridFrame.height)
+            }
+            .onChange(of: visibleRect.minX) { _, _ in self.hoveredIndex = nil }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(L("Token activity"))
+            .accessibilityValue(self.accessibilityValue)
+            .accessibilityChildren {
+                ForEach(self.series.visibleIndices, id: \.self) { index in
+                    if let date = self.series.date(at: index) {
+                        Text(self.accessibilityDescription(at: index, date: date))
+                    }
                 }
             }
-            .aspectRatio(CGFloat(self.columns + 2) / CGFloat(self.rows), contentMode: .fit)
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    self.moveKeyboardSelectionChronologically(by: 1)
+                case .decrement:
+                    self.moveKeyboardSelectionChronologically(by: -1)
+                @unknown default:
+                    break
+                }
+            }
         }
         .focusable()
         .focusEffectDisabled()
@@ -564,27 +580,7 @@ private struct SpendActivityDailyGrid: View {
         .onMoveCommand(perform: self.moveKeyboardSelection)
         .onChange(of: self.isKeyboardFocused) { _, isFocused in
             if isFocused, self.keyboardIndex == nil {
-                self.keyboardIndex = self.lastVisibleIndex
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(L("Token activity"))
-        .accessibilityValue(self.accessibilityValue)
-        .accessibilityChildren {
-            ForEach(self.series.daily.indices.filter(self.series.isVisible), id: \.self) { index in
-                if let date = self.series.date(at: index) {
-                    Text(self.accessibilityDescription(at: index, date: date))
-                }
-            }
-        }
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment:
-                self.moveKeyboardSelectionChronologically(by: 1)
-            case .decrement:
-                self.moveKeyboardSelectionChronologically(by: -1)
-            @unknown default:
-                break
+                self.keyboardIndex = self.series.visibleIndices.last
             }
         }
     }
@@ -593,29 +589,16 @@ private struct SpendActivityDailyGrid: View {
         GeometryReader { proxy in
             let gridFrame = SpendActivityGridGeometry.gridFrame(containerWidth: proxy.size.width)
             let pitch = gridFrame.width / CGFloat(self.columns)
-            ZStack(alignment: .topLeading) {
-                ForEach(self.monthMarkers(pitch: pitch)) { marker in
+            let markers = self.monthMarkers(pitch: pitch)
+            SpendActivityMonthLabelsLayout(offsets: markers.map(\.offset)) {
+                ForEach(markers) { marker in
                     Text(marker.label)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .offset(x: gridFrame.minX + marker.offset)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.primary.opacity(0.75))
                 }
             }
         }
-        .frame(height: 14)
-    }
-
-    private func weekdayLabels(rowPitch: CGFloat) -> some View {
-        ForEach(SpendActivityWeekday.labeledRows, id: \.self) { row in
-            Text(SpendActivityWeekday.label(for: row))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .frame(width: SpendActivityGridGeometry.weekdayGutterWidth, alignment: .trailing)
-                .position(
-                    x: SpendActivityGridGeometry.weekdayGutterWidth / 2,
-                    y: SpendActivityGridGeometry.weekdayCenter(row: row, rowPitch: rowPitch))
-        }
+        .frame(height: 18)
     }
 
     @ViewBuilder
@@ -634,13 +617,17 @@ private struct SpendActivityDailyGrid: View {
     }
 
     @ViewBuilder
-    private func tooltip(size: CGSize, pitch: CGFloat) -> some View {
-        if let index = self.activeIndex, let date = self.series.date(at: index) {
+    private func tooltip(size: CGSize, pitch: CGFloat, visibleRect: CGRect) -> some View {
+        if let index = self.activeIndex,
+           let date = self.series.date(at: index),
+           visibleRect.minX <= CGFloat(index / self.rows) * pitch + pitch / 2,
+           visibleRect.maxX >= CGFloat(index / self.rows) * pitch + pitch / 2
+        {
             let col = index / self.rows
             let row = index % self.rows
             let anchorX = CGFloat(col) * pitch + pitch / 2
             let anchorY = CGFloat(row) * pitch + pitch / 2
-            let width = min(SpendActivityGridGeometry.tooltipWidth, max(size.width - 8, 1))
+            let width = min(SpendActivityGridGeometry.tooltipWidth, max(visibleRect.width - 8, 1))
             let height = SpendActivityGridGeometry.effectiveTooltipHeight(gridHeight: size.height)
             let originY = SpendActivityGridGeometry.tooltipOriginY(
                 anchorY: anchorY,
@@ -657,19 +644,20 @@ private struct SpendActivityDailyGrid: View {
                     x: SpendActivityGridGeometry.tooltipCenterX(
                         anchorX: anchorX,
                         tooltipWidth: width,
-                        gridWidth: size.width),
+                        gridWidth: size.width,
+                        visibleRect: visibleRect),
                     y: originY + height / 2)
                 .allowsHitTesting(false)
         }
     }
 
     private func cellIndex(at location: CGPoint, pitch: CGFloat) -> Int? {
-        guard pitch > 0 else { return nil }
+        guard pitch > 0, location.x >= 0, location.y >= 0 else { return nil }
         let col = Int(location.x / pitch)
         let row = Int(location.y / pitch)
         guard col >= 0, col < self.columns, row >= 0, row < self.rows else { return nil }
         let index = col * self.rows + row
-        return self.isVisibleCell(index) ? index : nil
+        return self.series.isVisible(index) ? index : nil
     }
 
     private func handleTap(at location: CGPoint, pitch: CGFloat) {
@@ -678,24 +666,13 @@ private struct SpendActivityDailyGrid: View {
         onSelectDay(SpendActivityDaySelection.day(from: self.series, at: index, selectedDay: self.selectedDay))
     }
 
-    private func isVisibleCell(_ index: Int) -> Bool {
-        self.series.isVisible(index)
-    }
-
     private var activeIndex: Int? {
-        if let hoveredIndex {
-            return hoveredIndex
-        }
-        return self.keyboardIndex
-    }
-
-    private var lastVisibleIndex: Int? {
-        self.series.daily.indices.last(where: self.series.isVisible)
+        self.hoveredIndex ?? self.keyboardIndex
     }
 
     private func moveKeyboardSelection(_ direction: MoveCommandDirection) {
         self.hoveredIndex = nil
-        guard let current = self.keyboardIndex ?? self.lastVisibleIndex else { return }
+        guard let current = self.keyboardIndex ?? self.series.visibleIndices.last else { return }
         self.keyboardIndex = current
         let move: SpendActivityGridMove? = switch direction {
         case .left:
@@ -711,18 +688,18 @@ private struct SpendActivityDailyGrid: View {
         }
         guard let move else { return }
         let candidate = SpendActivityGridNavigation.candidate(from: current, move: move, rows: self.rows)
-        guard let candidate, self.isVisibleCell(candidate) else { return }
+        guard let candidate, self.series.isVisible(candidate) else { return }
         self.keyboardIndex = candidate
     }
 
     private func moveKeyboardSelectionChronologically(by offset: Int) {
         self.hoveredIndex = nil
         guard let current = self.keyboardIndex else {
-            self.keyboardIndex = self.lastVisibleIndex
+            self.keyboardIndex = self.series.visibleIndices.last
             return
         }
         let candidate = current + offset
-        guard self.isVisibleCell(candidate) else { return }
+        guard self.series.isVisible(candidate) else { return }
         self.keyboardIndex = candidate
     }
 
@@ -752,18 +729,11 @@ private struct SpendActivityDailyGrid: View {
         return markers
     }
 
-    private static func saturatingTotal(_ values: [Int]) -> Int {
-        values.reduce(0) { total, value in
-            let result = total.addingReportingOverflow(value)
-            return result.overflow ? Int.max : result.partialValue
-        }
-    }
-
     private var accessibilityValue: String {
         if let index = self.activeIndex, let date = self.series.date(at: index) {
             return self.accessibilityDescription(at: index, date: date)
         }
-        let total = UsageFormatter.tokenCountString(Self.saturatingTotal(self.series.daily))
+        let total = UsageFormatter.tokenCountString(self.series.daily.reduce(0, SpendActivitySeries.saturatingAdd))
         guard self.series.hasUnknownCoverage else { return total }
         let coverage = spendDashboardCoverageText(
             covered: self.series.coveredDayCount,
@@ -788,20 +758,23 @@ private struct SpendActivityWeekGrid: View {
     let activity: SpendActivityAggregateSeries
     let cumulative: Bool
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var hoverLocation: CGPoint?
 
     private let columns = SpendActivitySeries.weekCount
     private let rows = SpendActivitySeries.dayCount
 
     var body: some View {
+        let palette = SpendActivityPalette(colorScheme: self.colorScheme, contrast: self.contrast)
         let maxValue = self.activity.values.enumerated()
             .filter { self.activity.isCovered[$0.offset] }
             .map(\.element)
             .max() ?? 0
-        GeometryReader { proxy in
-            let gridFrame = SpendActivityGridGeometry.gridFrame(containerWidth: proxy.size.width)
+        SpendActivityScrollableGrid { size, visibleRect in
+            let gridFrame = CGRect(origin: .zero, size: size)
             let pitch = gridFrame.width / CGFloat(self.columns)
-            let cell = max(pitch - 2, 2)
+            let cell = pitch - SpendActivityGridGeometry.cellSpacing
             ZStack(alignment: .topLeading) {
                 Canvas { context, _ in
                     let corner = min(cell * 0.22, 2.5)
@@ -813,25 +786,23 @@ private struct SpendActivityWeekGrid: View {
                             : 0
                         let filled = value > 0 ? max(rawFill, 1) : 0
                         for row in 0..<self.rows {
-                            let fill: Color = if !isCovered {
-                                SpendActivityLevels.unavailableFill
+                            let level: Int? = if !isCovered {
+                                nil
                             } else if row >= self.rows - filled {
-                                SpendActivityLevels.uniformFill
+                                2
                             } else {
-                                SpendActivityLevels.color(forLevel: 0)
+                                0
                             }
                             let rect = CGRect(
                                 x: CGFloat(col) * pitch + (pitch - cell) / 2,
                                 y: CGFloat(row) * pitch + (pitch - cell) / 2,
                                 width: cell,
                                 height: cell)
-                            context.fill(
-                                RoundedRectangle(cornerRadius: corner, style: .continuous).path(in: rect),
-                                with: .color(fill))
+                            palette.drawCell(in: &context, rect: rect, corner: corner, level: level)
                         }
                     }
                 }
-                self.tooltip(size: gridFrame.size, pitch: pitch)
+                self.tooltip(size: gridFrame.size, pitch: pitch, visibleRect: visibleRect)
             }
             .frame(width: gridFrame.width, height: gridFrame.height)
             .contentShape(Rectangle())
@@ -843,29 +814,28 @@ private struct SpendActivityWeekGrid: View {
                     self.hoverLocation = nil
                 }
             }
-            .offset(x: gridFrame.minX)
-        }
-        .aspectRatio(CGFloat(self.columns + 2) / CGFloat(self.rows), contentMode: .fit)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(L("Token activity"))
-        .accessibilityValue(self.accessibilityValue)
-        .accessibilityChildren {
-            ForEach(self.activity.values.indices.filter(self.isVisible), id: \.self) { index in
-                if let weekStart = self.series.weekStartDate(at: index) {
-                    Text(self.accessibilityDescription(at: index, weekStart: weekStart))
+            .onChange(of: visibleRect.minX) { _, _ in self.hoverLocation = nil }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(L("Token activity"))
+            .accessibilityValue(self.accessibilityValue)
+            .accessibilityChildren {
+                ForEach(self.activity.values.indices.filter(self.isVisible), id: \.self) { index in
+                    if let weekStart = self.series.weekStartDate(at: index) {
+                        Text(self.accessibilityDescription(at: index, weekStart: weekStart))
+                    }
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func tooltip(size: CGSize, pitch: CGFloat) -> some View {
+    private func tooltip(size: CGSize, pitch: CGFloat, visibleRect: CGRect) -> some View {
         if let location = self.hoverLocation,
            let col = self.column(at: location, pitch: pitch),
            col < self.activity.values.count,
            let weekStart = self.series.weekStartDate(at: col)
         {
-            let width = min(SpendActivityGridGeometry.tooltipWidth, max(size.width - 8, 1))
+            let width = min(SpendActivityGridGeometry.tooltipWidth, max(visibleRect.width - 8, 1))
             let height = SpendActivityGridGeometry.effectiveTooltipHeight(gridHeight: size.height)
             let originY = SpendActivityGridGeometry.tooltipOriginY(
                 anchorY: location.y,
@@ -882,14 +852,15 @@ private struct SpendActivityWeekGrid: View {
                     x: SpendActivityGridGeometry.tooltipCenterX(
                         anchorX: CGFloat(col) * pitch + pitch / 2,
                         tooltipWidth: width,
-                        gridWidth: size.width),
+                        gridWidth: size.width,
+                        visibleRect: visibleRect),
                     y: originY + height / 2)
                 .allowsHitTesting(false)
         }
     }
 
     private func column(at location: CGPoint, pitch: CGFloat) -> Int? {
-        guard pitch > 0 else { return nil }
+        guard pitch > 0, location.x >= 0, location.y >= 0 else { return nil }
         let col = Int(location.x / pitch)
         guard col >= 0, col < self.columns, self.isVisible(col) else { return nil }
         return col
@@ -908,10 +879,7 @@ private struct SpendActivityWeekGrid: View {
         if self.cumulative {
             return self.activity.values.last ?? 0
         }
-        return self.activity.values.reduce(0) { total, value in
-            let result = total.addingReportingOverflow(value)
-            return result.overflow ? Int.max : result.partialValue
-        }
+        return self.activity.values.reduce(0, SpendActivitySeries.saturatingAdd)
     }
 
     private var accessibilityValue: String {

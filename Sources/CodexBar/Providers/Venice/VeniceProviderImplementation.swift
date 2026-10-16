@@ -72,7 +72,7 @@ struct VeniceProviderImplementation: ProviderImplementation {
                 allowsOff: true,
                 subtitles: {
                     .init(
-                        auto: "Automatic imports Venice cookies from Chrome.",
+                        auto: "Automatic imports Venice cookies from your browser.",
                         manual: "Paste a Cookie header from venice.ai.",
                         off: "Venice cookies are disabled.")
                 },
@@ -82,12 +82,13 @@ struct VeniceProviderImplementation: ProviderImplementation {
 
     @MainActor
     func settingsFields(context: ProviderSettingsContext) -> [ProviderSettingsFieldDescriptor] {
-        [ProviderSettingsFieldDescriptor(
-            id: "venice-cookie",
-            title: "",
-            subtitle: "",
+        let field = VeniceProviderDescriptor.spec.webSource!.field
+        return [ProviderSettingsFieldDescriptor(
+            id: field.id,
+            title: field.title,
+            subtitle: field.subtitle,
             kind: .secure,
-            placeholder: "Cookie: …",
+            placeholder: field.placeholder,
             binding: context.binding(\.veniceCookieHeader),
             actions: [],
             isVisible: {

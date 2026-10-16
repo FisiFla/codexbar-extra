@@ -1,3 +1,4 @@
+import CodexBarCore
 import Foundation
 import Observation
 
@@ -13,6 +14,7 @@ final class CodexAccountPromotionCoordinator {
     weak var managedAccountCoordinator: ManagedCodexAccountCoordinator?
     private(set) var isAuthenticatingLiveAccount = false
     private(set) var isPromotingSystemAccount = false
+    private(set) var daemonRestartNote: String?
 
     init(
         service: CodexAccountPromotionService,
@@ -40,10 +42,12 @@ final class CodexAccountPromotionCoordinator {
         }
 
         self.isPromotingSystemAccount = true
+        self.daemonRestartNote = nil
         defer { self.isPromotingSystemAccount = false }
 
         do {
             let result = try await self.service.promoteManagedAccount(id: managedAccountID)
+            self.daemonRestartNote = result.daemonRestartNote
             return .success(result)
         } catch {
             return .failure(Self.mapUserFacingError(error))
@@ -97,6 +101,8 @@ final class CodexAccountPromotionCoordinator {
                 L("CodexBar could not update managed account storage.")
             case .liveAuthSwapFailed:
                 L("CodexBar could not replace the live Codex auth on this Mac.")
+            case .liveAuthChangedDuringPromotion, .targetAuthChangedDuringPromotion, .liveHomeIsManaged:
+                error.localizedDescription
             }
 
             return CodexSystemAccountPromotionUserFacingError(title: title, message: message)

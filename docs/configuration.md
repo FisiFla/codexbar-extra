@@ -9,10 +9,11 @@ read_when:
 # Configuration
 
 The app's **Help → CodexBar Help** command opens the [README](https://github.com/steipete/CodexBar/blob/main/README.md), including setup instructions and links to provider documentation.
+**Settings → About → Website** opens the project website at [codexbar.app](https://codexbar.app).
 
-CodexBar reads a single JSON config file for CLI and app provider settings.
-The running app observes external in-place edits and atomic replacements, including rapid replacements and restoring older contents. Successful app writes update the observed baseline without being reported as external edits.
-API keys, manual cookie headers, source selection, ordering, and token accounts live here. Keychain is still used for runtime cookie caches, browser Safe Storage access, and provider OAuth/device-flow credentials where those flows require it.
+The app and CLI share one JSON file for API keys, manual cookie headers, source selection, provider ordering, and token accounts. The running app detects external edits, atomic replacements, and restored older contents, including during watcher startup and change callbacks. App writes update the baseline without being treated as external edits.
+Keychain holds runtime cookie caches, browser Safe Storage access, and provider OAuth/device-flow credentials where required.
+App settings writes are coalesced. Normal quit finishes any pending configuration write in the background before exiting, including an edit made just before quitting. A failed final write is logged and does not prevent quitting.
 
 ## Location
 - `CODEXBAR_CONFIG=/path/to/config.json` when set.
@@ -21,7 +22,14 @@ API keys, manual cookie headers, source selection, ordering, and token accounts 
 - `~/.config/codexbar/config.json` by default for new installs.
 - `~/.codexbar/config.json` for existing legacy installs when no XDG config exists.
 - The directory is created if missing.
-- Permissions are set to `0600` whenever CodexBar writes the file on macOS and Linux.
+- Writes on macOS and Linux create a `0600` file inside a private `0700` staging directory beside the destination before writing any bytes, then sync and atomically replace the destination. Failed writes preserve the previous file and remove staging.
+- Current app and CLI writers coordinate through a persistent, empty `config.json.lock` beside the config. CLI token refresh compares the saved credential and publishes its replacement under this lock, skipping the update if another writer holds it. Older versions and external editors do not participate in this advisory lock.
+
+A missing, zero-byte, or JSON-whitespace-only file (spaces, tabs, carriage returns, and line feeds) means no
+configuration. Reads use defaults without creating or rewriting the file; the next settings save writes valid JSON.
+If the running app sees a blank file, it retains its in-memory settings just as it does when the file is removed.
+Non-empty malformed JSON still reports a decode error in the CLI, blocks usage and config edits, and is not
+replaced by `loadOrCreateDefault()`.
 
 ## Root shape
 ```json
@@ -139,6 +147,14 @@ All provider fields are optional unless noted.
 - `region`: provider-specific region (e.g. `zai`, `minimax`). Kimi accepts `china` (default, `kimi.com`) or `international` (`kimi.ai`); see [Kimi setup](kimi.md). This selects API, web, cookie discovery, and dashboard hosts. Automatic CLI credential reuse is limited to China because the credential file has no issuing-host metadata.
 - `workspaceID`: provider-specific workspace/deployment/project ID (e.g. Azure OpenAI deployment, OpenAI API project,
   `opencode`, Notion space).
+- `modelRateLimits`: optional per-model organization rate limits for the provider-level key (`apiKey` or environment
+  key), currently used by OpenAI Live Usage. Token accounts never inherit these limits.
+  Each row has `model`, positive integer `tokensPerMinute`, and optional positive integer `requestsPerMinute`.
+  Model IDs are trimmed; empty IDs and non-positive TPM rows are dropped, non-positive RPM becomes absent,
+  and the last valid row for a duplicate ID wins. Empty arrays are omitted when encoding. Only these manual limits drive
+  organization utilization; API project caps are separate context. Exact IDs match first, then the longest model
+  ID followed by a hyphen (covering dated snapshots).
+  Example: `"modelRateLimits": [{"model": "gpt-5", "tokensPerMinute": 40000000, "requestsPerMinute": 15000}]`.
 - `tokenAccounts`: multi-account tokens for providers in `TokenAccountSupportCatalog`.
 - `claudeSwapEnabled`: allow the Claude provider to read account usage from claude-swap.
 - `claudeSwapExecutablePath`: path to the `cswap` executable.
@@ -183,80 +199,27 @@ codexbar config validate
 Replace the placeholder with your own cookie before fetching usage with `codexbar usage --provider claude`.
 For another provider, use its registered [ID](provider-ids.md) and the cookie format in its [setup guide](providers.md).
 
-CLI shortcuts:
+## CLI configuration
 
 ```bash
 codexbar config providers
 codexbar config enable --provider grok
 codexbar config disable --provider cursor
 printf '%s' "$ELEVENLABS_API_KEY" | codexbar config set-api-key --provider elevenlabs --stdin
-printf '%s' "$OPENAI_ADMIN_KEY" | codexbar config set-api-key --provider openai --stdin
-printf '%s' "$GROQ_API_KEY" | codexbar config set-api-key --provider groq --stdin
-printf '%s' "$LLM_PROXY_API_KEY" | codexbar config set-api-key --provider llmproxy --stdin
-printf '%s' "$LITELLM_API_KEY" | codexbar config set-api-key --provider litellm --stdin
-printf '%s' "$CLAWROUTER_API_KEY" | codexbar config set-api-key --provider clawrouter --stdin
-printf '%s' "$SUB2API_API_KEY" | codexbar config set-api-key --provider sub2api --stdin
-printf '%s' "$AIAND_API_KEY" | codexbar config set-api-key --provider aiand --stdin
-printf '%s' "$XAI_MANAGEMENT_API_KEY" | codexbar config set-api-key --provider xai --stdin
 ```
 
-OpenAI API project scoping uses `workspaceID` in config. This maps to `OPENAI_PROJECT_ID` for Admin API usage and is
-only applied to the configured OpenAI key, not to selected OpenAI token accounts:
+Use the same `set-api-key --provider <id> --stdin` command with these provider/key pairs:
 
-```json
-{
-  "id": "openai",
-  "enabled": true,
-  "apiKey": "<OPENAI_ADMIN_KEY>",
-  "workspaceID": "proj_..."
-}
-```
-
-LLM Proxy also needs a base URL. Set `enterpriseHost` in config or `LLM_PROXY_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "llmproxy",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://proxy.example.com"
-}
-```
-
-LiteLLM also needs a base URL. Set `enterpriseHost` in config or `LITELLM_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "litellm",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://litellm.example.com"
-}
-```
-
-ClawRouter defaults to the hosted service. To use another deployment, set `enterpriseHost` in config or
-`CLAWROUTER_BASE_URL` in the process environment:
-
-```json
-{
-  "id": "clawrouter",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://router.example.com"
-}
-```
-
-sub2api needs its self-hosted base URL. Set `enterpriseHost` in config or `SUB2API_BASE_URL` in the process
-environment. Add labeled token accounts in Settings when one deployment has multiple group API keys:
-
-```json
-{
-  "id": "sub2api",
-  "enabled": true,
-  "apiKey": "<REDACTED>",
-  "enterpriseHost": "https://sub2api.example.com"
-}
-```
+| Provider ID | Key environment variable | Additional configuration |
+| --- | --- | --- |
+| `openai` | `OPENAI_ADMIN_KEY` | `workspaceID` maps to `OPENAI_PROJECT_ID` for Admin API usage; applies to the configured key, not selected token accounts. |
+| `groq` | `GROQ_API_KEY` | See [Groq](groq.md). |
+| `llmproxy` | `LLM_PROXY_API_KEY` | Required base URL: `enterpriseHost` or `LLM_PROXY_BASE_URL`. |
+| `litellm` | `LITELLM_API_KEY` | Required base URL: `enterpriseHost` or `LITELLM_BASE_URL`. |
+| `clawrouter` | `CLAWROUTER_API_KEY` | Defaults to the hosted service; override with `enterpriseHost` or `CLAWROUTER_BASE_URL`. |
+| `sub2api` | `SUB2API_API_KEY` | Required self-hosted base URL: `enterpriseHost` or `SUB2API_BASE_URL`. Use labeled token accounts for multiple group keys. |
+| `aiand` | `AIAND_API_KEY` | See [ai&](aiand.md). |
+| `xai` | `XAI_MANAGEMENT_API_KEY` | See [xAI](xai.md). |
 
 See [CLI configuration](cli-configuration.md) for scripting examples and output formats.
 
@@ -280,6 +243,29 @@ and never paste real cookie values or readable DevTools screenshots into public 
 }
 ```
 
+Each OpenAI token account can store `tokenAccounts.accounts[].modelRateLimits`: omitted means not set; `[]` means
+explicitly no limits (kept so clears sync and older CodexBar versions cannot erase limits during sync). Rows use
+the same validation as provider-level `modelRateLimits`. Limits belong only to that account; there is no
+inheritance. Settings edits the selected account's limits, and switching accounts switches the list.
+
+```json
+{
+  "id": "openai",
+  "modelRateLimits": [{"model": "gpt-5", "tokensPerMinute": 40000000}],
+  "tokenAccounts": {
+    "version": 1,
+    "activeIndex": 0,
+    "accounts": [{
+      "id": "00000000-0000-0000-0000-000000000001",
+      "label": "Other organization",
+      "token": "<OPENAI_ADMIN_KEY>",
+      "addedAt": 1735123456,
+      "modelRateLimits": [{"model": "gpt-5", "tokensPerMinute": 80000000}]
+    }]
+  }
+}
+```
+
 z.ai team accounts also use `usageScope`, `organizationId`, and `workspaceID`; see [z.ai](zai.md).
 
 ## Provider IDs
@@ -298,17 +284,20 @@ Opt-in (Settings → iCloud Sync, off by default; requires a signed release buil
 - **A curated preferences subset** — notification/threshold/display settings.
 - **Usage snapshots** — per-device current usage per account, so other Macs can show last-known data ("via <Mac> · 1h ago") and accounts discovered on other Macs.
 
-The **Macs** list offers **Remove** for other devices, including stale duplicates left after a reinstall. Removal deletes that device record and its cached usage snapshots from iCloud; it leaves shared settings, credentials, and this Mac intact. Sync must be enabled and available. Failed removals remain visible and report a sync error. A Mac still running CodexBar with sync enabled can publish its records again.
+The **Macs** list offers **Remove** for other devices, including stale duplicates left after a reinstall. Removal deletes that device record and its cached usage snapshots from iCloud; it leaves shared settings, credentials, and this Mac intact. Sync must be enabled and available. Failed removals remain visible and report a sync error. A Mac still running CodexBar with sync enabled can publish its records again: if a save finds that its previous record was deleted, it drops the stale server version and retries with a fresh record. If that fresh record is also reported missing, CodexBar surfaces the error instead of retrying indefinitely.
+
+Automatic reception of changes requires a release signed with the macOS Push Notifications entitlement. When that capability is present, enabling sync registers for silent remote notifications; CKSyncEngine manages the CloudKit database subscription. The existing launch, foreground, and 15-minute fetch requests remain, but are not a guarantee of prompt delivery without push support. See [release setup](RELEASING.md#icloud-sync-cloudkit).
+
+Fetched records and removed-record recovery apply together with their local sync bookkeeping. Cancelling sync, turning it off, or accepting a newer batch prevents a suspended older apply from overwriting provider settings, preferences, or fleet records.
 
 Never synced, by design: `hooks` (sync payloads structurally cannot create or modify hook rules — they execute local binaries), machine-local paths (`claudeSwapExecutablePath`, `codexProfileHomePaths`, `awsProfile`/`awsAuthMode`, `source`, `codexActiveSource`, `cookieSource`), menu-bar layout/geometry, debug settings, usage history, and cost ledgers. A provider is never auto-enabled on a Mac where its required local CLI is missing. Records carry a schema version; older app versions pause sync instead of rewriting newer payloads. The CLI does not talk to CloudKit — the running app watches `config.json`, applies CLI or hand edits locally, and syncs changed provider payloads to the fleet when iCloud sync is enabled. Remote changes written to the file are recognized as app writes and are not echoed back. The app tracks per-provider dirty state and never re-uploads unchanged state at launch.
-
-Atomic replacements by CLI tools or editors remain observable during watcher startup and change callbacks, and
-subsequent in-place edits continue to be detected. App-originated writes retain their self-write suppression.
 
 ## Notes
 - Fields not relevant to a provider are ignored.
 - Omitted providers are appended with defaults during normalization.
 - Unknown or retired provider entries are retained with all their fields, settings, and secrets in their original array positions during unrelated saves. This also applies when plugin discovery fails or the plugin runtime is unavailable. `config providers` labels unavailable entries as `plugin (not loaded)`; `config dump` includes them but redacts their opaque fields unless `--show-secrets` is explicitly requested. Remove plugin data through explicit plugin deletion, or remove the entry by editing the file.
+- When a configuration read reports an error, CodexBar preserves `config.json` during startup and later settings saves. At startup it uses temporary defaults without clearing legacy credentials; repair the file and let CodexBar reload it, or remove it and restart, before saving settings. Temporary defaults and earlier queued or staged saves cannot overwrite the repaired file after a reload. Legacy migration retries on the next launch.
+- Reloading account settings from disk reloads the complete config, preserving unrelated edits. A failed config reload, plugin-settings read, or save-time config validation blocks saving until a valid full reload succeeds.
 - Keep the file private; it contains secrets.
 - Validate the file with `codexbar config validate` (JSON output available with `--format json`).
 
@@ -353,7 +342,7 @@ and notification windows; sound, on-screen alerts and threshold markers; pace vi
 and tick appearance; usage/reset display; local cost display, comparisons and summary style; privacy,
 blink/confetti effects, highest-usage selection, optional credits/extra usage, changelog links, currency
 and alphabetical provider sorting. JSON keys match the `SyncedPreferences` fields. It additionally includes
-`mergeIcons`, `mergeIconsStacked`, `switcherShowsIcons`, `mergedOverviewLayout`,
+`limitResetNotificationsEnabled`, `mergeIcons`, `mergeIconsStacked`, `switcherShowsIcons`, `mergedOverviewLayout`,
 `mergedOverviewSelectedProviders`, and `switcherShortcuts`. An overview selection is applied intentionally
 to the receiving Mac's active providers, including an empty selection. `weeklyProgressWorkDays: null`
 restores the seven-day default. Missing keys leave the receiving Mac's settings unchanged. Unknown preference keys,
@@ -361,8 +350,35 @@ unsupported versions, invalid types and invalid shortcut mappings are rejected b
 
 Credentials, accounts, hooks, launch at login, global hotkeys, local paths, device identity, iCloud switches,
 debug settings, and consent are excluded. Import does not enable activity-scan consent. Only the existing
-iCloud projection syncs onward; the additional menu settings and switcher shortcuts stay local unless
-explicitly exported and imported. Import does not modify `config.json` or iCloud's remote-update suppression.
+iCloud projection syncs onward; reset notifications, the additional menu settings, and switcher shortcuts stay local
+unless explicitly exported and imported. Import does not modify `config.json` or iCloud's remote-update suppression.
+
+### Menu bar controls
+
+**Auto** ranks each provider's eligible quota windows from the current snapshot. An exhausted quota comes
+first; otherwise a supported lane’s pace forecast that runs out before reset takes priority, with the shortest time to
+depletion first. Without such a forecast, Auto chooses the highest used percentage. Ties keep provider order.
+The unified highest-usage icon uses the same priority for providers set to Auto and displays the selected
+window's actual percentage. Explicit metric choices and provider-specific credit-pool ordering are preserved.
+This uses reported usage, duration, and reset time; it adds no observation history or background timer.
+
+The layout editor includes an optional **Tokens / min** value token (for example `49M/min`) using the provider’s latest reported complete minute. OpenAI supplies it through the **Tokens per minute** provider setting. It uses the same unavailable placeholder as other value tokens when no throughput is available. The optional **Tokens / min graph** token shows the last hour as a compact graph, using the maximum minute in each column and excluding minutes that are still reporting. Drag either token into your layout to enable it; default layouts include neither. The graph uses the status item’s own provider data and the standard unavailable placeholder when there are no reported minutes.
+
+Switching from **Icon & percent** back to **Meters** or **Critters** redraws the selected style immediately, even when usage has not changed.
+
+Custom two-line layouts show a single leading provider icon at full size beside both text rows. Merged-provider rows, multiple icons, icon-only rows, high-contrast mode, and provider-colored layouts retain inline icons.
+
+The layout editor's **Usage** palette includes graphical bars for session, weekly, scoped weekly, and automatic windows. **Progress bars stacked** places session and weekly bars on separate rows with their reset countdowns. Bars follow the used/remaining display preference and keep balance-only automatic values as text. The compact three-character **Usage bar** remains available.
+
+Older app versions show matching percentages in place of graphical bars. Returning to the newer version restores the bars when the older layout was unchanged; edits made in the older version take precedence.
+
+**Surprise me** is disabled while brand icons are selected, and static brand layouts do not run the blink timer.
+Your animation preference is kept for switching back to critters. If a brand image is unavailable and the legacy
+layout falls back to a critter, that visible critter can still animate; stored layouts remain static.
+
+In **Settings → Menu Bar**, inactive combined-icon controls use dimmed labels. Their titles and explanations remain readable and available to VoiceOver; label styling follows each control's enabled state, including stacked-icon restrictions. The layout size and gap controls remain independent of Merge Icons.
+
+The open menu's persistent **Refresh** row uses a text label aligned with the other actions, without a decorative icon. Click the row, press **⌘R**, or use its VoiceOver button action to refresh.
 
 ### Provider switcher shortcuts
 

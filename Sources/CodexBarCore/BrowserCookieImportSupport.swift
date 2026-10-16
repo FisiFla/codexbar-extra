@@ -4,34 +4,50 @@ import SweetCookieKit
 #endif
 
 /// Shared browser policies and traversal; providers retain session validation, caching, and logging.
-enum BrowserCookieImportSupport {
-    /// Keep deliberate Chrome-only policies explicit without duplicating platform guards in descriptors.
-    static func chromeOnly(reason _: StaticString) -> BrowserCookieImportOrder? {
+public enum BrowserCookieImportSupport {
+    public static func browserNames(for provider: UsageProvider?) -> String {
         #if os(macOS)
-        Browser.defaultImportOrder.filter { $0 == .chrome }
+        self.importOrder(for: provider).map(\.displayName).joined(separator: ", ")
         #else
-        nil
+        "none on this platform"
         #endif
     }
 
     #if os(macOS)
+    static func importOrder(for provider: UsageProvider?) -> [Browser] {
+        let order = provider.map { ProviderDefaults.metadata[$0]?.browserCookieOrder ?? Browser.defaultImportOrder }
+            ?? [.chrome]
+        // Desktop app cookies require an explicit source choice in the owning provider.
+        return order.filter { $0 != .claudeDesktop }
+    }
+
     static func collectSessions<Session>(
-        from browsers: [Browser],
-        missingError: any Error,
-        logger: (String) -> Void,
-        load: (Browser) throws -> [Session]) throws -> [Session]
+        from browsers: some Sequence<Browser>,
+        missingError: @autoclosure () -> (any Error)?,
+        logger: @escaping (String) -> Void,
+        load: @escaping (Browser) throws -> [Session]) throws -> AnySequence<Session>
     {
-        var sessions: [Session] = []
-        for browser in browsers {
-            do {
-                try sessions.append(contentsOf: load(browser))
-            } catch {
-                BrowserCookieAccessGate.recordIfNeeded(error)
-                logger("\(browser.displayName) cookie import failed: \(error.localizedDescription)")
+        var browsers = browsers.makeIterator()
+        var pending = [Session]().makeIterator()
+        let sessions = AnyIterator<Session> {
+            while true {
+                if let session = pending.next() { return session }
+                guard let browser = browsers.next() else { return nil }
+                do {
+                    pending = try load(browser).makeIterator()
+                } catch {
+                    BrowserCookieAccessGate.recordIfNeeded(error)
+                    logger("\(browser.displayName) cookie import failed: \(error.localizedDescription)")
+                }
             }
         }
-        guard !sessions.isEmpty else { throw missingError }
-        return sessions
+        var first = sessions.next()
+        if first == nil, let error = missingError() { throw error }
+        // A single-pass sequence: later browsers are read only after the caller rejects earlier sessions.
+        return AnySequence(AnyIterator {
+            defer { first = nil }
+            return first ?? sessions.next()
+        })
     }
 
     static func loadProfiles(

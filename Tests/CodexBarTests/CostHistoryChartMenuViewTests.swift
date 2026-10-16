@@ -286,6 +286,66 @@ struct CostHistoryChartMenuViewTests {
         #expect(CostHistoryChartMenuView.detailOverflowHint(itemCount: 4) == nil)
     }
 
+    @Test(arguments: [UsageProvider.grok, .codex, .claude])
+    func `token history shows observed names without inventing model totals`(provider: UsageProvider) {
+        func entry(_ names: [String], breakdown: [CostUsageDailyReport.ModelBreakdown]? = nil)
+            -> CostUsageDailyReport.Entry
+        {
+            .init(
+                date: "2026-06-07",
+                inputTokens: nil,
+                outputTokens: nil,
+                totalTokens: 150,
+                costUSD: nil,
+                modelsUsed: names,
+                modelBreakdowns: breakdown)
+        }
+        let names = ["fictional-model-a", "fictional-model-b", " fictional-model-a ", " "]
+        let daily = entry(names)
+        let rows = CostHistoryChartMenuView._detailRowsForTesting(
+            provider: provider, daily: [daily], selectedDateKey: daily.date)
+        #expect(Set(rows.map(\.title)) == ["fictional-model-a", "fictional-model-b"])
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { $0.subtitle == nil })
+        #expect(CostHistoryChartMenuView._detailViewportConfigurationForTesting(
+            provider: provider, daily: [daily]).rowCount == 2)
+        let before = CostHistoryChartMenuView.renderFingerprint(
+            from: Self.makeSnapshot(daily: [daily]),
+            provider: provider)
+        let after = CostHistoryChartMenuView.renderFingerprint(
+            from: Self.makeSnapshot(daily: [entry(["fictional-model-c"])]), provider: provider)
+        #expect(before != after)
+        let emptyBreakdown = entry(names, breakdown: [])
+        #expect(CostHistoryChartMenuView._detailRowsForTesting(
+            provider: provider, daily: [emptyBreakdown], selectedDateKey: daily.date).count == 2)
+        let measured = entry(names, breakdown: [.init(modelName: "measured-model", costUSD: nil, totalTokens: 150)])
+        let measuredRows = CostHistoryChartMenuView._detailRowsForTesting(
+            provider: provider, daily: [measured], selectedDateKey: daily.date)
+        #expect(measuredRows.map(\.title) == ["measured-model"])
+        #expect(measuredRows.first?.subtitle?.contains("150") == true)
+    }
+
+    @Test
+    func `model rows preserve standard and fast subtitles with display currency conversion`() {
+        let entry = Self.entry(modelBreakdowns: [.init(
+            modelName: "fixture-model",
+            costUSD: 3,
+            totalTokens: 300,
+            standardCostUSD: 1,
+            priorityCostUSD: 2,
+            standardTokens: 100,
+            priorityTokens: 200)])
+        let view = CostHistoryChartMenuView(
+            provider: .codex,
+            daily: [entry],
+            totalCostUSD: 3,
+            costMultiplier: 2,
+            hidePersonalInfo: true,
+            width: 320)
+        let rows = view.breakdownRows(entry: entry, barColor: .blue)
+        #expect(rows.first?.modeSubtitle == "Std $2.00 · 100 / Fast $4.00 · 200")
+    }
+
     @Test
     func `session model label maps codex auto review role`() {
         #expect(CostHistoryChartMenuView.sessionModelLabel([]) == "Unknown model")
@@ -1264,6 +1324,35 @@ extension CostHistoryChartMenuViewTests {
     }
 
     @Test
+    func `conversation title changes invalidate visible rows but not privacy masked rows`() {
+        let untitled = CostUsageSessionBreakdown(
+            sessionID: "01a10000-0000-0000-0000-00006c0a5925",
+            lastActivity: Date(timeIntervalSince1970: 100),
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            outputTokens: 10,
+            totalTokens: 110,
+            requestCount: 1,
+            costUSD: 0.88,
+            modelBreakdowns: [])
+        let titled = untitled.withTitle("Python Complexity Tools")
+        let renamed = untitled.withTitle("OpenAPI CLI Tools")
+
+        let fallback = L("Session %@", "01a1...6c0a5925")
+        #expect(Self.fingerprint(sessions: [titled, untitled, untitled.withTitle(" \n ")])
+            .sessions.map(\.name) == ["Python Complexity Tools", fallback, fallback])
+        #expect(Self.fingerprint(sessions: [untitled]) != Self.fingerprint(sessions: [titled]))
+        #expect(Self.fingerprint(sessions: [titled]) != Self.fingerprint(sessions: [renamed]))
+        let hidden = CostHistoryChartMenuView.renderFingerprint(
+            from: Self.makeSnapshot(sessions: [titled]), provider: .codex, hidePersonalInfo: true)
+        #expect(hidden.sessions.map(\.name) == [fallback])
+        #expect(hidden == CostHistoryChartMenuView.renderFingerprint(
+            from: Self.makeSnapshot(sessions: [renamed]), provider: .codex, hidePersonalInfo: true))
+        #expect(hidden == CostHistoryChartMenuView.renderFingerprint(
+            from: Self.makeSnapshot(sessions: [untitled]), provider: .codex, hidePersonalInfo: true))
+    }
+
+    @Test
     @MainActor
     func `render fingerprint tracks displayed session token components`() {
         func session(input: Int?, cached: Int?, output: Int?) -> CostUsageSessionBreakdown {
@@ -1283,5 +1372,17 @@ extension CostHistoryChartMenuViewTests {
         #expect(base != Self.fingerprint(sessions: [session(input: 90, cached: 20, output: 10)]))
         #expect(base != Self.fingerprint(sessions: [session(input: 100, cached: 10, output: 10)]))
         #expect(base != Self.fingerprint(sessions: [session(input: 100, cached: 20, output: 20)]))
+    }
+}
+
+extension CostHistoryChartMenuView {
+    static func _detailRowsForTesting(
+        provider: UsageProvider,
+        daily: [DailyEntry],
+        selectedDateKey: String) -> [(title: String, subtitle: String?)]
+    {
+        let view = Self(provider: provider, daily: daily, totalCostUSD: nil, hidePersonalInfo: false, width: 320)
+        return view.breakdownRows(entry: daily.first { $0.date == selectedDateKey }, barColor: .blue)
+            .map { ($0.title, $0.subtitle) }
     }
 }

@@ -40,7 +40,11 @@ private final class UpdateReadyUpdater: UpdaterProviding {
     var automaticallyDownloadsUpdates = false
     let isAvailable = true
     let unavailableReason: String? = nil
-    let updateStatus = UpdateStatus(isUpdateReady: true)
+    let updateStatus = UpdateStatus()
+
+    init() {
+        self.updateStatus.isUpdateReady = true
+    }
 
     func checkForUpdates(_: Any?) {}
     func installUpdate() {}
@@ -89,7 +93,7 @@ enum BlockingEnrichmentStage: Sendable {
 }
 
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, CodexCredentialFixtures())
 struct StatusMenuPersistentRefreshTests {
     private func makeSettings() -> SettingsStore {
         testSettingsStore(suiteName: "StatusMenuPersistentRefreshTests")
@@ -239,7 +243,7 @@ struct StatusMenuPersistentRefreshTests {
         #expect(updateItem.action != nil)
         #expect(updateItem.target === controller)
 
-        for (title, key) in [("Settings...", ","), ("About CodexBar", ""), ("Quit", "q")] {
+        for (title, key) in [("Settings...", ","), (L("About CodexBar"), ""), ("Quit", "q")] {
             let item = try #require(menu.items.first { $0.title == title })
             #expect(item.view == nil)
             #expect(item.action != nil)
@@ -1240,15 +1244,10 @@ extension StatusMenuPersistentRefreshTests {
         let shortcutFont = try #require(shortcutField.font)
         #expect(abs(shortcutFont.pointSize - PersistentRefreshRowMetrics.defaults.shortcutFontSize) < 0.001)
 
-        let iconView = try #require(refreshView.subviews.compactMap { $0 as? NSImageView }.first)
+        #expect(refreshView.subviews.compactMap { $0 as? NSImageView }.isEmpty)
         let titleField = try #require(
             refreshView.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == "Refresh" })
-        #expect(iconView.frame.minX == PersistentRefreshRowMetrics.defaults.leadingPadding)
-        #expect(titleField.frame.minX == PersistentRefreshRowMetrics.defaults.leadingPadding
-            + PersistentRefreshRowMetrics.defaults.iconWidth
-            + PersistentRefreshRowMetrics.defaults.iconTitleSpacing)
-        #expect(iconView.frame.width == PersistentRefreshRowMetrics.defaults.iconWidth)
-        #expect(iconView.frame.height == PersistentRefreshRowMetrics.defaults.iconWidth)
+        #expect(titleField.frame.minX == PersistentRefreshRowMetrics.defaults.leadingPadding)
     }
 
     @Test

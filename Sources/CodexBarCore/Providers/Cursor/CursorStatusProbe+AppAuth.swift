@@ -16,13 +16,25 @@ extension CursorStatusProbe {
 
 #if os(Linux)
 extension CursorStatusProbe {
+    private static let httpClient = Self.makeHTTPClient()
+
+    static func makeHTTPClient(
+        configuration: URLSessionConfiguration = ProviderHTTPClient.defaultConfiguration()) -> ProviderHTTPClient
+    {
+        // FoundationNetworking can overwrite an explicit Cookie header from its process-local cookie jar.
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        return ProviderHTTPClient(session: ProviderHTTPClient.redirectGuardedSession(configuration: configuration))
+    }
+
     init(
         baseURL: URL = URL(string: "https://cursor.com")!,
         timeout: TimeInterval = 15.0,
         browserDetection: BrowserDetection,
         browserCookieImportOrder: BrowserCookieImportOrder = [],
-        urlSession: any ProviderHTTPTransport = ProviderHTTPClient.shared,
-        appAuthStore: any CursorAppAuthSessionProviding,
+        urlSession: (any ProviderHTTPTransport)? = nil,
+        appAuthStores: [any CursorAppAuthSessionProviding] = [CursorAppAuthStore(), CursorAgentAuthStore()],
         sessionStore: CursorSessionStore = .shared,
         conditionalMutationCoordinator: CookieHeaderCache.ConditionalMutationCoordinator = .shared)
     {
@@ -30,9 +42,9 @@ extension CursorStatusProbe {
         self.timeout = timeout
         self.browserDetection = browserDetection
         self.browserCookieImportOrder = browserCookieImportOrder
-        self.urlSession = urlSession
+        self.urlSession = urlSession ?? Self.httpClient
         self.sessionStore = sessionStore
-        self.appAuthStore = appAuthStore
+        self.appAuthStores = appAuthStores
         self.conditionalMutationCoordinator = conditionalMutationCoordinator
     }
 
@@ -41,28 +53,29 @@ extension CursorStatusProbe {
         log: (String) -> Void,
         perform: @Sendable (String, CursorSessionIdentity?) async throws -> Value) async throws -> Value
     {
-        let appSession: CursorAppAuthSession?
-        do {
-            appSession = try self.appAuthStore.loadSession()
-        } catch {
-            log("Cursor.app local auth read failed: \(error.localizedDescription)")
-            throw CursorStatusProbeError.noSessionCookie
+        for store in self.appAuthStores {
+            try Task.checkCancellation()
+            let appSession: CursorAppAuthSession?
+            do {
+                appSession = try store.loadSession()
+            } catch {
+                log("Cursor local auth read failed: \(error.localizedDescription)")
+                continue
+            }
+            guard let appSession, appSession.isUsable else { continue }
+            log("Using Cursor local auth fallback")
+            do {
+                return try await perform(appSession.cookieHeader(), appSession.identity)
+            } catch let error as CursorStatusProbeError {
+                guard case .notLoggedIn = error else { throw error }
+                log("Cursor local auth was rejected; trying the next local login")
+            } catch {
+                throw ProviderTransportError.preservingIdentity(
+                    of: error,
+                    describedBy: CursorStatusProbeError.networkError(error.localizedDescription))
+            }
         }
-        guard let appSession, appSession.isUsable else {
-            throw CursorStatusProbeError.noSessionCookie
-        }
-        log("Using Cursor.app local auth fallback")
-        do {
-            return try await perform(appSession.cookieHeader(), appSession.identity)
-        } catch let error as CursorStatusProbeError {
-            guard case .notLoggedIn = error else { throw error }
-            log("Cursor.app local auth was rejected")
-            throw CursorStatusProbeError.noSessionCookie
-        } catch {
-            throw ProviderTransportError.preservingIdentity(
-                of: error,
-                describedBy: CursorStatusProbeError.networkError(error.localizedDescription))
-        }
+        throw CursorStatusProbeError.noSessionCookie
     }
 }
 #endif

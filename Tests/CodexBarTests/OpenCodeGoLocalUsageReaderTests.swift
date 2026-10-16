@@ -7,6 +7,152 @@ import Testing
 
 struct OpenCodeGoLocalUsageReaderTests {
     @Test
+    func `database writes and WAL checkpoints invalidate the cached scan`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        let link = env.root.appendingPathComponent("database-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: env.databaseURL)
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: link)
+        let scans = LockIsolated(0)
+        let now = Date(timeIntervalSince1970: 1_772_798_400)
+        let observer: @Sendable () -> Void = { scans.setValue(scans.value + 1) }
+        try OpenCodeGoLocalUsageReader.$scanObserverForTesting.withValue(observer) { () throws in
+            try Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms(now) - 1000, cost: 1)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 8.3)
+            try Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms(now) - 1000, cost: 2)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 25)
+            #expect(scans.value == 2)
+
+            var db: OpaquePointer?
+            guard sqlite3_open(env.databaseURL.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
+            defer { sqlite3_close(db) }
+            try Self.exec(db: db, sql: "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            _ = try reader.fetch(now: now)
+            let beforeWAL = scans.value
+            try Self.exec(db: db, sql: "UPDATE message SET data = json_set(data, '$.cost', 3)")
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 50)
+            #expect(scans.value == beforeWAL + 1)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 50)
+            #expect(scans.value == beforeWAL + 1)
+
+            let walURL = URL(fileURLWithPath: env.databaseURL.path + "-wal")
+            #expect(try (FileManager.default.attributesOfItem(atPath: walURL.path)[.size] as? Int ?? 0) > 0)
+            try Self.exec(db: db, sql: "PRAGMA wal_checkpoint(TRUNCATE);")
+            #expect(try FileManager.default.attributesOfItem(atPath: walURL.path)[.size] as? Int == 0)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 50)
+            #expect(scans.value == beforeWAL + 2)
+            #expect(sqlite3_close(db) == SQLITE_OK)
+            db = nil
+            let mainModified = try FileManager.default.attributesOfItem(atPath: env.databaseURL.path)[.modificationDate]
+                as? Date
+            // SQLite may retain empty sidecars after a clean checkpoint and close.
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = URL(fileURLWithPath: env.databaseURL.path + suffix)
+                if FileManager.default.fileExists(atPath: sidecar.path) {
+                    try FileManager.default.removeItem(at: sidecar)
+                }
+            }
+            #expect(try FileManager.default.attributesOfItem(atPath: env.databaseURL.path)[.modificationDate]
+                as? Date == mainModified)
+            #expect(!FileManager.default.fileExists(atPath: walURL.path))
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 50)
+            #expect(scans.value == beforeWAL + 3)
+        }
+    }
+
+    @Test
+    func `a database changed during scanning is not cached`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        try Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms("2026-03-06T11:00:00.000Z"), cost: 1)
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let scans = LockIsolated(0)
+        let now = Date(timeIntervalSince1970: 1_772_798_400)
+        let observer: @Sendable () -> Void = {
+            scans.setValue(scans.value + 1)
+            _ = try? Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms(now) - 1000, cost: 1)
+        }
+        try OpenCodeGoLocalUsageReader.$scanObserverForTesting.withValue(observer) { () throws in
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 16.7)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 25)
+            #expect(scans.value == 2)
+        }
+    }
+
+    @Test
+    func `oversized row payloads are read without being retained`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms("2026-03-06T11:00:00.000Z"),
+            cost: 3,
+            model: String(repeating: "x", count: 4 * 1024 * 1024))
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let scans = LockIsolated(0)
+        let observer: @Sendable () -> Void = { scans.setValue(scans.value + 1) }
+        try OpenCodeGoLocalUsageReader.$scanObserverForTesting.withValue(observer) { () throws in
+            let now = Date(timeIntervalSince1970: 1_772_798_400)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 25)
+            #expect(try reader.fetch(now: now).rollingUsagePercent == 25)
+            #expect(scans.value == 2)
+        }
+    }
+
+    @Test
+    func `concurrent fetches share one complete database scan`() async throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        try Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms("2026-03-06T11:00:00.000Z"), cost: 3)
+        let reader = OpenCodeGoLocalUsageReader(homeDirectory: env.root)
+        let scans = LockIsolated(0)
+        let observer: @Sendable () -> Void = { scans.setValue(scans.value + 1) }
+        try await OpenCodeGoLocalUsageReader.$scanObserverForTesting.withValue(observer) {
+            try await withThrowingTaskGroup(of: Double.self) { group in
+                for _ in 0..<4 {
+                    group
+                        .addTask {
+                            try reader.fetch(now: Date(timeIntervalSince1970: 1_772_798_400)).rollingUsagePercent
+                        }
+                }
+                for try await percent in group {
+                    #expect(percent == 25)
+                }
+            }
+            #expect(try OpenCodeGoLocalUsageReader(homeDirectory: env.root)
+                .fetch(now: Date(timeIntervalSince1970: 1_772_798_400)).rollingUsagePercent == 25)
+        }
+        #expect(scans.value == 1)
+    }
+
+    @Test
+    func `unchanged database skips scanning while usage windows advance`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        try Self.insertMessage(databaseURL: env.databaseURL, createdMs: Self.ms("2026-03-06T11:00:00.000Z"), cost: 3)
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let scans = LockIsolated(0)
+        let observer: @Sendable () -> Void = { scans.setValue(scans.value + 1) }
+        try OpenCodeGoLocalUsageReader.$scanObserverForTesting.withValue(observer) { () throws in
+            let now = Date(timeIntervalSince1970: 1_772_798_400)
+            let first = try reader.fetch(now: now)
+            let second = try reader.fetch(now: now.addingTimeInterval(60))
+            #expect(first.rollingUsagePercent == 25)
+            #expect(second.rollingResetInSec == first.rollingResetInSec.map { $0 - 60 })
+            let expired = try reader.fetch(now: now.addingTimeInterval(5 * 3600), historyDays: 1)
+            #expect(expired.rollingUsagePercent == 0)
+            #expect(scans.value == 1)
+        }
+    }
+}
+
+extension OpenCodeGoLocalUsageReaderTests {
+    @Test
     func `reads local OpenCode Go history into usage windows`() throws {
         let env = try Self.makeEnvironment()
         defer { try? FileManager.default.removeItem(at: env.root) }
@@ -300,6 +446,54 @@ struct OpenCodeGoLocalUsageReaderTests {
     }
 
     @Test
+    func `v2 session messages add new turns without double counting migrated ones`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+
+        try Self.writeAuth(to: env.authURL)
+        try Self.createDatabase(at: env.databaseURL, includeSessionMessages: true)
+        let reference = Date(timeIntervalSince1970: TimeInterval(Self.ms("2026-03-06T15:00:00.000Z")) / 1000)
+        let day = Calendar.current.startOfDay(for: reference)
+        let now = day.addingTimeInterval(12 * 3600)
+        let migratedID = try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(day.addingTimeInterval(3600)),
+            cost: 3.0,
+            model: "claude-sonnet-4-5")
+        try Self.insertSessionMessage(
+            databaseURL: env.databaseURL,
+            id: migratedID,
+            createdMs: Self.ms(day.addingTimeInterval(3600)),
+            cost: 3.0,
+            model: "claude-sonnet-4-5")
+        try Self.insertSessionMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(day.addingTimeInterval(2 * 3600)),
+            cost: 2.0,
+            model: "gpt-5.1-codex",
+            tokens: ["input": 10, "output": 5, "reasoning": 1, "cache": ["read": 4, "write": 0]])
+        try Self.insertSessionMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(day.addingTimeInterval(3 * 3600)),
+            cost: 7.0,
+            model: "gpt-5.1-codex",
+            providerID: "openrouter")
+
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let snapshot = try reader.fetch(now: now, historyDays: 30)
+
+        let entry = try #require(snapshot.daily.first)
+        #expect(snapshot.daily.count == 1)
+        #expect(entry.costUSD == 5.0)
+        #expect(entry.requestCount == 2)
+        #expect(entry.modelsUsed == ["claude-sonnet-4-5", "gpt-5.1-codex"])
+        let breakdowns = try #require(entry.modelBreakdowns)
+        #expect(breakdowns.last?.modelName == "gpt-5.1-codex")
+        #expect(breakdowns.last?.costUSD == 2.0)
+        #expect(breakdowns.last?.totalTokens == 20)
+    }
+
+    @Test
     func `step finish parts inherit their model from the parent message`() throws {
         let env = try Self.makeEnvironment()
         defer { try? FileManager.default.removeItem(at: env.root) }
@@ -374,22 +568,23 @@ struct OpenCodeGoLocalUsageReaderTests {
     func `model ids with incidental whitespace merge with the trimmed model bucket`() throws {
         let env = try Self.makeEnvironment()
         defer { try? FileManager.default.removeItem(at: env.root) }
+        let reference = Date(timeIntervalSince1970: 1_772_798_400)
+        let now = Calendar.current.startOfDay(for: reference).addingTimeInterval(12 * 3600)
 
         try Self.writeAuth(to: env.authURL)
         try Self.createDatabase(at: env.databaseURL)
         try Self.insertMessage(
             databaseURL: env.databaseURL,
-            createdMs: Self.ms("2026-03-06T11:00:00.000Z"),
+            createdMs: Self.ms(now.addingTimeInterval(-3600)),
             cost: 2.0,
             model: "claude-sonnet-4-5")
         try Self.insertMessage(
             databaseURL: env.databaseURL,
-            createdMs: Self.ms("2026-03-06T12:00:00.000Z"),
+            createdMs: Self.ms(now.addingTimeInterval(-1800)),
             cost: 3.0,
             model: "  claude-sonnet-4-5  ")
 
         let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
-        let now = Date(timeIntervalSince1970: TimeInterval(Self.ms("2026-03-06T15:00:00.000Z")) / 1000)
         let snapshot = try reader.fetch(now: now, historyDays: 30)
 
         let entry = try #require(snapshot.daily.first)
@@ -399,6 +594,204 @@ struct OpenCodeGoLocalUsageReaderTests {
         #expect(breakdowns.first?.modelName == "claude-sonnet-4-5")
         #expect(breakdowns.first?.costUSD == 5.0)
         #expect(breakdowns.first?.requestCount == 2)
+    }
+
+    @Test(arguments: [false, true])
+    func `daily entries carry message token counts per day and model`(includeParts: Bool) throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let reference = Date(timeIntervalSince1970: 1_772_798_400)
+        let now = Calendar.current.startOfDay(for: reference).addingTimeInterval(12 * 3600)
+
+        try Self.writeAuth(to: env.authURL)
+        try Self.createDatabase(at: env.databaseURL, includeParts: includeParts)
+        try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(now.addingTimeInterval(-3600)),
+            cost: 3.0,
+            model: "claude-sonnet-4-5",
+            tokens: [
+                "total": 1600,
+                "input": 100,
+                "output": 20,
+                "reasoning": 30,
+                "cache": ["read": 1400, "write": 50],
+            ])
+        // Older OpenCode rows omit `total`; it is the sum of every component.
+        try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(now.addingTimeInterval(-1800)),
+            cost: 2.0,
+            model: "gpt-5.1-codex",
+            tokens: ["input": 10, "output": 5, "reasoning": 1, "cache": ["read": 4, "write": 0]])
+
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let snapshot = try reader.fetch(now: now, historyDays: 30)
+
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.totalTokens == 1620)
+        #expect(entry.inputTokens == 110)
+        #expect(entry.outputTokens == 25)
+        #expect(entry.reasoningTokens == 31)
+        #expect(entry.cacheReadTokens == 1404)
+        #expect(entry.cacheCreationTokens == 50)
+        let breakdowns = try #require(entry.modelBreakdowns)
+        #expect(breakdowns.first { $0.modelName == "claude-sonnet-4-5" }?.totalTokens == 1600)
+        #expect(breakdowns.first { $0.modelName == "gpt-5.1-codex" }?.totalTokens == 20)
+
+        let tokenSnapshot = snapshot.toCostUsageTokenSnapshot(historyDays: 30)
+        #expect(tokenSnapshot.last30DaysTokens == 1620)
+    }
+
+    @Test
+    func `step finish tokens replace message tokens when parts exist`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let reference = Date(timeIntervalSince1970: 1_772_798_400)
+        let now = Calendar.current.startOfDay(for: reference).addingTimeInterval(12 * 3600)
+
+        try Self.writeAuth(to: env.authURL)
+        try Self.createDatabase(at: env.databaseURL)
+        let messageID = try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(now.addingTimeInterval(-3600)),
+            cost: 3.0,
+            tokens: ["total": 999, "input": 999])
+        try Self.insertStepFinishPart(
+            databaseURL: env.databaseURL,
+            messageID: messageID,
+            createdMs: Self.ms(now.addingTimeInterval(-3600)),
+            cost: 1.0,
+            tokens: ["total": 40, "input": 30, "output": 10])
+        try Self.insertStepFinishPart(
+            databaseURL: env.databaseURL,
+            messageID: messageID,
+            createdMs: Self.ms(now.addingTimeInterval(-3300)),
+            cost: 2.0,
+            tokens: ["total": 60, "input": 50, "output": 10])
+
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let snapshot = try reader.fetch(now: now)
+
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.totalTokens == 100)
+        #expect(entry.inputTokens == 80)
+        #expect(entry.outputTokens == 20)
+    }
+
+    @Test
+    func `a day with a tokenless row keeps its token total unknown`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let reference = Date(timeIntervalSince1970: 1_772_798_400)
+        let now = Calendar.current.startOfDay(for: reference).addingTimeInterval(12 * 3600)
+
+        try Self.writeAuth(to: env.authURL)
+        try Self.createDatabase(at: env.databaseURL)
+        try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(now.addingTimeInterval(-3600)),
+            cost: 3.0,
+            model: "claude-sonnet-4-5",
+            tokens: ["total": 50, "input": 50])
+        try Self.insertMessage(
+            databaseURL: env.databaseURL,
+            createdMs: Self.ms(now.addingTimeInterval(-1800)),
+            cost: 1.0,
+            model: "claude-sonnet-4-5")
+
+        let reader = OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+        let snapshot = try reader.fetch(now: now, historyDays: 30)
+
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.costUSD == 4.0)
+        #expect(entry.totalTokens == nil)
+        #expect(entry.modelBreakdowns?.first?.totalTokens == nil)
+        #expect(snapshot.toCostUsageTokenSnapshot(historyDays: 30).last30DaysTokens == nil)
+    }
+
+    @Test(arguments: [
+        #"{}"#,
+        #"[]"#,
+        #"12"#,
+        #"true"#,
+        #""{\"total\": 10}""#,
+        #"{"input": 10, "output": 5}"#,
+        #"{"total": 10, "input": "10"}"#,
+        #"{"total": 10, "input": true}"#,
+        #"{"total": 10, "input": 1.5}"#,
+        #"{"total": 10, "input": -1}"#,
+        #"{"total": -1}"#,
+        #"{"total": 9223372036854775808}"#,
+        #"{"input": 9223372036854775807, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}"#,
+    ])
+    func `invalid or incomplete token records preserve cost without inventing totals`(json: String) throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        let tokens = try JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed])
+        let now = Date(timeIntervalSince1970: 1_772_798_400)
+        try Self.insertMessage(
+            databaseURL: env.databaseURL, createdMs: Self.ms(now), cost: 2, tokens: tokens)
+
+        let snapshot = try OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+            .fetch(now: now)
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.costUSD == 2)
+        #expect(entry.requestCount == 1)
+        #expect(entry.totalTokens == nil)
+        #expect(entry.inputTokens == nil)
+        #expect(entry.modelBreakdowns?.first?.totalTokens == nil)
+        #expect(snapshot.toCostUsageTokenSnapshot().last30DaysTokens == nil)
+    }
+
+    @Test
+    func `explicit zero total does not invent missing component counts or dollars`() throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        let now = Date(timeIntervalSince1970: 1_772_798_400)
+        try Self.insertMessage(
+            databaseURL: env.databaseURL, createdMs: Self.ms(now), cost: 0, tokens: ["total": 0])
+
+        let snapshot = try OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+            .fetch(now: now)
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.totalTokens == 0)
+        #expect(entry.inputTokens == nil)
+        #expect(entry.outputTokens == nil)
+        #expect(entry.reasoningTokens == nil)
+        #expect(entry.cacheReadTokens == nil)
+        #expect(entry.cacheCreationTokens == nil)
+        #expect(entry.costUSD == 0)
+        #expect(snapshot.toCostUsageTokenSnapshot().last30DaysTokens == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func `overflowing day totals stay unknown across later rows`(differentModels: Bool) throws {
+        let env = try Self.makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try Self.createDatabase(at: env.databaseURL)
+        let now = Date(timeIntervalSince1970: 1_772_798_400)
+        for (index, count) in [Int.max, 1, 10].enumerated() {
+            try Self.insertMessage(
+                databaseURL: env.databaseURL,
+                createdMs: Self.ms(now),
+                cost: 1,
+                model: differentModels ? "test-model-\(index)" : "test-model",
+                tokens: ["total": count])
+        }
+
+        let snapshot = try OpenCodeGoLocalUsageReader(authURL: env.authURL, databaseURL: env.databaseURL)
+            .fetch(now: now)
+        let entry = try #require(snapshot.daily.first)
+        #expect(entry.totalTokens == nil)
+        #expect(entry.requestCount == 3)
+        #expect(entry.costUSD == 3)
+        if !differentModels {
+            #expect(entry.modelBreakdowns?.first?.totalTokens == nil)
+        }
+        #expect(snapshot.toCostUsageTokenSnapshot().last30DaysTokens == nil)
     }
 
     @Test
@@ -432,7 +825,11 @@ struct OpenCodeGoLocalUsageReaderTests {
         try data.write(to: url)
     }
 
-    private static func createDatabase(at url: URL) throws {
+    private static func createDatabase(
+        at url: URL,
+        includeParts: Bool = true,
+        includeSessionMessages: Bool = false) throws
+    {
         var db: OpaquePointer?
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
         defer { sqlite3_close(db) }
@@ -455,6 +852,24 @@ struct OpenCodeGoLocalUsageReaderTests {
                   time_updated INTEGER
                 );
             """)
+        if !includeParts {
+            try Self.exec(db: db, sql: "DROP TABLE part")
+        }
+        if includeSessionMessages {
+            try Self.exec(
+                db: db,
+                sql: """
+                    CREATE TABLE session_message (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      type TEXT NOT NULL,
+                      seq INTEGER NOT NULL,
+                      time_created INTEGER NOT NULL,
+                      time_updated INTEGER NOT NULL,
+                      data TEXT NOT NULL
+                    );
+                """)
+        }
     }
 
     private static func configureIdleWAL(at url: URL) throws {
@@ -481,7 +896,8 @@ struct OpenCodeGoLocalUsageReaderTests {
         databaseURL: URL,
         createdMs: Int64,
         cost: Double?,
-        model: String? = nil) throws -> String
+        model: String? = nil,
+        tokens: Any? = nil) throws -> String
     {
         var db: OpaquePointer?
         guard sqlite3_open(databaseURL.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
@@ -498,6 +914,9 @@ struct OpenCodeGoLocalUsageReaderTests {
         }
         if let model {
             payload["modelID"] = model
+        }
+        if let tokens {
+            payload["tokens"] = tokens
         }
         let data = try JSONSerialization.data(withJSONObject: payload)
         let json = String(data: data, encoding: .utf8) ?? "{}"
@@ -522,11 +941,58 @@ struct OpenCodeGoLocalUsageReaderTests {
         return messageID
     }
 
+    private static func insertSessionMessage(
+        databaseURL: URL,
+        id: String = UUID().uuidString,
+        createdMs: Int64,
+        cost: Double,
+        model: String,
+        providerID: String = "opencode-go",
+        tokens: [String: Any]? = nil) throws
+    {
+        var db: OpaquePointer?
+        guard sqlite3_open(databaseURL.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
+        defer { sqlite3_close(db) }
+
+        var payload: [String: Any] = [
+            "model": ["providerID": providerID, "id": model],
+            "cost": cost,
+            "time": ["created": createdMs],
+        ]
+        if let tokens {
+            payload["tokens"] = tokens
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let json = String(data: data, encoding: .utf8) ?? "{}"
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db,
+            """
+            INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES (?, ?, 'assistant', 0, ?, ?, ?)
+            """,
+            -1,
+            &stmt,
+            nil) == SQLITE_OK
+        else { throw SQLiteTestError.prepare }
+        defer { sqlite3_finalize(stmt) }
+
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, id, -1, transient)
+        sqlite3_bind_text(stmt, 2, "session-1", -1, transient)
+        sqlite3_bind_int64(stmt, 3, createdMs)
+        sqlite3_bind_int64(stmt, 4, createdMs)
+        sqlite3_bind_text(stmt, 5, json, -1, transient)
+        guard sqlite3_step(stmt) == SQLITE_DONE else { throw SQLiteTestError.step }
+    }
+
     private static func insertStepFinishPart(
         databaseURL: URL,
         messageID: String,
         createdMs: Int64,
-        cost: Double) throws
+        cost: Double,
+        tokens: [String: Any] = ["input": 1, "output": 1, "total": 2]) throws
     {
         var db: OpaquePointer?
         guard sqlite3_open(databaseURL.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
@@ -535,7 +1001,7 @@ struct OpenCodeGoLocalUsageReaderTests {
         let payload: [String: Any] = [
             "type": "step-finish",
             "cost": cost,
-            "tokens": ["input": 1, "output": 1, "total": 2],
+            "tokens": tokens,
         ]
         let data = try JSONSerialization.data(withJSONObject: payload)
         let json = String(data: data, encoding: .utf8) ?? "{}"

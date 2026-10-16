@@ -35,6 +35,41 @@ struct BrowserCookieAccessGateTests {
     }
 
     @Test
+    func `the gate reports suppression without changing its access decision`() {
+        let failures = LockIsolated<[Browser]>([])
+        BrowserCookieAccessGate.withAccessFailureObserver { browser, profileDenied in
+            #expect(!profileDenied)
+            failures.setValue(failures.value + [browser])
+        } operation: {
+            BrowserCookieAccessGate.withShouldAttemptOverrideForTesting(false) {
+                #expect(!BrowserCookieAccessGate.shouldAttempt(.chrome))
+            }
+            BrowserCookieAccessGate.withShouldAttemptOverrideForTesting(true) {
+                #expect(BrowserCookieAccessGate.shouldAttempt(.chrome))
+            }
+        }
+        #expect(failures.value == [.chrome])
+    }
+
+    @Test
+    func `manual retry respects browser and family denial cooldowns`() {
+        BrowserCookieAccessGate.resetForTesting()
+        defer { BrowserCookieAccessGate.resetForTesting() }
+        BrowserCookieAccessGate.recordDenied(for: .chrome)
+        ProviderInteractionContext.$current.withValue(.userInitiated) {
+            KeychainAccessGate.withTaskOverrideForTesting(false) {
+                BrowserCookieAccessGate.withExplicitRetry {
+                    #expect(!BrowserCookieAccessGate.shouldAttempt(.chrome))
+                    #expect(!BrowserCookieAccessGate.shouldAttempt(.brave))
+                }
+                #expect(!BrowserCookieAccessGate.shouldAttempt(.chrome))
+            }
+        }
+        #expect(!self.evaluate(.chrome, preflight: .interactionRequired, interaction: .background))
+        #expect(!self.evaluate(.chrome, preflight: .allowed, interaction: .userInitiated, keychainDisabled: true))
+    }
+
+    @Test
     func `background refresh proceeds when the no-UI preflight already grants access`() {
         BrowserCookieAccessGate.resetForTesting()
         defer { BrowserCookieAccessGate.resetForTesting() }
@@ -149,10 +184,12 @@ struct BrowserCookieAccessGateTests {
         // Safari does not decrypt cookies via the Keychain, so the gate short-circuits to true before
         // any preflight or interaction check — in the background just as in a user-initiated refresh.
         #expect(self.evaluate(.safari, preflight: .interactionRequired, interaction: .background))
+        #expect(self.evaluate(.firefox, preflight: .interactionRequired, interaction: .background))
+        #expect(self.evaluate(.zen, preflight: .interactionRequired, interaction: .background))
     }
 
     @Test
-    func `record reads suppress SweetCookieKit interaction only in the background`() {
+    func `record reads start without SweetCookieKit interaction in every context`() {
         let backgroundDisallowed = ProviderInteractionContext.$current.withValue(.background) {
             BrowserCookieAccessGate.withRecordReadInteractionPolicy {
                 BrowserCookieKeychainAccessGate.isUserInteractionDisallowed
@@ -165,7 +202,35 @@ struct BrowserCookieAccessGateTests {
         }
 
         #expect(backgroundDisallowed)
-        #expect(userInitiatedDisallowed == false)
+        #expect(userInitiatedDisallowed)
+    }
+
+    @Test
+    func `selected store read obeys the background no prompt gate`() throws {
+        BrowserCookieAccessGate.resetForTesting()
+        defer { BrowserCookieAccessGate.resetForTesting() }
+
+        let home = URL(fileURLWithPath: "/synthetic/codexbar-browser-test")
+        let store = BrowserCookieStore(
+            browser: .edge,
+            profile: BrowserProfile(id: home.appendingPathComponent("Profile 1").path, name: "Synthetic"),
+            kind: .network,
+            label: "Synthetic Edge",
+            databaseURL: home.appendingPathComponent("Profile 1/Network/Cookies"))
+        let client = BrowserCookieClient(configuration: .init(homeDirectories: [home]))
+        let records = try KeychainAccessGate.withTaskOverrideForTesting(false) {
+            try ProviderInteractionContext.$current.withValue(.background) {
+                try KeychainAccessPreflight.withCheckGenericPasswordOverrideForTesting { _, _ in
+                    .interactionRequired
+                } operation: {
+                    try client.codexBarRecords(
+                        matching: BrowserCookieQuery(domains: ["langdock.com"], domainMatch: .exact),
+                        in: store)
+                }
+            }
+        }
+
+        #expect(records.isEmpty)
     }
 }
 #endif

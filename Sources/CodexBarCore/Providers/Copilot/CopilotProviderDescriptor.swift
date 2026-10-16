@@ -47,14 +47,13 @@ public enum CopilotProviderDescriptor {
                     "enterprise": "Enterprise",
                 ],
                 debugLogUnavailableMessage: "Copilot debug log not yet implemented",
-                browserCookieOrder: BrowserCookieImportSupport.chromeOnly(
-                    reason: "Budget imports must not prompt unrelated browsers"),
+                browserCookieOrder: ProviderBrowserCookieDefaults.defaultImportOrder,
                 dashboardURL: "https://github.com/settings/copilot",
                 statusPageURL: "https://www.githubstatus.com/"),
             branding: ProviderBranding(
                 iconStyle: .init(provider: .copilot),
                 iconResourceName: "ProviderIcon-copilot",
-                color: ProviderColor(red: 168 / 255, green: 85 / 255, blue: 247 / 255),
+                color: ProviderColor(hex: 0xA855F7),
                 confettiPalette: [
                     ProviderColor(hex: 0x8534F3),
                     ProviderColor(hex: 0xF08A3A),
@@ -79,11 +78,10 @@ public enum CopilotProviderDescriptor {
                 },
                 automaticSelectionPrioritizesExhaustedWindow: false,
                 menuBarWindowResolver: { context in
-                    guard context.metric == .automatic,
-                          let primary = context.snapshot.primary,
-                          let secondary = context.snapshot.secondary
-                    else { return .unhandled }
-                    return .resolved(primary.usedPercent >= secondary.usedPercent ? primary : secondary)
+                    guard context.metric == .automatic else { return .unhandled }
+                    return .automaticCandidates([
+                        context.snapshot.primary, context.snapshot.secondary,
+                    ].compactMap(\.self))
                 },
                 switcherUsedPercentFallback: { snapshot in
                     snapshot.detailRow(id: CopilotCreditDetailRows.seatRowID)?.progress?.usedPercent

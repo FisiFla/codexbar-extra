@@ -526,15 +526,7 @@ public struct GeminiStatusProbe: Sendable {
         environment: [String: String]) -> String?
     {
         guard let path = environment["PATH"] else { return nil }
-        for directory in path.split(separator: ":") where !directory.isEmpty {
-            let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
-                .appendingPathComponent(executable)
-                .path
-            if FileManager.default.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        return BinaryLocator.find(executable, in: path.split(separator: ":").map(String.init), fileManager: .default)
     }
 
     private static func resolveGeminiPackageRootViaFnm(
@@ -870,7 +862,7 @@ public struct GeminiStatusProbe: Sendable {
         return newAccessToken
     }
 
-    private static func updateStoredCredentials(_ refreshResponse: [String: Any], homeDirectory: String) throws {
+    static func updateStoredCredentials(_ refreshResponse: [String: Any], homeDirectory: String) throws {
         let credsURL = URL(fileURLWithPath: homeDirectory + Self.credentialsPath)
 
         guard let existingCreds = try? Data(contentsOf: credsURL),
@@ -891,7 +883,7 @@ public struct GeminiStatusProbe: Sendable {
         }
 
         let updatedData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted])
-        try updatedData.write(to: credsURL, options: .atomic)
+        try CredentialFileWriter.writePrivate(updatedData, to: credsURL)
     }
 
     private static func loadCredentials(homeDirectory: String) throws -> OAuthCredentials {

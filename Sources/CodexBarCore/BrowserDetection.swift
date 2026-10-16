@@ -289,50 +289,37 @@ public final class BrowserDetection: Sendable {
     }
 
     private func requiresProfileValidation(_ browser: Browser) -> Bool {
-        // Chromium-based browsers should have Default/ or Profile*/ subdirectories
-        if browser == .safari {
-            return false
-        }
-
-        if browser == .helium {
-            // Helium doesn't use the Default/Profile* pattern
-            return false
-        }
-
-        if browser.usesGeckoProfileStore {
-            // Firefox should have at least one *.default* directory
-            return true
-        }
-
-        if browser.usesChromiumProfileStore {
-            return true
-        }
-
-        return false
+        // Helium does not use the Default/Profile* pattern; Gecko uses *.default* directories.
+        browser != .helium && (browser.usesGeckoProfileStore || browser.usesChromiumProfileStore)
     }
 
     private func hasValidProfileDirectory(for browser: Browser, at profilePath: String) -> Bool {
         guard let contents = self.directoryContents(profilePath) else { return false }
 
-        // Check for Default/ or Profile*/ subdirectories for Chromium browsers
-        let hasProfile = contents.contains { name in
-            name == "Default" || name.hasPrefix("Profile ") || name.hasPrefix("user-")
-        }
+        if browser == .claudeDesktop { return self.hasValidCookieStore(for: browser, at: profilePath) }
 
+        // Gecko default profiles end in `.default`, `.default-release`, or a channel form such as
+        // Developer Edition's `.dev-edition-default`.
         if browser.usesGeckoProfileStore {
             return contents.contains { name in
-                name.range(of: ".default", options: [.caseInsensitive]) != nil
+                name.range(of: "default", options: [.caseInsensitive]) != nil
             }
         }
 
-        return hasProfile
+        // Check for Default/ or Profile*/ subdirectories for Chromium browsers.
+        return contents.contains { name in
+            name == "Default" || name.hasPrefix("Profile ") || name.hasPrefix("user-")
+        }
     }
 
     private func hasValidCookieStore(for browser: Browser, at profilePath: String) -> Bool {
+        if browser == .claudeDesktop {
+            return self.fileExists("\(profilePath)/Cookies") || self.fileExists("\(profilePath)/Network/Cookies")
+        }
         guard let contents = self.directoryContents(profilePath) else { return false }
 
         if browser.usesGeckoProfileStore {
-            for name in contents where name.range(of: ".default", options: [.caseInsensitive]) != nil {
+            for name in contents where name.range(of: "default", options: [.caseInsensitive]) != nil {
                 let cookieDB = "\(profilePath)/\(name)/cookies.sqlite"
                 if self.fileExists(cookieDB) {
                     return true
@@ -350,6 +337,31 @@ public final class BrowserDetection: Sendable {
         }
 
         return false
+    }
+
+    static func selectedChromiumProfileAccessIssue(
+        profileID: String,
+        browser: Browser,
+        homeDirectories: [URL],
+        listDirectory: (String) throws -> [String] = FileManager.default.contentsOfDirectory(atPath:))
+        -> BrowserProfileAccessIssue?
+    {
+        guard BrowserCookieAccessGate.cookieStoreAccessDecision(homeDirectories: homeDirectories) == .allowed else {
+            return nil
+        }
+        let profile = URL(fileURLWithPath: profileID).standardizedFileURL
+        let root = profile.deletingLastPathComponent()
+        guard ChromiumProfileLocator.roots(for: [browser], homeDirectories: homeDirectories)
+            .contains(where: { $0.url.standardizedFileURL.path == root.path }) else { return nil }
+
+        for directory in [root, profile] {
+            do {
+                _ = try listDirectory(directory.path)
+            } catch {
+                if self.isPermissionError(error) { return .accessDenied }
+            }
+        }
+        return nil
     }
 
     private static func probeProfileAccessIssue(_ path: String) -> BrowserProfileAccessIssue? {

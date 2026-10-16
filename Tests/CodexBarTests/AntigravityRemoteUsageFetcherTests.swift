@@ -17,6 +17,61 @@ private actor AntigravityCredentialUpdateCapture {
 @Suite(.serialized)
 // swiftlint:disable:next type_body_length
 struct AntigravityRemoteUsageFetcherTests {
+    @Test(arguments: ["paid-tier", "paid-tier-id", "five-hour", "weekly", "disabled", "unmeasured"])
+    func `remote plan respects paid metadata and measured five hour quotas`(scenario: String) async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeAntigravityCredentials(
+            accessToken: "token",
+            refreshToken: nil,
+            expiry: Date().addingTimeInterval(3600),
+            email: "user@example.com",
+            projectID: "test-project")
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            let url = try #require(request.url)
+            var body: [String: Any]
+            switch url.path {
+            case "/v1internal:loadCodeAssist":
+                body = ["currentTier": ["id": "free-tier", "name": "Free"]]
+                if scenario == "paid-tier" {
+                    body["paidTier"] = ["id": "g1-pro-tier", "name": "Google AI Pro"]
+                    body["planInfo"] = ["planType": "Free"]
+                } else if scenario == "paid-tier-id" {
+                    body["paidTier"] = ["id": "standard-tier"]
+                    body["planInfo"] = ["planType": "Free"]
+                }
+            case "/v1internal:retrieveUserQuotaSummary":
+                var buckets: [[String: Any]] = [[
+                    "bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.75,
+                ]]
+                if scenario != "weekly" {
+                    var session: [String: Any] = ["bucketId": "gemini-5h", "window": "5h"]
+                    if scenario != "unmeasured" { session["remainingFraction"] = 0.5 }
+                    session["disabled"] = scenario == "disabled"
+                    buckets.append(session)
+                }
+                body = ["groups": [["displayName": "Gemini Models", "buckets": buckets]]]
+            default:
+                throw URLError(.unsupportedURL)
+            }
+            return GeminiAPITestHelpers.response(
+                url: url.absoluteString, status: 200, body: GeminiAPITestHelpers.jsonData(body))
+        }
+        let snapshot = try await AntigravityRemoteUsageFetcher(
+            timeout: 1, homeDirectory: env.homeURL.path, dataLoader: dataLoader).fetch()
+        let expectedPlan: String? = switch scenario {
+        case "paid-tier": "Google AI Pro"
+        case "paid-tier-id": "Paid"
+        case "five-hour": nil
+        default: "Free"
+        }
+        #expect(snapshot.accountPlan == expectedPlan)
+        let usage = try snapshot.toUsageSnapshot()
+        #expect(usage.identity?.loginMethod == expectedPlan)
+        #expect(snapshot.accountEmail == "user@example.com")
+        #expect(usage.extraRateWindows?.first { $0.window.windowMinutes == 10080 }?.window.usedPercent == 25)
+    }
+
     @Test
     func `antigravity supports token accounts for quick account switching`() {
         let support = TokenAccountSupportCatalog.support(for: .antigravity)
@@ -1146,6 +1201,119 @@ struct AntigravityRemoteUsageFetcherTests {
         await #expect(throws: AntigravityRemoteFetchError.notLoggedIn) {
             try await fetcher.fetch()
         }
+    }
+
+    @Test
+    func `remote fetch asks for sign in again when the oauth client cannot read consumer quota`() async throws {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeAntigravityCredentials(
+            accessToken: "token",
+            refreshToken: nil,
+            expiry: Date().addingTimeInterval(3600),
+            idToken: GeminiAPITestHelpers.makeIDToken(email: "user@example.com"),
+            email: "user@example.com")
+
+        final class Recorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var paths: [String] = []
+
+            func append(_ value: String) {
+                self.lock.lock()
+                self.paths.append(value)
+                self.lock.unlock()
+            }
+
+            func values() -> [String] {
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                return self.paths
+            }
+        }
+
+        let recorder = Recorder()
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            guard let url = request.url else { throw URLError(.badURL) }
+            recorder.append(url.path)
+            if url.path == "/v1internal:loadCodeAssist" {
+                // Shape Cloud Code returns for a consumer account whose token came from the non-consumer client.
+                return GeminiAPITestHelpers.response(
+                    url: url.absoluteString,
+                    status: 200,
+                    body: GeminiAPITestHelpers.jsonData([
+                        "allowedTiers": [[
+                            "id": "standard-tier",
+                            "isDefault": true,
+                            "userDefinedCloudaicompanionProject": true,
+                        ]],
+                        "ineligibleTiers": [[
+                            "reasonCode": "GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT",
+                            "reasonMessage": "Client does not support Google TOS.",
+                            "tierId": "free-tier",
+                        ]],
+                    ]))
+            }
+            return GeminiAPITestHelpers.response(
+                url: url.absoluteString,
+                status: 200,
+                body: GeminiAPITestHelpers.jsonData([
+                    "groups": [[
+                        "displayName": "All Models",
+                        "buckets": [["bucketId": "gemini-3.1-pro-high", "remainingFraction": 1]],
+                    ]],
+                ]))
+        }
+
+        let fetcher = AntigravityRemoteUsageFetcher(
+            timeout: 1,
+            homeDirectory: env.homeURL.path,
+            dataLoader: dataLoader)
+        await #expect(throws: AntigravityRemoteFetchError.reauthenticationRequired) {
+            try await fetcher.fetch()
+        }
+        #expect(recorder.values() == ["/v1internal:loadCodeAssist"])
+        let diagnostic = AntigravityOfflineFetchStrategy().diagnostic(
+            forPriorFailure: AntigravityRemoteFetchError.reauthenticationRequired)
+        #expect(diagnostic?.contains("Sign in to it again.") == true)
+    }
+
+    @Test(arguments: ["stored-project", "returned-project", "current-tier", "other-reason"])
+    func `consumer client recovery preserves onboarded and unrelated eligibility responses`(
+        caseName: String) async throws
+    {
+        let env = try GeminiTestEnvironment()
+        defer { env.cleanup() }
+        try env.writeAntigravityCredentials(
+            accessToken: "token",
+            refreshToken: nil,
+            expiry: Date().addingTimeInterval(3600),
+            email: "user@example.com",
+            projectID: caseName == "stored-project" ? "saved-project" : nil)
+        let dataLoader = GeminiAPITestHelpers.dataLoader { request in
+            let url = try #require(request.url)
+            var body: [String: Any]
+            switch url.path {
+            case "/v1internal:loadCodeAssist":
+                body = ["ineligibleTiers": [[
+                    "reasonCode": caseName == "other-reason" ? "OTHER_REASON" : "GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT",
+                ]]]
+                if caseName == "returned-project" { body["cloudaicompanionProject"] = "returned-project" }
+                if caseName == "current-tier" { body["currentTier"] = ["id": "standard-tier"] }
+            case "/v1internal:onboardUser":
+                body = ["response": ["cloudaicompanionProject": "onboarded-project"]]
+            default:
+                body = ["groups": [[
+                    "displayName": "All Models",
+                    "buckets": [["bucketId": "gemini-3.1-pro-high", "remainingFraction": 0.5]],
+                ]]]
+            }
+            return GeminiAPITestHelpers.response(
+                url: url.absoluteString, status: 200, body: GeminiAPITestHelpers.jsonData(body))
+        }
+        let snapshot = try await AntigravityRemoteUsageFetcher(
+            timeout: 1, homeDirectory: env.homeURL.path, dataLoader: dataLoader).fetch()
+        #expect(snapshot.hasKnownQuotaSummary)
+        #expect(snapshot.accountEmail == "user@example.com")
     }
 
     @Test

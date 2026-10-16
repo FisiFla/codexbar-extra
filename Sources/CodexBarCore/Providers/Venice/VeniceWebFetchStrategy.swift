@@ -17,7 +17,7 @@ public struct VeniceResolvedSession: Sendable {
 /// prompt, so it only runs when the caller explicitly selects the web source.
 struct VeniceWebFetchStrategy: ProviderFetchStrategy {
     typealias UsageLoader = @Sendable (String) async throws -> UsageSnapshot
-    typealias SessionLoader = @Sendable (BrowserDetection) throws -> [VeniceResolvedSession]
+    typealias SessionLoader = @Sendable (BrowserDetection) throws -> AnySequence<VeniceResolvedSession>
 
     let id: String = "venice.web"
     let kind: ProviderFetchKind = .web
@@ -60,7 +60,7 @@ struct VeniceWebFetchStrategy: ProviderFetchStrategy {
         // sessions: it is the user's deliberate credential, and it keeps web
         // quota working where the browser profile is unreadable.
         if context.settings?.venice?.cookieSource == .manual {
-            guard let manual = Self.manualCookieHeader(from: context) else {
+            guard let manual = VeniceCookieHeader.header(from: context.settings?.venice?.manualCookieHeader) else {
                 throw VeniceUsageError.missingCredentials
             }
             let usage = try await self.usageLoader(manual)
@@ -68,7 +68,6 @@ struct VeniceWebFetchStrategy: ProviderFetchStrategy {
         }
         let sessions = try self.sessionLoader(context.browserDetection)
         try Task.checkCancellation()
-        guard !sessions.isEmpty else { throw VeniceUsageError.missingCredentials }
         var lastError: (any Error)?
         for session in sessions {
             try Task.checkCancellation()
@@ -91,20 +90,15 @@ struct VeniceWebFetchStrategy: ProviderFetchStrategy {
         false
     }
 
-    private static func manualCookieHeader(from context: ProviderFetchContext) -> String? {
-        guard context.settings?.venice?.cookieSource == .manual else { return nil }
-        return VeniceCookieHeader.header(from: context.settings?.venice?.manualCookieHeader)
-    }
-
     #if os(macOS)
-    private static func defaultSessions(browserDetection: BrowserDetection) throws -> [VeniceResolvedSession] {
-        try VeniceCookieImporter.importSessions(browserDetection: browserDetection).map {
-            VeniceResolvedSession(cookieHeader: $0.cookieHeader, sourceLabel: $0.sourceLabel)
-        }
+    private static func defaultSessions(browserDetection: BrowserDetection) throws
+    -> AnySequence<VeniceResolvedSession> {
+        try VeniceCookieImporter.sessionCandidates(browserDetection: browserDetection)
     }
     #else
-    private static func defaultSessions(browserDetection _: BrowserDetection) throws -> [VeniceResolvedSession] {
-        []
+    private static func defaultSessions(browserDetection _: BrowserDetection) throws
+    -> AnySequence<VeniceResolvedSession> {
+        AnySequence([])
     }
     #endif
 }

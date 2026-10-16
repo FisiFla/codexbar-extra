@@ -29,20 +29,24 @@ public struct CodexThreadMetadataReader: Sendable {
             codexHomeDirectory: codexHomeDirectory,
             environment: environment,
             resolvedWorkingDirectory: resolvedWorkingDirectory)
-        let candidates = (try? fileManager.contentsOfDirectory(
-            at: sqliteHomeDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles])) ?? []
-        self.databaseURL = candidates
-            .filter { $0.pathExtension == "sqlite" && $0.deletingPathExtension().lastPathComponent.hasPrefix("state_") }
-            .max { Self.stateVersion($0) < Self.stateVersion($1) }
-            ?? sqliteHomeDirectory.appendingPathComponent("state_5.sqlite")
+        self.databaseURL = Self.databaseURL(sqliteHomeDirectory: sqliteHomeDirectory, fileManager: fileManager)
         self.sessionIndexURL = codexHomeDirectory.appendingPathComponent("session_index.jsonl")
     }
 
     public init(databaseURL: URL) {
         self.databaseURL = databaseURL
         self.sessionIndexURL = nil
+    }
+
+    static func databaseURL(sqliteHomeDirectory: URL, fileManager: FileManager) -> URL {
+        let candidates = (try? fileManager.contentsOfDirectory(
+            at: sqliteHomeDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        return candidates
+            .filter { $0.pathExtension == "sqlite" && $0.deletingPathExtension().lastPathComponent.hasPrefix("state_") }
+            .max { Self.stateVersion($0) < Self.stateVersion($1) }
+            ?? sqliteHomeDirectory.appendingPathComponent("state_5.sqlite")
     }
 
     public func metadata(for sessionIDs: Set<String>) -> [String: CodexThreadMetadata] {
@@ -62,17 +66,17 @@ public struct CodexThreadMetadataReader: Sendable {
         guard sqlite3_open_v2(self.databaseURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
               let database
         else {
-            if database != nil {
-                sqlite3_close(database)
-            }
+            sqlite3_close(database)
             return result
         }
         defer { sqlite3_close(database) }
         sqlite3_busy_timeout(database, 100)
 
+        // Bound prompt-sized fallback titles before Swift conversion; SQLite counts Unicode code points for TEXT.
+        let boundedTitle = "substr(title, 1, 256)"
         let queries = [
-            "SELECT title, agent_path FROM threads WHERE id = ?1 LIMIT 1",
-            "SELECT title, NULL FROM threads WHERE id = ?1 LIMIT 1",
+            "SELECT \(boundedTitle), agent_path FROM threads WHERE id = ?1 LIMIT 1",
+            "SELECT \(boundedTitle), NULL FROM threads WHERE id = ?1 LIMIT 1",
         ]
         var statement: OpaquePointer?
         for query in queries where statement == nil {
@@ -144,7 +148,7 @@ public struct CodexThreadMetadataReader: Sendable {
         Int(url.deletingPathExtension().lastPathComponent.dropFirst("state_".count)) ?? 0
     }
 
-    private static func sqliteHomeDirectory(
+    static func sqliteHomeDirectory(
         codexHomeDirectory: URL,
         environment: [String: String],
         resolvedWorkingDirectory: URL?)
@@ -443,7 +447,7 @@ public struct CodexThreadMetadataReader: Sendable {
     }
 
     #if canImport(SQLite3) || canImport(CSQLite3)
-    private static func string(_ statement: OpaquePointer?, column: Int32) -> String? {
+    static func string(_ statement: OpaquePointer?, column: Int32) -> String? {
         guard sqlite3_column_type(statement, column) != SQLITE_NULL,
               let value = sqlite3_column_text(statement, column)
         else { return nil }

@@ -38,9 +38,7 @@ extension UsageStore {
         }()
         let snapshot = self.makeWidgetSnapshot(previousSnapshot: previousSnapshot)
         self.lastQueuedWidgetSnapshot = snapshot
-        self.lastQueuedWidgetSnapshotIsPreservable = snapshot.entries.allSatisfy {
-            !self.widgetUsagePreservationBlockedProviders.contains($0.provider)
-        }
+        self.invalidatedQueuedWidgetProviders = self.widgetUsagePreservationBlockedProviders
         NotificationCenter.default.post(
             name: .codexbarUsageSnapshotsDidChange,
             object: UsageSnapshotsDidChangeEvent(snapshots: self.cloudSyncAccountSnapshots()))
@@ -91,6 +89,7 @@ extension UsageStore {
         var payloads: [String: AccountSnapshotSyncPayload] = [:]
 
         for (instanceID, usage) in self.snapshots {
+            guard instanceID.firstPartyProvider.map(Self.requiresBrowserSession) != true else { continue }
             let identity = usage.identity?.accountID ?? usage.identity?.accountEmail
             let label = usage.identity?.accountEmail
                 ?? usage.identity?.accountOrganization
@@ -107,6 +106,7 @@ extension UsageStore {
         }
 
         for (provider, accountSnapshots) in self.accountSnapshots {
+            guard provider.firstPartyProvider.map(Self.requiresBrowserSession) != true else { continue }
             for accountSnapshot in accountSnapshots {
                 guard let usage = accountSnapshot.snapshot else { continue }
                 let identity = usage.identity?.accountID
@@ -188,39 +188,43 @@ extension UsageStore {
     func invalidateGenericWidgetUsage(for provider: UsageProvider) {
         // Provider-specific by design: Claude keeps its existing owner-aware preservation policy.
         guard provider != .claude else { return }
+        self.lastWidgetSourceSnapshots[provider.instanceID] = nil
         self.widgetUsagePreservationBlockedProviders.insert(provider.instanceID)
         // A successful fetch cannot make an older queued account valid again.
-        if self.lastQueuedWidgetSnapshot?.entries.contains(where: { $0.provider == provider.instanceID }) == true {
-            self.lastQueuedWidgetSnapshotIsPreservable = false
-        }
+        self.invalidatedQueuedWidgetProviders.insert(provider.instanceID)
+    }
+
+    static func supportsWidgetUsage(_ provider: UsageProvider) -> Bool {
+        let metadata = ProviderDescriptorRegistry.descriptor(for: provider).metadata
+        return metadata.widgetSelectable || metadata.burnDownWidgetSelectable
     }
 
     private func makeWidgetSnapshot(previousSnapshot: WidgetSnapshot?) -> WidgetSnapshot {
         let now = Date()
-        let enabledProviders = self.enabledProviders()
-        var entries = UsageProvider.allCases.compactMap { provider in
-            self.makeWidgetEntry(
+        let widgetProviders = UsageProvider.allCases.filter(Self.supportsWidgetUsage)
+        let widgetIDs = Set(widgetProviders.map(\.instanceID))
+        let enabledProviders = self.enabledProviders().filter(widgetIDs.contains)
+        let entries = widgetProviders.compactMap { provider -> WidgetSnapshot.ProviderEntry? in
+            if let entry = self.makeWidgetEntry(
                 for: provider,
                 now: now,
                 previousEntry: previousSnapshot?.entries.first { $0.provider == provider.instanceID })
-        }
-        // Only reuse this process's publication; disk entries do not establish the current account's ownership.
-        if entries.isEmpty, self.lastQueuedWidgetSnapshotIsPreservable,
-           let previousSnapshot = self.lastQueuedWidgetSnapshot,
-           previousSnapshot.enabledProviders.allSatisfy(enabledProviders.contains),
-           previousSnapshot.entries.allSatisfy({ entry in
-               // Provider-specific by design: Claude's owner-aware preservation above remains authoritative.
-               entry.provider != .claude && enabledProviders.contains(entry.provider) &&
-                   self.errors[entry.provider] != nil &&
-                   (entry.providerCost == nil || self.settings.showOptionalCreditsAndExtraUsage) &&
-                   !self.widgetUsagePreservationBlockedProviders.contains(entry.provider)
-           })
-        {
-            entries = previousSnapshot.entries
+            { return entry }
+            // Provider-specific by design: Claude uses its owner-aware path; others require this process's publication.
+            guard provider != .claude, enabledProviders.contains(provider.instanceID),
+                  self.errors[provider.instanceID] != nil,
+                  !self.invalidatedQueuedWidgetProviders.contains(provider.instanceID),
+                  !self.widgetUsagePreservationBlockedProviders.contains(provider.instanceID),
+                  let entry = self.lastQueuedWidgetSnapshot?.entries
+                      .first(where: { $0.provider == provider.instanceID }),
+                      entry.providerCost == nil || self.settings.showOptionalCreditsAndExtraUsage
+            else { return nil }
+            return self.preservedWidgetEntryForCurrentMetric(entry)
         }
         return WidgetSnapshot(
             entries: entries,
             accounts: self.makeWidgetAccountEntries(now: now),
+            accountOverflowCounts: self.widgetAccountOverflowCounts(),
             enabledProviders: enabledProviders,
             usageBarsShowUsed: self.settings.usageBarsShowUsed,
             generatedAt: now)
@@ -282,6 +286,11 @@ extension UsageStore {
         let usageRows = snapshot.map {
             self.widgetUsageRows(provider: provider, snapshot: $0, now: now)
         } ?? preservedClaudeUsage?.usageRows ?? []
+        if ProviderDescriptorRegistry.descriptor(for: provider).presentation.widgetRowsFollowMenuBarMetric,
+           let snapshot
+        {
+            self.lastWidgetSourceSnapshots[provider.instanceID] = snapshot
+        }
 
         let creditsRemaining: Double?
         let codeReviewRemaining: Double?
@@ -328,7 +337,8 @@ extension UsageStore {
             dailyUsage: dailyUsage,
             providerCost: providerCost,
             quotaOwnerKey: snapshot != nil ? claudeQuotaOwnerKey : preservedClaudeUsage?.quotaOwnerKey,
-            balanceText: balanceText)
+            balanceText: balanceText,
+            details: snapshot.flatMap { $0.details.isEmpty ? nil : $0.details })
     }
 
     private struct PreservedClaudeWidgetUsage {
@@ -514,47 +524,37 @@ extension UsageStore {
                 title: metadata?.opusLabel ?? "Opus",
                 percentLeft: snapshot.tertiary?.remainingPercent))
         }
-        // Provider-specific by design: Cursor Grok Bot weekly included usage is a named extraRateWindow.
+        var extraWindows: [NamedRateWindow] = []
+        var includesWindow = true
+        // Provider-specific by design: keep each provider's existing selection and wire shape.
         if provider == .cursor {
-            rows.append(contentsOf: (snapshot.extraRateWindows ?? []).compactMap { namedWindow in
-                guard namedWindow.id == CursorSandUsageStatus.extraWindowID, namedWindow.usageKnown else {
-                    return nil
-                }
-                return WidgetSnapshot.WidgetUsageRowSnapshot(
-                    id: namedWindow.id,
-                    title: namedWindow.title,
-                    percentLeft: namedWindow.window.remainingPercent,
-                    window: namedWindow.window)
-            })
+            extraWindows = (snapshot.extraRateWindows ?? []).filter { $0.id == CursorSandUsageStatus.extraWindowID }
         }
-
         if provider == .claude, self.settings.claudeModelScopedWeeklyUsageVisible {
-            // Claude fetchers place model-scoped weekly quotas (for example, Fable) in extraRateWindows.
-            // Keep the widget projection generic so newly surfaced Claude model quotas appear without UI changes.
-            rows.append(contentsOf: (snapshot.extraRateWindows ?? []).compactMap { namedWindow in
-                guard namedWindow.id.hasPrefix(Self.claudeModelScopedWeeklyWindowIDPrefix),
-                      namedWindow.usageKnown
-                else { return nil }
-                return WidgetSnapshot.WidgetUsageRowSnapshot(
-                    id: namedWindow.id,
-                    title: namedWindow.title,
-                    percentLeft: namedWindow.window.remainingPercent,
-                    window: namedWindow.window)
-            })
+            extraWindows = (snapshot.extraRateWindows ?? []).filter {
+                $0.id.hasPrefix(Self.claudeModelScopedWeeklyWindowIDPrefix)
+            }
         }
         if provider == .kimi {
-            // Keep persisted widget order stable and include only Kimi's intentional subscription lanes.
-            let kimiWindowIDs = ["kimi-monthly", "kimi-code-7d"]
-            rows.append(contentsOf: kimiWindowIDs.compactMap { id in
-                guard let window = snapshot.extraRateWindows?.first(where: { $0.id == id }), window.usageKnown
-                else { return nil }
-                return WidgetSnapshot.WidgetUsageRowSnapshot(
-                    id: window.id,
-                    title: window.title,
-                    percentLeft: window.window.remainingPercent)
-            })
+            // Kimi persists its subscription lanes in this order, without the optional raw window.
+            includesWindow = false
+            extraWindows = ["kimi-monthly", "kimi-code-7d"].compactMap { id in
+                snapshot.extraRateWindows?.first { $0.id == id }
+            }
         }
-        return rows.filter { $0.percentLeft != nil }
+        rows.append(contentsOf: extraWindows.compactMap { namedWindow in
+            guard namedWindow.usageKnown else { return nil }
+            return WidgetSnapshot.WidgetUsageRowSnapshot(
+                id: namedWindow.id,
+                title: namedWindow.title,
+                percentLeft: namedWindow.window.remainingPercent,
+                window: includesWindow ? namedWindow.window : nil)
+        })
+        return ProviderDescriptorRegistry.descriptor(for: provider).presentation.widgetRows(
+            rows,
+            snapshot: snapshot,
+            metric: self.settings.menuBarMetricPreference(for: provider, snapshot: snapshot).providerMetric)
+            .filter { $0.percentLeft != nil }
     }
 
     /// Identifier prefix Claude fetchers use for model-scoped weekly carve-outs (for example, Fable).
@@ -567,13 +567,10 @@ extension UsageStore {
         snapshot: UsageSnapshot) -> [WidgetSnapshot.WidgetUsageRowSnapshot]?
     {
         let windows = snapshot.extraRateWindows ?? []
+        // Match the menu card and drop model families the account never touches.
+        let idleIDs = AntigravityQuotaFamilyVisibility.idleWindowIDs(in: snapshot)
         var visible = windows.filter {
-            $0.id.hasPrefix(Self.antigravityQuotaSummaryWindowIDPrefix)
-        }
-        if !visible.isEmpty {
-            // Match the menu card and drop model families the account never touches.
-            let idleIDs = AntigravityQuotaFamilyVisibility.idleWindowIDs(in: snapshot)
-            visible.removeAll { idleIDs.contains($0.id) }
+            $0.id.hasPrefix(Self.antigravityQuotaSummaryWindowIDPrefix) && !idleIDs.contains($0.id)
         }
         if visible.isEmpty, snapshot.primary == nil, snapshot.secondary == nil {
             visible = windows.filter {
@@ -585,7 +582,34 @@ extension UsageStore {
             WidgetSnapshot.WidgetUsageRowSnapshot(
                 id: namedWindow.id,
                 title: namedWindow.title,
-                percentLeft: namedWindow.usageKnown ? namedWindow.window.remainingPercent : nil)
+                percentLeft: namedWindow.usageKnown ? namedWindow.window.remainingPercent : nil,
+                // Unknown buckets have placeholder capacity; only measured windows may supply it.
+                window: namedWindow.usageKnown ? namedWindow.window : nil)
         }
+    }
+
+    /// Reproject the last published source without changing its measurement time.
+    private func preservedWidgetEntryForCurrentMetric(
+        _ entry: WidgetSnapshot.ProviderEntry) -> WidgetSnapshot.ProviderEntry
+    {
+        guard let provider = entry.provider.firstPartyProvider,
+              ProviderDescriptorRegistry.descriptor(for: provider).presentation.widgetRowsFollowMenuBarMetric,
+              let snapshot = self.lastWidgetSourceSnapshots[entry.provider]
+        else { return entry }
+        return WidgetSnapshot.ProviderEntry(
+            instanceID: entry.provider,
+            updatedAt: entry.updatedAt,
+            primary: entry.primary,
+            secondary: entry.secondary,
+            tertiary: entry.tertiary,
+            usageRows: self.widgetUsageRows(provider: provider, snapshot: snapshot, now: entry.updatedAt),
+            creditsRemaining: entry.creditsRemaining,
+            codeReviewRemainingPercent: entry.codeReviewRemainingPercent,
+            tokenUsage: entry.tokenUsage,
+            dailyUsage: entry.dailyUsage,
+            providerCost: entry.providerCost,
+            quotaOwnerKey: entry.quotaOwnerKey,
+            balanceText: entry.balanceText,
+            details: entry.details)
     }
 }

@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 enum ProviderSettingsRefreshInteraction {
-    static func perform(operation: () async -> Void) async {
+    static func perform<Result>(operation: () async -> Result) async -> Result {
         await BrowserCookieAccessGate.withExplicitRetry {
             await ProviderInteractionContext.$current.withValue(.userInitiated) {
                 await operation()
@@ -53,21 +53,40 @@ struct ProvidersPane: View {
     }
 
     var body: some View {
-        let unfilteredModel = self.unfilteredMenuCardModel(for: self.provider)
+        let unfilteredModel = UsageMenuCardView.Model.make(self.store.menuCardInput(
+            for: self.provider, context: .settings))
+        // Provider-specific by design: only Codex has managed OAuth account snapshots for this shared settings view.
+        let overview = self.provider == .codex ? self.store.codexAccountUsageOverview { accountIDs in
+            Task { @MainActor in
+                await ProviderSettingsRefreshInteraction.perform {
+                    await self.store.refreshCodexAccountsForSettings(accountIDs)
+                }
+            }
+        } : nil
+        let visibilityModel = UsageMenuCardView.Model.make(self.store.menuCardInput(
+            for: self.provider, context: .settings, optionalUsageOverride: true))
+        let usageItems = ((overview?.usageItems ?? []) + visibilityModel.usageItemDescriptors(
+            includingHidden: self.settings.hiddenUsageItemIDs(for: self.provider),
+            hidePersonalInfo: self.settings.hidePersonalInfo))
+            .reduce(into: [ProviderUsageItemDescriptor]()) { items, item in
+                if !items.contains(where: { $0.id == item.id }) { items.append(item) }
+            }
         ProviderDetailView(
             provider: self.provider,
             store: self.store,
             isEnabled: self.binding(for: self.provider),
-            subtitle: self.providerSubtitle(self.provider),
+            subtitle: overview.map { L("%@ accounts", String($0.rows.count)) }
+                ?? self.providerSubtitle(self.provider),
             model: unfilteredModel.applyingUsageItemVisibility(
                 hiddenItemIDs: self.settings.hiddenUsageItemIDs(for: self.provider)),
-            usageItems: unfilteredModel.usageItemDescriptors(
-                includingHidden: self.settings.hiddenUsageItemIDs(for: self.provider),
-                hidePersonalInfo: self.settings.hidePersonalInfo),
+            accountUsageOverview: overview,
+            usageItems: usageItems,
             openAIWebDiagnostic: self.openAIWebDiagnostic(for: self.provider),
             settingsPickers: self.extraSettingsPickers(for: self.provider),
             settingsToggles: self.extraSettingsToggles(for: self.provider),
             settingsFields: self.extraSettingsFields(for: self.provider),
+            settingsDirectoryLists: self.extraSettingsDirectoryLists(for: self.provider),
+            settingsModelLimits: self.extraSettingsModelLimits(for: self.provider),
             settingsActions: self.extraSettingsActions(for: self.provider),
             settingsTokenAccounts: self.tokenAccountDescriptor(for: self.provider),
             settingsOrganizations: self.extraSettingsOrganizations(for: self.provider),
@@ -140,18 +159,27 @@ struct ProvidersPane: View {
         query: String,
         displayName: (UsageProvider) -> String) -> [UsageProvider]
     {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else { return providers }
-
+        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return providers }
         return providers.filter { provider in
-            displayName(provider).localizedCaseInsensitiveContains(trimmedQuery)
-                || provider.rawValue.localizedCaseInsensitiveContains(trimmedQuery)
+            let descriptor = ProviderDescriptorRegistry.descriptor(for: provider)
+            let fields = [
+                displayName(provider),
+                descriptor.metadata.shortDisplayName,
+                provider.rawValue,
+                descriptor.cli.name,
+            ] + descriptor.cli.aliases
+            return words.allSatisfy { word in
+                fields.contains { $0.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+            }
         }
     }
 
     func moveProviders(fromOffsets: IndexSet, toOffset: Int) {
-        guard !self.settings.providersSortedAlphabetically else { return }
-        self.settings.moveProvider(fromOffsets: fromOffsets, toOffset: toOffset)
+        self.settings.moveVisibleProviders(
+            self.settings.orderedFirstPartyProviders().map(\.instanceID),
+            fromOffsets: fromOffsets,
+            toOffset: toOffset)
     }
 
     private func triggerRefresh(for provider: UsageProvider) {
@@ -269,8 +297,11 @@ struct ProvidersPane: View {
         }
 
         let result = await self.codexAccountPromotionCoordinator.promote(managedAccountID: managedAccountID)
-        if case let .failure(error) = result {
+        switch result {
+        case let .failure(error):
             self.codexAccountsNotice = CodexAccountsSectionNotice(text: error.message, tone: .warning)
+        case let .success(promotion):
+            self.codexAccountsNotice = promotion.daemonRestartNote.map { .init(text: $0, tone: .warning) }
         }
     }
 
@@ -382,6 +413,16 @@ struct ProvidersPane: View {
         let context = self.makeSettingsContext(provider: provider)
         return impl.settingsFields(context: context)
             .filter { $0.isVisible?() ?? true }
+    }
+
+    private func extraSettingsModelLimits(for provider: UsageProvider) -> [ProviderSettingsModelLimitsDescriptor] {
+        ProviderCatalog.implementation(for: provider)?
+            .settingsModelLimits(context: self.makeSettingsContext(provider: provider)) ?? []
+    }
+
+    private func extraSettingsDirectoryLists(for provider: UsageProvider) -> [ProviderSettingsDirectoryListDescriptor] {
+        ProviderCatalog.implementation(for: provider)?
+            .settingsDirectoryLists(context: self.makeSettingsContext(provider: provider)) ?? []
     }
 
     private func extraSettingsActions(for provider: UsageProvider) -> [ProviderSettingsActionsDescriptor] {
@@ -519,10 +560,6 @@ struct ProvidersPane: View {
             runLoginFlow: {
                 await self.runProviderLoginFlow(provider)
             })
-    }
-
-    private func unfilteredMenuCardModel(for provider: UsageProvider) -> UsageMenuCardView.Model {
-        UsageMenuCardView.Model.make(self.store.menuCardInput(for: provider, context: .settings))
     }
 
     func openAIWebDiagnostic(for provider: UsageProvider) -> String? {

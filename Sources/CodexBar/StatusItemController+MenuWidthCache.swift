@@ -51,6 +51,8 @@ extension StatusItemController {
             managedCodexAccountCoordinator: self.managedCodexAccountCoordinator,
             codexAccountPromotionCoordinator: self.codexAccountPromotionCoordinator,
             updateReady: self.updater.updateStatus.isUpdateReady,
+            availableUpdateVersion: self.updater.updateStatus.availableVersion,
+            isInstallingUpdate: self.updater.updateStatus.isInstalling,
             canCheckForUpdates: self.updater.isAvailable,
             includeContextualActions: includeContextualActions,
             codexWorkspacesMenuEnabled: codexWorkspacesMenuEnabled,
@@ -159,8 +161,8 @@ extension StatusItemController {
             "openTerminal:\(command)"
         case let .loginToProvider(url):
             "loginToProvider:\(url)"
-        case .openCodexWorkspaces:
-            CodexWorkspacesWindowIdentity.menuItem
+        case .openCodexWorkspaces, .openOpenAILiveUsage:
+            self.windowMenuAction(for: action).1
         case .settings:
             "settings"
         case let .providerSettings(provider):

@@ -21,6 +21,16 @@ read_when:
   - `GET https://opencode.ai/console/api/billing/status` reads the selected workspace's prepaid PAYG Zen balance
     with the same `x-org-id` header. Convert its signed `balanceMicroCents` string to USD by dividing by 100,000,000;
     `availableMicroCents` is a separate credit value and is not substituted for the balance.
+- The base OpenCode provider also uses these Console endpoints when the cookie header contains
+  `__Host-console_session`. It maps Go's five-hour/week meters and subscription end into its existing quota
+  windows. Legacy-only cookies retain the existing server-function path.
+- For base OpenCode workspaces without Go quota, `GET /console/api/orgs/current` must confirm
+  `hasGoSubscription: false` and billing status must confirm `mode: "pay-as-you-go"` before
+  `GET /console/api/usage/summary?range=30d` supplies spend. Its
+  `totalCostMicroCents` is divided by 100,000,000 and displayed as **Last 30 days**. The default summary
+  range is not used, and rolling spend is not presented as calendar-month spend. No Console monthly
+  spending limit has been established, so no spending percentage is published; the Go month quota
+  is not substituted for a spending limit. An optional prepaid balance uses the existing billing mapping.
 - `POST https://opencode.ai/_server` with server function IDs, used for workspaces that have not migrated to the
   console and for the Zen balance:
   - `workspaces` (`def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f`)
@@ -35,6 +45,9 @@ read_when:
 - Primary window: rolling 5-hour usage (`rollingUsage.usagePercent`, `rollingUsage.resetInSec`).
 - Secondary window: optional weekly usage (`weeklyUsage.usagePercent`, `weeklyUsage.resetInSec`).
 - Resets computed as `now + resetInSec`.
+- OpenCode Go's automatic menu-bar percentage and merged switcher show the least remaining of its reported
+  five-hour, weekly, and monthly quotas, with the selected window's reset metadata. Explicit window selections
+  retain their existing behavior, and the separate Zen balance is not ranked against subscription quota.
 
 ## Using OpenCode with Codex or OpenAI
 
@@ -67,12 +80,13 @@ usage is a separate [OpenAI provider](openai.md), not Codex subscription quota.
   accounts also preserve an existing Manual choice.
 - Legacy responses are `text/javascript` with serialized objects; Console responses are JSON.
 - Missing workspace ID or rolling usage fields should raise parse errors; omitted weekly usage stays absent.
-- OpenCode web Auto imports Chrome first, then Dia when their cookie stores exist; Keychain preflight stays scoped
-  to each candidate browser. Other browsers stay on Manual Cookie import until CodexBar has an explicit browser
-  selector.
+- OpenCode web Auto imports cookies in the shared supported-browser order; Keychain preflight stays scoped
+  to each candidate browser and the shared access gate bounds prompts.
 - Set `CODEXBAR_OPENCODE_WORKSPACE_ID` to skip workspace lookup and force a specific workspace.
-- Workspace override accepts a raw `wrk_…` ID or a full `https://opencode.ai/workspace/...` URL. OpenCode Go also
-  accepts Console `org_…` IDs and `https://opencode.ai/console/...` URLs.
+- Workspace override accepts a raw `wrk_…` or `org_…` ID, a full `https://opencode.ai/workspace/...` URL,
+  or a `https://opencode.ai/console/...` URL. Both web providers pin all usage, billing and fallback requests
+  to the selected workspace. Console reads send `x-org-id` except during discovery; legacy fallback
+  keeps the same workspace ID in its existing requests.
 - Console migration: OpenCode redirects migrated workspaces from `opencode.ai/workspace/<id>` to the console,
   which serves an empty client-rendered shell, so the legacy scraped payload is absent. Web reads try the
   console API first and fall back to the legacy page when a legacy session cookie is present. The two sessions
@@ -90,9 +104,11 @@ usage is a separate [OpenAI provider](openai.md), not Codex subscription quota.
   override scopes the request, because local history is device-wide.
 - The local monthly window is an estimate anchored at the earliest local row and can drift from the real billing
   cycle. The local strategy prefers API-reported rolling/weekly/monthly percentages and reset timestamps. When no API
-  key is configured, a cached or manual session cookie can still overlay the legacy web values (plus Zen balance).
-  Both paths keep local daily cost history and never trigger a fresh browser import. When no authoritative overlay is
-  available, the menu and text CLI label the quota as estimated, and JSON includes `dataConfidence: "estimated"`.
+  key is configured, a cached, manual, or automatically discovered session can overlay Console quotas (plus Zen
+  balance). Discovery uses the provider's default browser order and shared access gate; background Chromium reads
+  require existing prompt-free Safe Storage access. Cookie source Off disables discovery. Both overlay paths keep
+  local daily cost history. When no authoritative overlay is available, the menu and text CLI label the quota as
+  estimated, and JSON includes `dataConfidence: "estimated"`.
   Estimated quota keeps its percentages and reset dates but does not show pace, reserve, or run-out advice in the
   menu, menu-bar layouts, or CLI; device-local costs cannot establish account-wide consumption or the billing cycle.
 - OpenCode Go Monthly usage can be selected in the menu-bar percentage picker and layout palette before the first
@@ -103,8 +119,16 @@ usage is a separate [OpenAI provider](openai.md), not Codex subscription quota.
   come from local `opencode-go` assistant costs in `opencode.db`, keyed by device-local calendar day. Successful web
   usage remains workspace-scoped and is never blended with device-wide local costs, so it does not show cost history.
   Explicit Web mode never reads the local database either.
-- Each day's bucket also carries a per-model cost breakdown, read from each local assistant message's `modelID`
-  (the real model behind the constant `opencode-go` Zen proxy `providerID`). This lets the shared Cost history
+- Local history combines legacy `message`/`part` records with v2 `session_message` assistant records. A migrated
+  message already present in the legacy table keeps its legacy record and step-finish precedence, so it is not counted twice.
+- Each day's bucket also carries a per-model cost breakdown, read from `modelID` in legacy messages or `model.id`
+  in v2 messages (the real model behind the `opencode-go` Zen proxy `providerID` or `model.providerID`). This lets the shared Cost history
   chart show a per-model breakdown for OpenCode Go the same way it already does for Claude (see the "Cost usage"
-  section in [docs/claude.md](claude.md)). Rows with no `modelID` are grouped under an "unknown" bucket instead of
+  section in [docs/claude.md](claude.md)). Rows with no model identifier are grouped under an "unknown" bucket instead of
   being dropped.
+- Local history also includes recorded input, output, reasoning, cache-read, cache-write, and total tokens per day
+  and model. Step-finish parts take precedence over their parent message so multi-step sessions are not counted
+  twice. Explicit totals are used as recorded; older rows without a total sum the five complete token components.
+  Missing, malformed, negative, or overflowing counts remain unknown rather than becoming zero. A day containing
+  a row without usable tokens has no complete token total. These device-local counts add history detail only:
+  they do not change account quota, and costs still come from the recorded `cost` field, never token pricing.

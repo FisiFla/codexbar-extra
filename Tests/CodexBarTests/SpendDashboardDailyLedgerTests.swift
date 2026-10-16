@@ -4,6 +4,23 @@ import Testing
 @testable import CodexBarCore
 
 struct SpendDashboardDailyLedgerTests {
+    @Test(arguments: [0, 7, 30, 31, 365])
+    func `ledger expansion preserves every day in newest first order`(days: Int) {
+        let summaries = (0..<days).map { day in
+            SpendDashboardModel.DailySummary(
+                day: Self.now.addingTimeInterval(Double(day) * 86400),
+                providers: [],
+                totalTokens: day,
+                requestCount: day,
+                totalCost: Double(day))
+        }
+        let collapsed = spendDailyLedgerVisibleSummaries(summaries, showsAllRows: false, collapsedRowCount: 30)
+        #expect(collapsed.count == min(days, 30))
+        #expect(collapsed == Array(summaries.suffix(30).reversed()))
+        let expanded = spendDailyLedgerVisibleSummaries(summaries, showsAllRows: true, collapsedRowCount: 30)
+        #expect(expanded == Array(summaries.reversed()))
+    }
+
     @Test(arguments: [true, false])
     func `unpriced history outside the window is idle only with complete activity`(complete: Bool) throws {
         let claude = Self.input(
@@ -235,8 +252,11 @@ struct SpendDashboardDailyLedgerTests {
         #expect(group.dailySummaries.map(\.totalCost) == [1, 2, 7])
         #expect(group.dailySummaries.map(\.totalTokens) == [100, 200, 700])
         #expect(group.dailySummaries.map(\.requestCount) == [2, 3, 9])
+        #expect(group.dailySummaries.allSatisfy { !$0.requestsAreLowerBound })
 
         let firstDay = try #require(group.dailySummaries.first)
+        #expect(spendDashboardLedgerRequestText(firstDay) == "2")
+        #expect(spendDashboardLedgerTokenText(firstDay) == "100")
         #expect(firstDay.providers.map(\.displayName) == ["Claude", "OpenAI"])
         #expect(firstDay.providers.map(\.totalCost) == [1, 0])
         #expect(firstDay.providers.map(\.totalTokens) == [100, 0])
@@ -290,6 +310,63 @@ struct SpendDashboardDailyLedgerTests {
 
         #expect(group.dailySummaries.last?.totalCost == 2)
         #expect(group.dailySummaries.allSatisfy { $0.requestCount == nil })
+        #expect(group.dailySummaries.allSatisfy { !$0.requestsAreLowerBound })
+        let omitted = try #require(group.dailySummaries.last)
+        #expect(spendDashboardLedgerRequestText(omitted) == "—")
+    }
+
+    @Test(arguments: [false, true])
+    func `known request counts survive a source that cannot count requests`(partialCost: Bool) throws {
+        let counted = Self.input(
+            id: "claude",
+            provider: .claude,
+            displayName: "Claude",
+            entries: [
+                Self.entry(day: "2026-07-14", cost: 1, tokens: 10, requests: 2),
+                Self.entry(day: "2026-07-16", cost: 2, tokens: 20, requests: 4),
+            ],
+            totalTokens: 30)
+        let uncounted = Self.input(
+            id: "codex",
+            provider: .codex,
+            displayName: "Codex",
+            entries: [
+                Self.entry(
+                    day: "2026-07-14",
+                    cost: 3,
+                    tokens: 30,
+                    requests: nil,
+                    unpricedRequests: partialCost ? 1 : nil),
+                Self.entry(
+                    day: "2026-07-16",
+                    cost: 5,
+                    tokens: 40,
+                    requests: nil,
+                    unpricedRequests: partialCost ? 1 : nil),
+            ],
+            totalTokens: 70,
+            totalRequests: nil)
+        let group = try #require(Self.group(inputs: [counted, uncounted]))
+
+        #expect(group.dailySummaries.map(\.requestCount) == [2, 0, 4])
+        #expect(group.dailySummaries.map(\.requestsAreLowerBound) == [true, true, true])
+        #expect(group.dailySummaries.map(\.totalTokens) == [40, 0, 60])
+        #expect(group.dailySummaries.map(\.hasPartialCounts) == [false, false, false])
+        #expect(group.dailySummaries.map(\.hasPartialCost) == [partialCost, false, partialCost])
+        #expect(group.coverage.unpriced == (partialCost ? 2 : 0))
+
+        let first = try #require(group.dailySummaries.first)
+        let middle = group.dailySummaries[1]
+        let last = try #require(group.dailySummaries.last)
+        #expect(first.providers.map(\.requestCount) == [nil, 2])
+        #expect(last.providers.map(\.requestCount) == [nil, 4])
+        #expect(spendDashboardLedgerRequestText(first) == "≥2")
+        #expect(spendDashboardLedgerTokenText(first) == "40")
+        #expect(spendDashboardLedgerCostText(first, currencyCode: "USD") == (partialCost ? "~$4.00" : "$4.00"))
+        #expect(spendDashboardLedgerRequestText(middle) == "≥0")
+        #expect(spendDashboardLedgerTokenText(middle) == "0")
+        #expect(spendDashboardLedgerRequestText(last) == "≥4")
+        #expect(spendDashboardLedgerTokenText(last) == "60")
     }
 
     @Test
@@ -395,7 +472,8 @@ struct SpendDashboardDailyLedgerTests {
         day: String,
         cost: Double,
         tokens: Int,
-        requests: Int?) -> CostUsageDailyReport.Entry
+        requests: Int?,
+        unpricedRequests: Int? = nil) -> CostUsageDailyReport.Entry
     {
         CostUsageDailyReport.Entry(
             date: day,
@@ -411,7 +489,8 @@ struct SpendDashboardDailyLedgerTests {
                     costUSD: cost,
                     totalTokens: tokens,
                     requestCount: requests),
-            ])
+            ],
+            unpricedRequestCount: unpricedRequests)
     }
 
     private static func unpricedEntry(day: String, tokens: Int, requests: Int?) -> CostUsageDailyReport.Entry {

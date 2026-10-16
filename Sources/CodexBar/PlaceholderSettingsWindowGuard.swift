@@ -81,6 +81,7 @@ final class PlaceholderSettingsWindowGuard {
             defer { self.closingWindows.remove(identity) }
             // Record before closing: close can synchronously trigger another window notification.
             self.closedWindows.add(window)
+            window.isRestorable = false
             self.closeWindow(window)
             closedCount += 1
         }
@@ -93,7 +94,10 @@ final class PlaceholderSettingsWindowGuard {
     }
 
     @objc private func windowStateDidChange(_: Notification) {
-        self.sweep()
+        // AppKit posts notifications inside makeKeyAndOrderFront; finish ordering before closing.
+        DispatchQueue.main.async { [weak self] in
+            self?.sweep()
+        }
     }
 
     deinit {

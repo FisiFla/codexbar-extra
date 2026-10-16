@@ -3,13 +3,36 @@ import CryptoKit
 import Foundation
 
 extension UsageStore {
+    func widgetAccountOverflowCounts() -> [String: Int] {
+        guard self.settings.accountWidgetsEnabled else { return [:] }
+        var counts: [String: Int] = [:]
+        for provider in self.enabledProviders().compactMap(\.firstPartyProvider).filter(Self.supportsWidgetUsage) {
+            let count: Int
+            // Match the account writer's source precedence without expanding its refresh or identity budget.
+            // Provider-specific by design: Claude Swap owns its inventory when it supplies account snapshots.
+            if provider == .claude, self.settings.claudeSwapEnabled, !self.claudeSwapAccountSnapshots.isEmpty {
+                count = self.claudeSwapAccountSnapshots.count
+            } else if provider == .codex {
+                // Provider-specific by design: Codex publishes the reconciled visible account inventory.
+                count = self.settings.codexVisibleAccountProjectionForMenuDisplay?.visibleAccounts.count ?? 0
+            } else if self.settings.effectiveSelectedTokenAccount(for: provider) != nil {
+                count = self.settings.tokenAccounts(for: provider).count
+            } else {
+                continue
+            }
+            let overflow = count - Self.tokenAccountMenuSnapshotLimit
+            if overflow > 0 { counts[provider.rawValue] = overflow }
+        }
+        return counts
+    }
+
     func makeWidgetAccountEntries(now: Date) -> [WidgetSnapshot.AccountEntry] {
         defer { self.widgetAccountSnapshotStore?.save(self.widgetVerifiedTokenSnapshots) }
         guard self.settings.accountWidgetsEnabled else {
             self.widgetVerifiedTokenSnapshots = [:]
             return []
         }
-        let providers = self.enabledProviders().compactMap(\.firstPartyProvider)
+        let providers = self.enabledProviders().compactMap(\.firstPartyProvider).filter(Self.supportsWidgetUsage)
         self.widgetVerifiedTokenSnapshots = self.widgetVerifiedTokenSnapshots.filter { providers.contains($0.key) }
         return providers.flatMap { provider in
             self.widgetAccounts(for: provider, now: now)
@@ -185,7 +208,7 @@ extension UsageStore {
     }
 
     func reconcileCodexWidgetAccountSnapshots(after error: Error? = nil) {
-        guard self.settings.accountWidgetsEnabled, !self.shouldUseAmbientCodexPATForUsage() else {
+        guard !self.shouldUseAmbientCodexPATForUsage() else {
             self.codexAccountSnapshots = []
             return
         }
@@ -193,8 +216,9 @@ extension UsageStore {
             self.codexAccountSnapshots,
             reconciledWith: self.settings.codexVisibleAccountProjection)
         if let error {
+            let activeID = self.settings.codexVisibleAccountProjection.activeVisibleAccountID
             self.codexAccountSnapshots.removeAll {
-                !Self.shouldPreservePriorSnapshot(after: error, hadPriorData: $0.snapshot != nil)
+                $0.id == activeID && !Self.shouldPreservePriorSnapshot(after: error, hadPriorData: $0.snapshot != nil)
             }
         }
     }

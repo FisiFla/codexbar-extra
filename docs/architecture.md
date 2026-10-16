@@ -18,11 +18,15 @@ read_when:
 ## Entry points
 - `CodexBarApp`: SwiftUI keepalive + Settings scene.
 - `AppDelegate`: wires status controller, Sparkle updater, notifications.
+- Status items are created on the main actor from `applicationDidFinishLaunching`; see
+  [status-item startup diagnostics](status-item-diagnostics.md) for opt-in lifecycle and Control Center traces.
 
 ## Data flow
 - Background refresh → `UsageFetcher`/provider probes → `UsageStore` → menu/icon/widgets.
 - Settings toggles feed `SettingsStore` → `UsageStore` refresh cadence + feature flags.
 - Runtime-only provider settings flow through typed, descriptor-registered sections in `ProviderSettingsSnapshot`.
+- Codex cost conversation titles reuse SQLite database discovery per working directory and SQLite home within each
+  enrichment call. The next call resolves paths again, so config edits and new state database versions are picked up.
 
 ## CLI login lifecycle
 - `CodexLoginRunner` and `KiroLoginRunner` resolve their own executable and environment, including Codex home scoping.
@@ -31,12 +35,18 @@ read_when:
 - The login runner and `SubprocessRunner` share `ProcessTermination` and process-tree termination. Cancelling a login
   stops its child process, joins its progress callback task, and produces no failure alert. Timeouts retain captured
   diagnostic output, and inherited pipes cannot keep the caller waiting indefinitely.
+- Probe ownership cleanup reads exact environment markers, retaining PID identity checks before signaling. Environment
+  parsing searches NUL byte ranges so large unrelated values do not dominate timeout and cancellation cleanup.
 - Codex and Grok RPC clients share deadline selection through `RPCRequestTimeout`. The deadline wins before teardown
   can report stdout EOF; each client keeps its protocol initialization, encoding, diagnostics, and error types.
 
 ## Concurrency & platform
 - Swift 6 strict concurrency enabled; prefer Sendable state and explicit MainActor hops.
 - macOS 14+ targeting; avoid deprecated APIs when refactoring.
+- Cost stores share one utility serial executor per canonical database location, including symlinked cache roots and
+  database files. Separate database operations do not share SQLite lock waits. Executors are weakly registered and
+  released with their last store or queued job. Normal app fetches still use the separate serial scan queue;
+  WAL transactions are unchanged.
 
 ## Shared policy ownership
 - `ProviderCatalog` indexes the immutable generated list of app implementations. JavaScript plugins use their own
@@ -97,6 +107,8 @@ read_when:
   session lifecycle remain provider-specific.
 - Codex's persistent and one-shot PTY readers share `CodexStatusMarkers`, including the marker lengths used for
   bounded overlap. Cursor-query handling remains part of each terminal loop.
+- `TTYCommandRunner` reports the captured POSIX error number and description when PTY allocation fails, so
+  descriptor exhaustion can be distinguished from other terminal allocation failures.
 - `UsageSnapshot.withAccountLabel` applies token-account fallback labels for the app and CLI while preserving the
   provider's account ID and other identity fields. Codex visible-account labels keep their surface-specific policy.
 - Raw Chromium local-storage consumers share `ChromiumLocalStorageDiscovery`, retaining their own browser lists and

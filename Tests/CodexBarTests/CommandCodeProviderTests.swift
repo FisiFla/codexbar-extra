@@ -21,6 +21,28 @@ struct CommandCodeProviderTests {
     }
 
     @Test
+    func `explicit API source selects the configured key without cookie discovery`() async throws {
+        let detection = BrowserDetection(cacheTTL: 0)
+        let context = ProviderFetchContext(
+            runtime: .cli,
+            sourceMode: .api,
+            includeCredits: true,
+            webTimeout: 1,
+            webDebugDumpHTML: false,
+            verbose: false,
+            env: ["COMMAND_CODE_API_KEY": "fixture-command-key"],
+            settings: nil,
+            fetcher: UsageFetcher(),
+            claudeFetcher: ClaudeUsageFetcher(browserDetection: detection),
+            browserDetection: detection)
+        let strategies = await CommandCodeProviderDescriptor.descriptor.fetchPlan.pipeline.resolveStrategies(context)
+        #expect(strategies.map(\.id) == ["commandcode.api"])
+        let strategy = try #require(strategies.first)
+        #expect(strategy.kind == .apiToken)
+        #expect(await strategy.isAvailable(context))
+    }
+
+    @Test
     func `descriptor metadata is correct`() {
         let descriptor = ProviderDescriptorRegistry.descriptor(for: .commandcode)
 
@@ -34,7 +56,26 @@ struct CommandCodeProviderTests {
         #expect(descriptor.metadata.weeklyLabel == "Weekly")
         #expect(descriptor.metadata.opusLabel == "Monthly")
         #expect(descriptor.metadata.supportsOpus)
-        #expect(descriptor.fetchPlan.sourceModes == [.auto, .web])
+        #expect(descriptor.fetchPlan.sourceModes == [.auto, .api, .web])
+    }
+
+    @Test(arguments: [false, true])
+    func `automatic source prefers a configured key and otherwise uses cookies`(hasKey: Bool) async {
+        let detection = BrowserDetection(cacheTTL: 0)
+        let context = ProviderFetchContext(
+            runtime: .cli,
+            sourceMode: .auto,
+            includeCredits: true,
+            webTimeout: 1,
+            webDebugDumpHTML: false,
+            verbose: false,
+            env: hasKey ? ["COMMAND_CODE_API_KEY": "fixture-command-key"] : [:],
+            settings: nil,
+            fetcher: UsageFetcher(),
+            claudeFetcher: ClaudeUsageFetcher(browserDetection: detection),
+            browserDetection: detection)
+        let strategies = await CommandCodeProviderDescriptor.descriptor.fetchPlan.pipeline.resolveStrategies(context)
+        #expect(strategies.map(\.id) == [hasKey ? "commandcode.api" : "commandcode.web"])
     }
 
     @Test
@@ -42,6 +83,35 @@ struct CommandCodeProviderTests {
         let context = self.makeContext(cookieSource: .manual, manualCookieHeader: "session=manual")
 
         #expect(await CommandCodeWebFetchStrategy().isAvailable(context))
+    }
+
+    @Test(arguments: [
+        ("bare-value", "__Secure-commandcode_prod_.session_token=bare-value"),
+        (" \"bare-value\" ", "__Secure-commandcode_prod_.session_token=bare-value"),
+        (
+            "Cookie: __Secure-commandcode_prod_.session_token=token; extra=keep",
+            "__Secure-commandcode_prod_.session_token=token; extra=keep"),
+        ("__Secure-better-auth.session_token=legacy", "__Secure-better-auth.session_token=legacy"),
+        ("session=explicit", "session=explicit"),
+    ])
+    func `manual fetch normalizes bare tokens and preserves explicit cookie headers`(
+        input: String,
+        expected: String) async throws
+    {
+        let recorder = CookieAttemptRecorder()
+        let strategy = CommandCodeWebFetchStrategy(
+            usageLoader: { cookieHeader in
+                recorder.append(cookieHeader)
+                return Self.snapshot()
+            },
+            sessionLoader: {
+                Issue.record("Manual input must not import browser sessions")
+                return []
+            })
+
+        _ = try await strategy.fetch(self.makeContext(cookieSource: .manual, manualCookieHeader: input))
+
+        #expect(recorder.snapshot() == [expected])
     }
 
     @Test

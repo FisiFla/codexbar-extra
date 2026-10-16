@@ -196,9 +196,9 @@ extension StatusItemController {
             } else {
                 NSApp.activate(ignoringOtherApps: true)
                 self.presentLoginAlert(
-                    title: "Usage snapshot unavailable",
-                    message: "CodexBar couldn't prepare a shareable usage snapshot. "
-                        + "Refresh Usage & Spend and try again.")
+                    title: L("Usage snapshot unavailable"),
+                    message: L("CodexBar couldn't prepare a shareable usage snapshot. "
+                        + "Refresh Usage & Spend and try again."))
             }
         }
     }
@@ -265,12 +265,14 @@ extension StatusItemController {
                 return SpendDashboardModel.build(
                     inputs: [],
                     requestedDays: self.settings.costUsageHistoryDays,
+                    reportingPeriod: self.settings.costReportingPeriod,
                     now: now,
                     calendar: self.settings.costUsageBucketCalendar,
                     preferredCurrencyCode: self.settings.preferredCurrencyCode)
             }
             return publication.model(
                 requestedDays: self.settings.costUsageHistoryDays,
+                reportingPeriod: self.settings.costReportingPeriod,
                 now: now,
                 calendar: self.settings.costUsageBucketCalendar,
                 preferredCurrencyCode: self.settings.preferredCurrencyCode,
@@ -292,6 +294,7 @@ extension StatusItemController {
         return SpendDashboardModel.build(
             inputs: inputs,
             requestedDays: self.settings.costUsageHistoryDays,
+            reportingPeriod: self.settings.costReportingPeriod,
             now: now,
             calendar: self.settings.costUsageBucketCalendar,
             preferredCurrencyCode: self.settings.preferredCurrencyCode)

@@ -17,6 +17,24 @@ enum ClaudeWebHTTPTransport {
         #endif
         return ProviderHTTPClient.shared
     }
+
+    /// For the usage response, whose `cedar_ember` block carries grant identifiers. The shared client's disk
+    /// URLCache would keep the raw body; this client stores nothing.
+    static var uncached: any ProviderHTTPTransport {
+        #if DEBUG
+        if let override = self.overrideForTesting {
+            return override
+        }
+        #endif
+        return self.uncachedClient
+    }
+
+    private static let uncachedClient: ProviderHTTPClient = {
+        let configuration = ProviderHTTPClient.defaultConfiguration()
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return ProviderHTTPClient(session: ProviderHTTPClient.sharedSession(configuration: configuration))
+    }()
 }
 
 enum ClaudeWebPrepaidCreditsRequest {
@@ -35,6 +53,7 @@ enum ClaudeWebPrepaidCreditsRequest {
 }
 
 enum ClaudeWebSessionKeyImport {
+    @TaskLocal static var desktopApp = false
     #if DEBUG
     @TaskLocal static var overrideForTesting: ClaudeWebAPIFetcher.SessionKeyInfo?
     @TaskLocal static var browserOverrideForTesting:
@@ -97,8 +116,12 @@ public enum ClaudeWebAPIFetcher {
     private static let maxProbeBytes = 200_000
     #if os(macOS)
     private static let cookieClient = BrowserCookieClient()
-    private static let cookieImportOrder: BrowserCookieImportOrder =
-        ProviderDefaults.metadata[.claude]?.browserCookieOrder ?? Browser.defaultImportOrder
+    static var cookieImportOrder: BrowserCookieImportOrder {
+        // Desktop cookies are an explicit account choice, never a fallback to another browser account.
+        ClaudeWebSessionKeyImport.desktopApp ? [.claudeDesktop] :
+            (ProviderDefaults.metadata[.claude]?.browserCookieOrder ?? Browser.defaultImportOrder)
+            .filter { $0 != .claudeDesktop }
+    }
     #else
     private static let cookieImportOrder: BrowserCookieImportOrder = []
     #endif
@@ -127,6 +150,7 @@ public enum ClaudeWebAPIFetcher {
 
     public enum FetchError: LocalizedError, Sendable {
         case noSessionKeyFound
+        case noDesktopSessionKeyFound
         case invalidSessionKey
         case notSupportedOnThisPlatform
         case networkError(Error)
@@ -141,6 +165,8 @@ public enum ClaudeWebAPIFetcher {
             switch self {
             case .noSessionKeyFound:
                 "No Claude session key found in browser cookies."
+            case .noDesktopSessionKeyFound:
+                "No readable Claude desktop session found. Sign in to Claude.app and check cookie access."
             case .invalidSessionKey:
                 "Invalid Claude session key format."
             case .notSupportedOnThisPlatform:
@@ -167,26 +193,21 @@ public enum ClaudeWebAPIFetcher {
 
     /// Claude usage data from the API
     public struct WebUsageData: Sendable {
-        public let sessionPercentUsed: Double
+        public let sessionPercentUsed: Double?
         public let sessionResetsAt: Date?
         public let weeklyPercentUsed: Double?
         public let weeklyResetsAt: Date?
         public let opusPercentUsed: Double?
         public let extraRateWindows: [NamedRateWindow]
         public fileprivate(set) var extraUsageCost: ProviderCostSnapshot?
+        public let resetCredits: ClaudeRateLimitResetCreditsSnapshot?
+        public let cloudCredits: ClaudeCloudCreditsSnapshot?
         public fileprivate(set) var accountOrganization: String?
         public fileprivate(set) var accountOrganizationID: String?
         public fileprivate(set) var accountEmail: String?
         public fileprivate(set) var loginMethod: String?
-        /// Whether the API reported a `five_hour` session object. When `false` (the API sent
-        /// `five_hour: null`, as enterprise/credit accounts with no live session do), `sessionPercentUsed`
-        /// is the synthesized `0` placeholder rather than a real reading. Distinguishing this from a real
-        /// session that happens to be at `0%` (with or without a reset) lets lane classifiers drop the
-        /// placeholder without hiding a genuine empty session.
-        public let hasLiveSessionWindow: Bool
-
         public init(
-            sessionPercentUsed: Double,
+            sessionPercentUsed: Double?,
             sessionResetsAt: Date?,
             weeklyPercentUsed: Double?,
             weeklyResetsAt: Date?,
@@ -197,7 +218,8 @@ public enum ClaudeWebAPIFetcher {
             accountOrganizationID: String? = nil,
             accountEmail: String?,
             loginMethod: String?,
-            hasLiveSessionWindow: Bool = true)
+            resetCredits: ClaudeRateLimitResetCreditsSnapshot? = nil,
+            cloudCredits: ClaudeCloudCreditsSnapshot? = nil)
         {
             self.sessionPercentUsed = sessionPercentUsed
             self.sessionResetsAt = sessionResetsAt
@@ -210,7 +232,8 @@ public enum ClaudeWebAPIFetcher {
             self.accountOrganizationID = accountOrganizationID
             self.accountEmail = accountEmail
             self.loginMethod = loginMethod
-            self.hasLiveSessionWindow = hasLiveSessionWindow
+            self.resetCredits = resetCredits
+            self.cloudCredits = cloudCredits
         }
     }
 
@@ -242,7 +265,6 @@ extension ClaudeWebAPIFetcher {
     // MARK: - Public API
 
     #if os(macOS)
-
     /// Attempts to fetch Claude usage data using cookies extracted from browsers.
     /// Tries browser cookies using the standard import order.
     public static func fetchUsage(
@@ -262,6 +284,7 @@ extension ClaudeWebAPIFetcher {
                 logger: logger)
         }
     }
+    #endif
 
     public static func fetchUsage(
         cookieHeader: String,
@@ -387,6 +410,7 @@ extension ClaudeWebAPIFetcher {
         return usage
     }
 
+    #if os(macOS)
     /// Probes a list of endpoints using the current claude.ai session cookies.
     /// - Parameters:
     ///   - endpoints: Absolute URLs or "/api/..." paths. Supports "{orgId}" placeholder.
@@ -457,10 +481,12 @@ extension ClaudeWebAPIFetcher {
 
         return results
     }
+    #endif
 
+    #if os(macOS)
     /// Checks if we can find a Claude session key in browser cookies without making API calls.
     public static func hasSessionKey(browserDetection: BrowserDetection, logger: ((String) -> Void)? = nil) -> Bool {
-        if let cached = CookieHeaderCache.load(provider: .claude),
+        if !ClaudeWebSessionKeyImport.desktopApp, let cached = CookieHeaderCache.load(provider: .claude),
            self.hasSessionKey(cookieHeader: cached.cookieHeader)
         {
             return true
@@ -472,18 +498,21 @@ extension ClaudeWebAPIFetcher {
             return false
         }
     }
+    #endif
 
     public static func hasSessionKey(cookieHeader: String?) -> Bool {
         guard let cookieHeader else { return false }
         return (try? self.sessionKeyInfo(cookieHeader: cookieHeader)) != nil
     }
 
+    #if os(macOS)
     public static func sessionKeyInfo(
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo
     {
         try self.extractSessionKeyInfo(browserDetection: browserDetection, logger: logger)
     }
+    #endif
 
     public static func sessionKeyInfo(cookieHeader: String) throws -> SessionKeyInfo {
         let pairs = CookieHeaderNormalizer.pairs(from: cookieHeader)
@@ -498,6 +527,7 @@ extension ClaudeWebAPIFetcher {
 
     // MARK: - Session Key Extraction
 
+    #if os(macOS)
     private static func extractSessionKeyInfo(
         browserDetection: BrowserDetection,
         logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo
@@ -543,9 +573,10 @@ extension ClaudeWebAPIFetcher {
                 }
             }
 
-            throw FetchError.noSessionKeyFound
+            throw ClaudeWebSessionKeyImport.desktopApp ? FetchError.noDesktopSessionKeyFound : .noSessionKeyFound
         }
     }
+    #endif
 
     private static func findSessionKey(in cookies: [(name: String, value: String)]) -> String? {
         for cookie in cookies where cookie.name == "sessionKey" {
@@ -594,26 +625,53 @@ extension ClaudeWebAPIFetcher {
         logger: ((String) -> Void)? = nil,
         renewalTracker: ClaudeWebSessionKeyRenewalTracker? = nil) async throws -> WebUsageData
     {
-        let url = URL(string: "\(baseURL)/organizations/\(orgId)/usage")!
+        // `cedar_ember=1` asks this usage response to include limit-reset grants in a `cedar_ember` block.
+        var (data, httpResponse) = try await self.requestUsage(
+            orgId: orgId,
+            sessionKey: sessionKey,
+            includeResets: true)
+        renewalTracker?.observe(response: httpResponse)
+        logger?("Usage API status: \(httpResponse.statusCode)")
+
+        if !Self.usageStatusesKeptWithResetOptIn.contains(httpResponse.statusCode),
+           !(httpResponse.statusCode == 403 && self.isCloudflareChallenge(response: httpResponse, data: data))
+        {
+            // A surface-specific 403 may reject only the opt-in. Retry the original usage request once;
+            // expired sessions, rate limits, and Cloudflare challenges retain their normal handling.
+            (data, httpResponse) = try await self.requestUsage(
+                orgId: orgId,
+                sessionKey: sessionKey,
+                includeResets: false)
+            renewalTracker?.observe(response: httpResponse)
+            logger?("Usage API status without reset opt-in: \(httpResponse.statusCode)")
+        }
+
+        if httpResponse.statusCode == 200 {
+            return try self.parseUsageResponse(data, logger: logger)
+        }
+        throw self.fetchError(response: httpResponse, data: data)
+    }
+
+    private static let usageStatusesKeptWithResetOptIn: Set<Int> = [200, 401, 429]
+
+    private static func requestUsage(
+        orgId: String,
+        sessionKey: String,
+        includeResets: Bool) async throws -> (Data, HTTPURLResponse)
+    {
+        let query = includeResets ? "?cedar_ember=1" : ""
+        let url = URL(string: "\(baseURL)/organizations/\(orgId)/usage\(query)")!
         var request = URLRequest(url: url)
         request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpMethod = "GET"
         request.timeoutInterval = 15
 
-        let (data, response) = try await ClaudeWebHTTPTransport.current.data(for: request)
-
+        let (data, response) = try await ClaudeWebHTTPTransport.uncached.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw FetchError.invalidResponse
         }
-        renewalTracker?.observe(response: httpResponse)
-
-        logger?("Usage API status: \(httpResponse.statusCode)")
-
-        if httpResponse.statusCode == 200 {
-            return try self.parseUsageResponse(data, logger: logger)
-        }
-        throw self.fetchError(response: httpResponse, data: data)
+        return (data, httpResponse)
     }
 
     private static func fetchError(response: HTTPURLResponse, data: Data) -> FetchError {
@@ -656,12 +714,6 @@ extension ClaudeWebAPIFetcher {
                 sessionResets = ISO8601DateParser.parse(resetsAt)
             }
         }
-        // Enterprise/credit-based accounts return null for five_hour; treat as 0% rather than an error.
-        // Track the object's presence so a real 0% session (with or without a reset) is not mistaken for
-        // the synthesized null-session placeholder downstream.
-        let resolvedSessionPercent = sessionPercent ?? 0.0
-        let hasLiveSessionWindow = fiveHour != nil
-
         // Parse seven_day (weekly) usage
         var weeklyPercent: Double?
         var weeklyResets: Date?
@@ -684,9 +736,10 @@ extension ClaudeWebAPIFetcher {
             logger?("Usage API extra window key matched: routines=\(sourceKey)")
         }
         let extraUsageCost = ClaudeWebExtraUsageCost.parse(from: json["extra_usage"])
+        let resetCredits = Self.parseResetCredits(from: json["cedar_ember"])
 
         return WebUsageData(
-            sessionPercentUsed: resolvedSessionPercent,
+            sessionPercentUsed: sessionPercent,
             sessionResetsAt: sessionResets,
             weeklyPercentUsed: weeklyPercent,
             weeklyResetsAt: weeklyResets,
@@ -696,7 +749,19 @@ extension ClaudeWebAPIFetcher {
             accountOrganization: nil,
             accountEmail: nil,
             loginMethod: nil,
-            hasLiveSessionWindow: hasLiveSessionWindow)
+            resetCredits: resetCredits,
+            cloudCredits: ClaudeCloudCreditsSnapshot.parse(json["iguana_necktie"]))
+    }
+
+    /// Anything unreadable in the `cedar_ember` block yields no inventory and leaves the usage windows intact.
+    private static func parseResetCredits(from value: Any?) -> ClaudeRateLimitResetCreditsSnapshot? {
+        guard let block = value as? [String: Any],
+              (block["grants"] as? [Any])?.count ?? 0 <= ClaudeLimitResetStatusResponse.maximumGrantRecords,
+              JSONSerialization.isValidJSONObject(block),
+              let data = try? JSONSerialization.data(withJSONObject: block),
+              let status = try? JSONDecoder().decode(ClaudeLimitResetStatusResponse.self, from: data)
+        else { return nil }
+        return status.snapshot(updatedAt: Date())
     }
 
     private static func percentValue(from value: Any?) -> Double? {
@@ -985,9 +1050,11 @@ extension ClaudeWebAPIFetcher {
         walk(json, path: "")
         return results
     }
+}
 
-    #else
-
+#if !os(macOS)
+extension ClaudeWebAPIFetcher {
+    /// Browser cookie import is unavailable off macOS; the manual-cookie path is supported.
     public static func fetchUsage(logger: ((String) -> Void)? = nil) async throws -> WebUsageData {
         throw FetchError.notSupportedOnThisPlatform
     }
@@ -1007,34 +1074,6 @@ extension ClaudeWebAPIFetcher {
         throw FetchError.notSupportedOnThisPlatform
     }
 
-    public static func fetchUsage(
-        cookieHeader: String,
-        targetOrganizationID: String? = nil,
-        includeUsageDetails: Bool = true,
-        includePrepaidBalance: Bool = true,
-        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
-    {
-        _ = cookieHeader
-        _ = targetOrganizationID
-        _ = includeUsageDetails
-        _ = includePrepaidBalance
-        _ = logger
-        throw FetchError.notSupportedOnThisPlatform
-    }
-
-    public static func fetchUsage(
-        using sessionKeyInfo: SessionKeyInfo,
-        targetOrganizationID: String? = nil,
-        includeUsageDetails: Bool = true,
-        includePrepaidBalance: Bool = true,
-        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
-    {
-        _ = targetOrganizationID
-        _ = includeUsageDetails
-        _ = includePrepaidBalance
-        throw FetchError.notSupportedOnThisPlatform
-    }
-
     public static func probeEndpoints(
         _ endpoints: [String],
         includePreview: Bool = false,
@@ -1049,23 +1088,11 @@ extension ClaudeWebAPIFetcher {
         return false
     }
 
-    public static func hasSessionKey(cookieHeader: String?) -> Bool {
-        guard let cookieHeader else { return false }
-        for pair in CookieHeaderNormalizer.pairs(from: cookieHeader) where pair.name == "sessionKey" {
-            let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if value.hasPrefix("sk-ant-") {
-                return true
-            }
-        }
-        return false
-    }
-
     public static func sessionKeyInfo(logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo {
         throw FetchError.notSupportedOnThisPlatform
     }
-
-    #endif
 }
+#endif
 
 extension ClaudeWebAPIFetcher {
     private static func persistSessionKeyIfNeeded(
@@ -1373,6 +1400,11 @@ extension ClaudeWebAPIFetcher {
         logger: ((String) -> Void)?) async throws -> WebUsageData
     {
         let log: (String) -> Void = { msg in logger?("[claude-web] \(msg)") }
+        if ClaudeWebSessionKeyImport.desktopApp {
+            // Reimport on each refresh so a desktop account switch cannot reuse a still-valid old session.
+            let session = try self.extractSessionKeyInfo(browserDetection: browserDetection, logger: log)
+            return try await self.fetchUsage(using: session, options: options, logger: log, cachePersistence: nil)
+        }
         var cacheObservation = CookieHeaderCache.observeForConditionalMutation(provider: .claude)
         var invalidatedCacheError: FetchError?
 

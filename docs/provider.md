@@ -41,10 +41,23 @@ Common building blocks already exist:
 
 Browser discovery policy belongs to the provider. Use `ChromiumLocalStorageDiscovery.defaultBrowsers` for
 catalog-derived Chromium storage discovery; the shared traversal handles localStorage, sessionStorage, and
-origin-filtered IndexedDB. For intentionally Chrome-only cookie imports, use
-`BrowserCookieImportSupport.chromeOnly(reason:)` with the provider's reason for avoiding unrelated browser prompts.
-Copilot budgets, Grok, Helmcode, Notion, Qoder, Replicate, TypeSafe, Venice, and ZoomMate retain this restricted
-default. A shared catalog is not permission to widen a provider's documented browser or credential scope.
+origin-filtered IndexedDB. Cookie imports use `ProviderBrowserCookieDefaults.defaultImportOrder`, the shared catalog
+order. Keep that metadata non-nil on macOS so web providers participate in `codexbar cookie refresh` and `--all`.
+`BrowserCookieAccessGate` keeps background and settings-triggered refreshes noninteractive. Chromium imports check
+for cookies matching the provider's hosts before requesting Safe Storage; a manual action shares at most one
+interactive Keychain read across all providers and browsers. Denials retain the six-hour browser and Chromium-family
+cooldown, including manual retries; only `codexbar cookie refresh --allow-keychain-prompt` explicitly overrides it.
+Session validation is lazy: stop at the first working browser and continue only after a missing or rejected session.
+Plugin permission errors retain recovery advice for each blocked browser. A decryption denial supersedes a profile
+denial only for that same browser; Safari points to Full Disk Access while Chromium profile denials point to
+Files & Folders. A working session from another browser still wins over these permission errors.
+Safari needs filesystem access (potentially Full Disk Access), while Firefox and Zen read unencrypted cookie stores;
+none of those browsers needs a Safe Storage Keychain grant. A denied or unavailable store remains skippable.
+Restrict a provider to a browser subset only with a documented technical reason next to the code. WorkBuddy retains
+Chrome because its sessions bind to the Chrome User-Agent supplied by the host; Devin reads Chromium local storage
+rather than cookies. Preserve explicit browser/profile pickers and full-catalog preferred orderings.
+Plugin cookie settings display the provider's catalog-derived supported-browser names and a Manual fallback. Use the
+same `ctx.browser.supportedBrowsers` names in plugin sign-in guidance; never maintain a second browser-name list.
 
 Provider behavior is descriptor-driven. Two flat first-party manifests form the closed bootstrap boundary:
 `ProviderManifest` lists core descriptors and `ProviderImplementationManifest` lists app implementations. The registries
@@ -61,6 +74,12 @@ Credential and config behavior follows the descriptor boundary too. Providers wi
 diagnose classification, validation, and missing-credential messaging; a missing adapter means the provider has no
 credential behavior. Typed settings-section registrations optionally expose cookie settings and a CLI credential
 contribution, so the app, CLI, and plugin cookie broker consume the same provider-owned settings shape.
+
+Automatic cookie traversal reads one browser at a time in the provider's existing order. Fetchers validate
+its candidate sessions before requesting another browser; missing or rejected sessions retain fallback.
+The plugin broker applies the same rule to both header and cookie-jar imports, while explicit browser/profile
+selections remain isolated. Public exhaustive import APIs retain their array return types; live fetches consume
+lazy candidates instead.
 
 ### Provider architecture gatekeeper threat model
 
@@ -93,15 +112,29 @@ lexical policy scan with a SwiftSyntax-based implementation that can model expre
 Introduce a single descriptor per provider:
 - `id` (stable `UsageProvider`)
 - display/labels/URLs (menu title, dashboard URL, status URL)
-- UI branding (icon name, primary color, 2–3-color confetti palette)
+- UI branding (icon name, primary color, 2–3-color confetti palette); see the [palette audit](provider-palette.md) for sourced accents and contrast decisions.
 - capabilities (supportsCredits, supportsTokenCost, supportsStatusPolling, supportsLogin)
 - fetch plan (allowed `--source` modes + ordered strategy pipeline)
 - CLI metadata (cliName, aliases, version provider)
 - account behavior (e.g., `usesAccountFallback` for Codex auth.json)
+- `nativeAppBundleIdentifiers`: exact provider-owned desktop app bundle IDs for the opt-in frontmost merged icon. The shared monitor matches only enabled providers and rejects ambiguous matches; general-purpose browsers and terminals must not claim a provider.
 
 UI and settings should become descriptor-driven:
 - no provider-specific branching for labels/links/toggle titles
 - minimal provider-specific UI (only when a provider truly needs bespoke UX)
+
+For detail-backed balances, set `presentation.menuBarBalanceDetailLabels` to the provider's ordered row labels.
+The shared menu bar resolver uses the first reported row for Balance elements and, when no quota window exists,
+automatic text. Keep real percentage windows intact; do not fabricate a quota for a credits-only account.
+Providers that store a remaining prepaid amount in `ProviderCostSnapshot.balance` set
+`presentation.menuBarBalanceUsesPrepaidCost`. The shared resolver formats it in the snapshot currency for Balance
+elements and passes USD amounts to Balance remaining conditionals. Legacy menu bar text never shows it, so the
+balance sits beside subscription quotas rather than replacing them.
+
+Providers may return `.automaticCandidates` from `presentation.menuBarWindowResolver` to declare eligible
+competing quotas. The shared app resolver ranks those windows by depletion forecast, then used percentage.
+Return `.resolved` for authoritative selections such as ordered credit pools or product-specific fallback;
+`.unhandled` lets Auto rank the standard lanes. Keep optional/model-only exclusions inside the descriptor.
 
 ## Fetch strategies
 
@@ -241,6 +274,8 @@ Adding a first-party provider currently requires all of these registration point
    `caseDisplayRepresentations` entry to the WidgetKit `ProviderChoice` `AppEnum`. AppIntents extracts this table
    statically, so widget display representations cannot be derived at runtime. `WidgetProviderChoiceTests` keeps the
    literal table synchronized with selectable descriptor metadata and display names.
+   Also add a literal case and display entry to `BurnProviderChoice` for every provider, including providers with
+   `burnDownWidgetSelectable: false`; its stable ID table is separate from runtime widget eligibility.
 7. Add focused tests for the provider's parser/snapshot mapping, strategy availability and fallback, credential or
    settings projection, and CLI aliases/source validation as applicable.
 8. Add or update the user-facing provider entry in `docs/providers.md`, including authentication and data-source
@@ -261,6 +296,10 @@ implementation, icon, settings-section, or widget registrations by provider ID. 
 remain deliberate literal exceptions because AppIntents requires statically extractable declarations.
 
 ## UI notes (Providers settings)
+Providers with opt-in filesystem roots return `ProviderSettingsDirectoryListDescriptor` values from
+`settingsDirectoryLists(context:)`. The shared row owns the directory picker and add/remove controls;
+providers retain responsibility for path interpretation and scan scope.
+
 Current: checkboxes per provider.
 
 Preferred direction: table/list rows (like a “sessions” table):

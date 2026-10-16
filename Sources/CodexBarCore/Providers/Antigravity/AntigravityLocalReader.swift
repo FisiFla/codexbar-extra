@@ -52,15 +52,14 @@ enum AntigravityLocalReader {
 
         init?(session: String, row: Int64, turn: AntigravityProtoReader.ParsedTurn, cacheWrite: Int) {
             guard let usage = turn.usage, turn.timestampMs != nil,
-                  let input = AntigravityLocalReader.checkedAdd(usage.systemPrompt, usage.newInput),
                   let total = CheckedSum.integers(
-                      [input, usage.output, usage.cacheRead, cacheWrite, usage.reasoning])
+                      [usage.newInput, usage.output, usage.cacheRead, cacheWrite, usage.reasoning])
             else { return nil }
             self.session = session
             self.row = row
             self.turn = turn
             self.cacheWrite = cacheWrite
-            self.input = input
+            self.input = usage.newInput
             self.total = total
         }
     }
@@ -93,16 +92,51 @@ enum AntigravityLocalReader {
     }
 
     /// Antigravity records routing variants of a vendor model (`-tiered`, `-low`, `-thinking`)
-    /// that bill at the base model's public price. The alias stays provider-local so shared
-    /// Claude pricing keeps reporting unknown Claude variants as unpriced.
+    /// that bill at the base model's public price, and product aliases that name no catalogued
+    /// model at all. The alias stays provider-local so shared Claude pricing keeps reporting
+    /// unknown Claude variants as unpriced.
     static func pricingBaseModelID(for model: String) -> String? {
         let lowered = model.lowercased()
+        if let alias = self.pricingModelAliases[lowered] { return alias }
         guard let suffix = self.routingVariantSuffixes.first(where: lowered.hasSuffix) else { return nil }
         let base = String(model.dropLast(suffix.count))
-        return base.isEmpty ? nil : base
+        return base.isEmpty ? nil : self.pricingModelAliases[base.lowercased()] ?? base
     }
 
     private static let routingVariantSuffixes = ["-tiered", "-low", "-thinking"]
+
+    /// Gemini 3.1 Pro is catalogued only as `gemini-3.1-pro-preview`. Antigravity records it under
+    /// its product aliases and effort tiers; ccusage's Antigravity adapter maps the same IDs.
+    /// Antigravity also records safety-routed Gemini 3.7 Flash turns under `gemini-3.7-flash-safety-le`
+    /// while the usage record's model enum ID matches ordinary `gemini-3.7-flash` turns.
+    private static let pricingModelAliases = [
+        "gemini-pro-default": "gemini-3.1-pro-preview",
+        "gemini-pro-agent": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-high": "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-low": "gemini-3.1-pro-preview",
+        "gemini-3.7-flash-safety-le": "gemini-3.7-flash",
+    ]
+
+    /// `gpt-oss-120b` is an open-weight model, so no first-party vendor lists a price for it.
+    /// Google serves it inside Antigravity, so the Google Vertex list price applies. Antigravity
+    /// records it as `gpt-oss-120b-medium`, which the shared Claude pricing never routes to Vertex.
+    /// Only the exact recorded name is mapped, so other effort tiers stay unpriced.
+    private static let explicitCatalogEntries = [
+        "gpt-oss-120b-medium": (providerID: "google-vertex", modelID: "openai/gpt-oss-120b-maas"),
+    ]
+
+    /// Every catalog entry `costUSD` may price `model` with, so an unknown-price refresh fetches them all.
+    /// Antigravity prices through the Claude resolver, and its routing variants resolve against the
+    /// base vendor model, so both IDs are worth fetching, plus any explicit catalog entry.
+    static func pricingRefreshTargets(for model: String) -> [(providerID: String, modelID: String)] {
+        let names = [model] + [self.pricingBaseModelID(for: model)].compactMap(\.self)
+        var targets = names.flatMap { CostUsagePricing.claudeModelsDevPricingTargets(for: $0) }
+        if let entry = self.explicitCatalogEntries[model.lowercased()] {
+            targets.append(entry)
+        }
+        return targets
+    }
 
     static func checkedAdd(_ lhs: Int, _ rhs: Int) -> Int? {
         let (result, overflow) = lhs.addingReportingOverflow(rhs)
@@ -257,18 +291,16 @@ enum AntigravityLocalReader {
         let inherited = label.flatMap { conflicts.contains($0) ? nil : models[$0] }
         let model = self.normalizeModelID(event.turn.model ?? inherited ?? "unknown")
         let date = Date(timeIntervalSince1970: Double(timestamp) / 1000)
+        let day = CostUsageLocalDay.key(from: date, calendar: calendar)
+        let unattributedZero = total == 0 && model == "unknown"
         let cost = pricing.flatMap {
-            self.costUSD(
+            unattributedZero ? 0 : self.costUSD(
                 pricing: $0,
                 model: model,
                 date: date,
-                tokens: PricedTokens(
-                    input: input,
-                    cacheRead: usage.cacheRead,
-                    cacheCreation: event.cacheWrite,
-                    output: usage.output + usage.reasoning))
+                usage: usage,
+                cacheWrite: event.cacheWrite)
         }
-        let day = CostUsageLocalDay.key(from: date, calendar: calendar)
         return .init(
             date: day,
             inputTokens: input,
@@ -280,7 +312,7 @@ enum AntigravityLocalReader {
             requestCount: 1,
             costUSD: cost,
             modelsUsed: nil,
-            modelBreakdowns: [.init(
+            modelBreakdowns: unattributedZero ? [] : [.init(
                 modelName: model,
                 costUSD: cost,
                 totalTokens: total,
@@ -294,33 +326,30 @@ enum AntigravityLocalReader {
             estimatedRequestCount: cost == nil ? 0 : 1)
     }
 
-    private struct PricedTokens {
-        let input: Int
-        let cacheRead: Int
-        let cacheCreation: Int
-        let output: Int
-    }
-
     /// Prices the exact recorded model ID first so an explicitly catalogued variant keeps its own
-    /// price, then falls back to the base model of a known routing variant.
+    /// price, then falls back to the base model of a known routing variant, then to an explicit
+    /// catalog entry for a model that no first-party vendor prices.
     private static func costUSD(
         pricing: CostUsagePricing.ClaudeResolver,
         model: String,
         date: Date,
-        tokens: PricedTokens) -> Double?
+        usage: AntigravityProtoReader.ParsedUsage,
+        cacheWrite: Int) -> Double?
     {
-        func resolve(_ candidate: String) -> Double? {
+        func resolve(_ candidate: String, providerID: String? = nil) -> Double? {
             pricing.costUSD(
                 model: candidate,
-                inputTokens: tokens.input,
-                cacheReadInputTokens: tokens.cacheRead,
-                cacheCreationInputTokens: tokens.cacheCreation,
-                outputTokens: tokens.output,
+                providerID: providerID,
+                inputTokens: usage.newInput,
+                cacheReadInputTokens: usage.cacheRead,
+                cacheCreationInputTokens: cacheWrite,
+                outputTokens: usage.output + usage.reasoning,
                 pricingDate: date)
         }
         if let cost = resolve(model) { return cost }
-        guard let base = self.pricingBaseModelID(for: model) else { return nil }
-        return resolve(base)
+        if let base = self.pricingBaseModelID(for: model), let cost = resolve(base) { return cost }
+        guard let entry = self.explicitCatalogEntries[model.lowercased()] else { return nil }
+        return resolve(entry.modelID, providerID: entry.providerID)
     }
 
     private static func checkedMergeEntry(
@@ -423,11 +452,7 @@ enum AntigravityLocalReader {
     }
 
     private static func sumCosts(_ lhs: Double?, _ rhs: Double?) -> Double? {
-        switch (lhs, rhs) {
-        case let (lhs?, rhs?): lhs + rhs
-        case let (lhs?, nil): lhs
-        case let (nil, rhs?): rhs
-        case (nil, nil): nil
-        }
+        if let lhs, let rhs { return lhs + rhs }
+        return lhs ?? rhs
     }
 }

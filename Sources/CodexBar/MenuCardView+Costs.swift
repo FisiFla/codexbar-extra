@@ -76,6 +76,16 @@ extension UsageMenuCardView.Model.ProviderCostSection {
         self.percentStyle == .used ? L("Extra usage spent") : self.percentStyle.accessibilityLabel
     }
 
+    static func inlineBalance(title: String, value: String, showsInProviderDetails: Bool = true) -> Self {
+        Self(
+            title: title,
+            percentUsed: nil,
+            spendLine: value,
+            percentLine: nil,
+            presentation: .inlineValue,
+            showsInProviderDetails: showsInProviderDetails)
+    }
+
     init(
         title: String,
         percentUsed: Double?,
@@ -532,47 +542,7 @@ extension UsageMenuCardView.Model {
             return Self.creditsUsageSection(cost: cost, percentStyle: percentStyle)
         }
 
-        if style == .claude {
-            if isClaudeAdminAPI {
-                let spend = formatCost(cost.used)
-                let periodLabel = Self.localizedPeriodLabel(cost.period ?? "Last 30 days")
-                return ProviderCostSection(
-                    title: L("API spend"),
-                    percentUsed: nil,
-                    spendLine: "\(periodLabel): \(spend)",
-                    percentLine: nil)
-            }
-
-            if cost.limit <= 0 {
-                guard let balance = cost.balance else { return nil }
-                let value = formatCost(balance)
-                return ProviderCostSection(
-                    title: L("Credits"),
-                    percentUsed: nil,
-                    spendLine: value,
-                    percentLine: nil,
-                    presentation: .inlineValue,
-                    showsInProviderDetails: false)
-            }
-
-            let used = formatCost(cost.used)
-            let limit = formatCost(cost.limit)
-            let percentUsed = Self.clamped((cost.used / cost.limit) * 100)
-            let periodLabel = Self.localizedPeriodLabel(cost.period ?? "This month")
-            let balanceLine = cost.balance.map {
-                "\(L("Balance")): \(formatCost($0))"
-            }
-            return ProviderCostSection(
-                title: L("Extra usage"),
-                percentUsed: percentUsed,
-                spendLine: "\(periodLabel): \(used) / \(limit)",
-                percentLine: String(format: L("%.0f%% used"), min(100, max(0, percentUsed))),
-                balanceLine: balanceLine,
-                showsInProviderDetails: false,
-                percentStyle: percentStyle)
-        }
-
-        if style == .apiSpend {
+        if style == .apiSpend || (style == .claude && isClaudeAdminAPI) {
             let spend = formatCost(cost.used)
             let periodLabel = Self.localizedPeriodLabel(cost.period ?? "Last 30 days")
             return ProviderCostSection(
@@ -582,10 +552,21 @@ extension UsageMenuCardView.Model {
                 percentLine: nil)
         }
 
+        if style == .claude {
+            if cost.limit <= 0 {
+                guard let balance = cost.balance else { return nil }
+                let value = formatCost(balance)
+                return .inlineBalance(
+                    title: L("Credits"),
+                    value: value,
+                    showsInProviderDetails: false)
+            }
+        }
+
         if style == .clawRouter, cost.limit <= 0 {
             let spend = formatCost(cost.used)
             return ProviderCostSection(
-                title: "ClawRouter spend",
+                title: L("ClawRouter spend"),
                 percentUsed: nil,
                 spendLine: "\(L("This month")): \(spend)",
                 percentLine: nil)
@@ -627,8 +608,31 @@ extension UsageMenuCardView.Model {
             percentUsed: percentUsed,
             spendLine: "\(periodLabel): \(used) / \(limit)",
             percentLine: String(format: L("%.0f%% used"), min(100, max(0, percentUsed))),
-            balanceLine: nil,
-            personalSpendLine: personalSpendLine)
+            balanceLine: style == .claude ? cost.balance.map { "\(L("Balance")): \(formatCost($0))" } : nil,
+            personalSpendLine: personalSpendLine,
+            showsInProviderDetails: style != .claude,
+            percentStyle: style == .claude ? percentStyle : .used)
+    }
+
+    /// Provider-specific by design: Claude cloud credits share the inline balance style of prepaid credits.
+    static func cloudCreditsSection(input: Input) -> ProviderCostSection? {
+        guard input.provider == .claude,
+              input.showOptionalCreditsAndExtraUsage,
+              let details = input.snapshot?.details,
+              let status = ClaudeCloudCreditsSnapshot.detailStatus(in: details, now: input.now)
+        else { return nil }
+        let value = switch status {
+        case let .available(remainingDollars):
+            UsageFormatter.convertedCostString(
+                remainingDollars,
+                preferredCurrency: input.preferredCurrencyCode,
+                providerCurrency: "USD")
+        case .expired:
+            L("Expired")
+        case .unavailable:
+            L("Unavailable")
+        }
+        return .inlineBalance(title: L(ClaudeCloudCreditsSnapshot.detailTitle), value: value)
     }
 
     private static func creditsUsageSection(
@@ -637,12 +641,9 @@ extension UsageMenuCardView.Model {
     {
         if cost.limit <= 0 {
             guard let balance = cost.balance else { return nil }
-            return ProviderCostSection(
+            return .inlineBalance(
                 title: L("Extra usage"),
-                percentUsed: nil,
-                spendLine: "\(L("Balance")): \(UsageFormatter.creditsNumberString(from: balance))",
-                percentLine: nil,
-                presentation: .inlineValue,
+                value: "\(L("Balance")): \(UsageFormatter.creditsNumberString(from: balance))",
                 showsInProviderDetails: false)
         }
 

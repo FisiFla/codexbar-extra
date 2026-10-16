@@ -30,7 +30,7 @@ struct MenuCardProviderRegressionTests {
     @Test
     func `command code progress color uses its contrasting brand accent`() {
         let branding = ProviderDescriptorRegistry.descriptor(for: .commandcode).branding.color
-        let expected = ProviderColor(hex: 0xA04DFD)
+        let expected = ProviderColor(hex: 0x8C4EDD)
 
         #expect(branding == expected)
         #expect(UsageMenuCardView.Model.progressColor(for: .commandcode) == Color(
@@ -91,10 +91,19 @@ struct MenuCardProviderRegressionTests {
     }
 
     @Test
-    func `ollama api key model explains browser session quota requirement`() throws {
+    func `ollama API balance card shares monthly and credit presentation`() throws {
         let now = Date()
         let metadata = try #require(ProviderDefaults.metadata[.ollama])
-        let snapshot = OllamaAPIUsageSnapshot(modelCount: 3, updatedAt: now).toUsageSnapshot()
+        let snapshot = try UsageSnapshot(
+            primary: .init(
+                usedPercent: 12.5,
+                windowMinutes: ProviderPaceCapability.monthlyWindowSentinelMinutes,
+                resetsAt: now.addingTimeInterval(86400),
+                resetDescription: nil),
+            secondary: nil,
+            details: [.init(title: "Credits", rows: [.init(label: "Credit balance", value: "$18.25")])],
+            updatedAt: now,
+            identity: .init(providerID: .ollama, accountEmail: nil, accountOrganization: nil, loginMethod: "API key"))
 
         let model = UsageMenuCardView.Model.make(.init(
             provider: .ollama,
@@ -116,12 +125,11 @@ struct MenuCardProviderRegressionTests {
             hidePersonalInfo: false,
             now: now))
 
-        #expect(model.metrics.isEmpty)
+        #expect(model.metrics.map(\.title) == ["Monthly"])
+        #expect(model.providerDetails.first?.rows.first?.value == "$18.25")
         #expect(model.placeholder == nil)
         #expect(model.planText == "API key")
-        #expect(model.usageNotes == [
-            "API key verified. Cloud quotas need browser cookies. Sign in to Ollama.",
-        ])
+        #expect(model.usageNotes.isEmpty)
     }
 
     @Test

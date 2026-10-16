@@ -201,6 +201,7 @@ public struct ProviderMenuBarWindowContext: Sendable {
 public enum ProviderMenuBarWindowResolution: Sendable {
     case unhandled
     case resolved(RateWindow?)
+    case automaticCandidates([RateWindow])
 }
 
 public enum ProviderPlanUtilizationSeries: Sendable, Hashable {
@@ -312,6 +313,7 @@ public struct ProviderMenuCardPresentation: Sendable {
     public let usesRawPrimaryResetDescription: Bool
     public let resetWindowUsesWeeklyPace: Bool
     public let showsDeepSeekPriceClock: Bool
+    public let blockingQuota: (windowID: String, message: String)?
 
     public init(
         usageNotesResolver: @escaping UsageNotesResolver = { _ in .unhandled },
@@ -337,7 +339,8 @@ public struct ProviderMenuCardPresentation: Sendable {
         usesSyntheticRollingRegen: Bool = false,
         usesRawPrimaryResetDescription: Bool = false,
         resetWindowUsesWeeklyPace: Bool = false,
-        showsDeepSeekPriceClock: Bool = false)
+        showsDeepSeekPriceClock: Bool = false,
+        blockingQuota: (windowID: String, message: String)? = nil)
     {
         self.usageNotesResolver = usageNotesResolver
         self.creditsVisibility = creditsVisibility
@@ -363,6 +366,7 @@ public struct ProviderMenuCardPresentation: Sendable {
         self.usesRawPrimaryResetDescription = usesRawPrimaryResetDescription
         self.resetWindowUsesWeeklyPace = resetWindowUsesWeeklyPace
         self.showsDeepSeekPriceClock = showsDeepSeekPriceClock
+        self.blockingQuota = blockingQuota
     }
 
     public func usageNotes(context: ProviderUsageNotesContext) -> ProviderUsageNotesResolution {
@@ -442,6 +446,10 @@ public struct ProviderUsagePresentation: Sendable {
     public typealias PlanUtilizationSeriesNormalizer = @Sendable (
         _ series: ProviderPlanUtilizationSeries,
         _ windowMinutes: Int) -> ProviderPlanUtilizationSeries
+    public typealias WidgetRowResolver = @Sendable (
+        _ rows: [WidgetSnapshot.WidgetUsageRowSnapshot],
+        _ snapshot: UsageSnapshot,
+        _ metric: ProviderMenuBarMetric) -> [WidgetSnapshot.WidgetUsageRowSnapshot]
     public typealias WidgetRowLimitResolver = @Sendable (
         _ rows: [WidgetSnapshot.WidgetUsageRowSnapshot]?,
         _ family: ProviderWidgetFamily) -> Int?
@@ -458,6 +466,7 @@ public struct ProviderUsagePresentation: Sendable {
     private let planUtilizationSeriesResolver: PlanUtilizationSeriesResolver
     private let planUtilizationSeriesNormalizer: PlanUtilizationSeriesNormalizer
     private let widgetRowLimitResolver: WidgetRowLimitResolver
+    private let widgetRowResolver: WidgetRowResolver?
     public let iconDecorations: ProviderIconDecorations
     public let treatsExhaustedSecondaryIconWindowAsMissing: Bool
     public let reservesMissingSecondaryIconLane: Bool
@@ -465,6 +474,9 @@ public struct ProviderUsagePresentation: Sendable {
     public let secondarySemanticWindow: ProviderSemanticWindow
     public let menuBarLayoutPrimaryLabel: String?
     public let menuBarLayoutSecondaryLabel: String?
+    public let menuBarBalanceDetailLabels: [String]?
+    /// Menu bar Balance elements read `ProviderCostSnapshot.balance` as the remaining prepaid amount.
+    public let menuBarBalanceUsesPrepaidCost: Bool
     public let requestedMenuBarLaneOrders: [ProviderMenuBarMetric: [ProviderUsageLane]]
     public let automaticSelectionPrioritizesExhaustedWindow: Bool
     public let switcherUsesAutomaticMenuBarWindow: Bool
@@ -494,6 +506,8 @@ public struct ProviderUsagePresentation: Sendable {
         secondarySemanticWindow: ProviderSemanticWindow = .weekly,
         menuBarLayoutPrimaryLabel: String? = nil,
         menuBarLayoutSecondaryLabel: String? = nil,
+        menuBarBalanceDetailLabels: [String]? = nil,
+        menuBarBalanceUsesPrepaidCost: Bool = false,
         requestedMenuBarLaneOrders: [ProviderMenuBarMetric: [ProviderUsageLane]] = [:],
         automaticSelectionPrioritizesExhaustedWindow: Bool = true,
         switcherUsesAutomaticMenuBarWindow: Bool = false,
@@ -502,6 +516,7 @@ public struct ProviderUsagePresentation: Sendable {
         planUtilizationSeriesResolver: @escaping PlanUtilizationSeriesResolver = Self.standardPlanUtilizationSeries,
         planUtilizationSeriesNormalizer: @escaping PlanUtilizationSeriesNormalizer = { series, _ in series },
         widgetRowLimitResolver: @escaping WidgetRowLimitResolver = { _, _ in nil },
+        widgetRowResolver: WidgetRowResolver? = nil,
         secondaryGloballyCapsPrimary: Bool = false,
         primaryBindingQuotaLanes: Set<ProviderUsageLane> = [],
         menuCard: ProviderMenuCardPresentation = ProviderMenuCardPresentation(),
@@ -523,6 +538,8 @@ public struct ProviderUsagePresentation: Sendable {
         self.secondarySemanticWindow = secondarySemanticWindow
         self.menuBarLayoutPrimaryLabel = menuBarLayoutPrimaryLabel
         self.menuBarLayoutSecondaryLabel = menuBarLayoutSecondaryLabel
+        self.menuBarBalanceDetailLabels = menuBarBalanceDetailLabels
+        self.menuBarBalanceUsesPrepaidCost = menuBarBalanceUsesPrepaidCost
         self.requestedMenuBarLaneOrders = requestedMenuBarLaneOrders
         self.automaticSelectionPrioritizesExhaustedWindow = automaticSelectionPrioritizesExhaustedWindow
         self.switcherUsesAutomaticMenuBarWindow = switcherUsesAutomaticMenuBarWindow
@@ -531,6 +548,7 @@ public struct ProviderUsagePresentation: Sendable {
         self.planUtilizationSeriesResolver = planUtilizationSeriesResolver
         self.planUtilizationSeriesNormalizer = planUtilizationSeriesNormalizer
         self.widgetRowLimitResolver = widgetRowLimitResolver
+        self.widgetRowResolver = widgetRowResolver
         self.secondaryGloballyCapsPrimary = secondaryGloballyCapsPrimary
         self.primaryBindingQuotaLanes = primaryBindingQuotaLanes
         self.menuCard = menuCard
@@ -587,9 +605,8 @@ public struct ProviderUsagePresentation: Sendable {
             return order
         }
         return switch metric {
-        case .primary: [.primary, .secondary]
-        case .secondary: [.secondary, .primary]
-        case .tertiary: [.primary, .secondary]
+        case .primary, .tertiary: [.primary, .secondary, .tertiary]
+        case .secondary: [.secondary, .primary, .tertiary]
         default: []
         }
     }
@@ -612,6 +629,18 @@ public struct ProviderUsagePresentation: Sendable {
         windowMinutes: Int) -> ProviderPlanUtilizationSeries
     {
         self.planUtilizationSeriesNormalizer(series, windowMinutes)
+    }
+
+    public var widgetRowsFollowMenuBarMetric: Bool {
+        self.widgetRowResolver != nil
+    }
+
+    public func widgetRows(
+        _ rows: [WidgetSnapshot.WidgetUsageRowSnapshot],
+        snapshot: UsageSnapshot,
+        metric: ProviderMenuBarMetric) -> [WidgetSnapshot.WidgetUsageRowSnapshot]
+    {
+        self.widgetRowResolver?(rows, snapshot, metric) ?? rows
     }
 
     public func widgetRowLimit(
@@ -644,12 +673,7 @@ public struct ProviderUsagePresentation: Sendable {
     }
 
     public static func standardSemanticWindows(snapshot: UsageSnapshot) -> ProviderSemanticWindows {
-        let candidates = [snapshot.primary, snapshot.secondary, snapshot.tertiary]
-            + (snapshot.extraRateWindows ?? []).filter(\.usageKnown).map(\.window)
-        let usable = candidates.compactMap { window -> RateWindow? in
-            guard let window, !window.isSyntheticPlaceholder else { return nil }
-            return window
-        }
+        let usable = snapshot.measuredRateWindows
         return ProviderSemanticWindows(
             session: usable.first { window in
                 guard let minutes = window.windowMinutes else { return false }

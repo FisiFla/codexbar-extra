@@ -39,7 +39,11 @@ extension SpendDashboardModel {
             for windowEntry in summary.entries {
                 let entry = windowEntry.entry
                 let breakdowns = entry.modelBreakdowns ?? []
-                if !Self.hasCompleteModelCostCoverage(entry) {
+                // Provider-specific by design: Codex model costs can be subtotals of priced requests, so they can
+                // add up to the day's known cost while the day still has unpriced requests.
+                if !Self.hasCompleteModelCostCoverage(entry)
+                    || (input.provider == .codex && (entry.unpricedRequestCount ?? 0) > 0)
+                {
                     completeness = .incomplete
                 }
                 for breakdown in breakdowns {
@@ -207,7 +211,8 @@ extension SpendDashboardModel {
                 let entry = windowEntry.entry
                 return entry.hasOnlyIncompleteRequests || Self.hasRetainableUnpricedModelRows(entry) ||
                     Self.hasCompleteModelCostCoverage(entry) ||
-                    Self.hasProvenZeroCost(entry)
+                    Self.hasProvenZeroCost(entry) ||
+                    (entry.costUSD == nil && entry.modelBreakdowns?.isEmpty == true && Self.hasProvenZeroTokens(entry))
             }
     }
 

@@ -131,6 +131,13 @@ struct CLIServeRouterTests {
     func `routes web UI health usage cost and dashboard endpoints`() throws {
         #expect(try CLIServeRouter.route(method: "GET", path: "/", queryItems: [:]) == .webUI)
         #expect(try CLIServeRouter.route(method: "GET", path: "/health", queryItems: [:]) == .health)
+        #expect(try CLIServeRouter.route(method: "GET", path: "/accounts", queryItems: [:]) == .accounts(id: nil))
+        #expect(
+            try CLIServeRouter.route(
+                method: "GET",
+                path: "/accounts/token-account:claude:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                queryItems: [:]) ==
+                .accounts(id: "token-account:claude:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
         #expect(try CLIServeRouter.route(method: "GET", path: "/usage", queryItems: [:]) == .usage(provider: nil))
         #expect(
             try CLIServeRouter.route(
@@ -301,6 +308,10 @@ struct CLIServeRouterTests {
 
         #expect(serve.contains("--request-timeout <seconds>"))
         #expect(serve.contains("codexbar serve --port 8080 --refresh-interval 60 --request-timeout 30"))
+        #expect(serve.contains("GET /accounts"))
+        #expect(serve.contains("GET /accounts/<id>"))
+        #expect(serve.contains("Account IDs are stable opaque identifiers"))
+        #expect(serve.contains("never returns credentials or refreshes usage"))
         #expect(root.contains("--request-timeout <seconds>"))
     }
 
@@ -369,24 +380,50 @@ struct CLIServeRouterTests {
         #expect(oversizedTimeout < 86400)
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func `serve usage collection bounds a hung provider without blocking others`() async {
         let providers: [UsageProvider] = [.codex, .claude, .gemini]
-        let start = Date()
-        let output = await CodexBarCLI.serveCollectUsageOutputs(
-            providers: providers,
-            providerTimeout: 0.1)
-        { provider in
-            if provider == .claude {
-                try? await Task.sleep(for: .seconds(30))
-                return UsageCommandOutput(sections: ["late:\(provider.rawValue)"])
+        let releaseProvider = HeldRequestGate()
+        let providerStarted = HeldRequestGate()
+        let providerFinished = HeldRequestGate()
+        let fastProvidersReturned = HeldRequestGate()
+        let fastCount = ServeTestCounter()
+        let deadline = HeldRequestGate()
+        defer { Task { await releaseProvider.open(); await deadline.open() } }
+        let now = ContinuousClock.now
+        let operations = CLIServeOperationCoordinator<UsageCommandOutput>(
+            now: { now },
+            sleepUntil: { _ in await deadline.wait() })
+        let collection = Task {
+            await CodexBarCLI.serveCollectUsageOutputs(
+                providers: providers,
+                configFingerprint: "fixture",
+                deadline: now + .seconds(30),
+                operations: operations)
+            { provider in
+                if provider == .claude {
+                    await providerStarted.open()
+                    await releaseProvider.wait()
+                    await providerFinished.open()
+                    return UsageCommandOutput(sections: ["late:\(provider.rawValue)"])
+                }
+                if await fastCount.increment() == 2 { await fastProvidersReturned.open() }
+                return UsageCommandOutput(sections: ["ok:\(provider.rawValue)"])
             }
-            return UsageCommandOutput(sections: ["ok:\(provider.rawValue)"])
         }
-        let elapsed = Date().timeIntervalSince(start)
-
-        // The hung provider must not serialize or stall the others.
-        #expect(elapsed < 5)
+        await providerStarted.wait()
+        await fastProvidersReturned.wait()
+        // Wait for both fast results to be accepted before expiring only the held operation.
+        while await operations.snapshot().operationCount != 1, !Task.isCancelled {
+            await Task.yield()
+        }
+        #expect(await operations.snapshot().operationCount == 1)
+        await deadline.open()
+        let output = await collection.value
+        // Collection completes while the slow provider still cannot return.
+        #expect(await releaseProvider.isOpen == false)
+        await releaseProvider.open()
+        await providerFinished.wait()
         // Fast providers render in caller order; the hung one yields no section.
         #expect(output.sections == ["ok:codex", "ok:gemini"])
         // The hung provider degrades to a single provider error row.
@@ -1642,33 +1679,5 @@ private actor ServeTestCounter {
 
     func current() -> Int {
         self.value
-    }
-}
-
-private final class ServeListeningSignal: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var isSignaled = false
-
-    func signal() {
-        let continuation = self.lock.withLock {
-            self.isSignaled = true
-            defer { self.continuation = nil }
-            return self.continuation
-        }
-        continuation?.resume()
-    }
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            let shouldResume = self.lock.withLock {
-                guard !self.isSignaled else { return true }
-                self.continuation = continuation
-                return false
-            }
-            if shouldResume {
-                continuation.resume()
-            }
-        }
     }
 }

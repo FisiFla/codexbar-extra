@@ -46,6 +46,7 @@ struct MenuDescriptor {
         case addAccount = "plus"
         case systemAccount = "person.crop.circle"
         case workspaces = "folder"
+        case liveUsage = "chart.bar.xaxis"
         case switchAccount = "key"
         case openTerminal = "terminal"
         case loginToProvider = "arrow.right.square"
@@ -76,6 +77,7 @@ struct MenuDescriptor {
         case openTerminal(command: String)
         case loginToProvider(url: String)
         case openCodexWorkspaces
+        case openOpenAILiveUsage
         case settings
         case providerSettings(UsageProvider)
         case about
@@ -94,6 +96,8 @@ struct MenuDescriptor {
         managedCodexAccountCoordinator: ManagedCodexAccountCoordinator? = nil,
         codexAccountPromotionCoordinator: CodexAccountPromotionCoordinator? = nil,
         updateReady: Bool,
+        availableUpdateVersion: String? = nil,
+        isInstallingUpdate: Bool = false,
         canCheckForUpdates: Bool = false,
         versionText: String = AppVersion.shortVersion,
         includeContextualActions: Bool = true,
@@ -169,6 +173,8 @@ struct MenuDescriptor {
         }
         sections.append(Self.metaSection(
             updateReady: updateReady,
+            availableUpdateVersion: availableUpdateVersion,
+            isInstallingUpdate: isInstallingUpdate,
             canCheckForUpdates: canCheckForUpdates,
             versionText: versionText))
 
@@ -258,32 +264,14 @@ struct MenuDescriptor {
             let presentation = ProviderDescriptorRegistry.descriptor(for: provider).presentation
             let paceVisible = settings.paceVisible && ProviderDescriptorRegistry.descriptor(for: provider).pace
                 .allowsPace(dataConfidence: snap.dataConfidence)
-            if let primary = snap.primary {
-                let primaryDetail = primary.resetDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let primaryDescriptionIsDetail = presentation.menu.usesPrimaryDescriptionAsDetail(snapshot: snap)
-                let primaryWindow = if primaryDescriptionIsDetail {
-                    // Some providers use resetDescription for non-reset detail
-                    // (e.g., "Unlimited", "X/Y credits"). Avoid rendering it as a "Resets ..." line.
-                    RateWindow(
-                        usedPercent: primary.usedPercent,
-                        windowMinutes: primary.windowMinutes,
-                        resetsAt: primary.resetsAt,
-                        resetDescription: nil)
-                } else {
-                    primary
-                }
+            if let primary = snap.primary?.measured {
                 Self.appendRateWindow(
                     entries: &entries,
                     title: labels.primary,
-                    window: primaryWindow,
+                    window: primary,
                     resetStyle: resetStyle,
-                    showUsed: settings.usageBarsShowUsed)
-                if primaryDescriptionIsDetail,
-                   let primaryDetail,
-                   !primaryDetail.isEmpty
-                {
-                    entries.append(.text(primaryDetail, .secondary))
-                }
+                    showUsed: settings.usageBarsShowUsed,
+                    descriptionIsDetail: presentation.menu.usesPrimaryDescriptionAsDetail(snapshot: snap))
                 if paceVisible,
                    presentation.menu.showsPrimaryWeeklyPace,
                    let pace = store.weeklyPace(provider: provider, window: primary, dataConfidence: snap.dataConfidence)
@@ -350,7 +338,8 @@ struct MenuDescriptor {
                     title: extra.title,
                     window: extra.window,
                     resetStyle: resetStyle,
-                    showUsed: settings.usageBarsShowUsed)
+                    showUsed: settings.usageBarsShowUsed,
+                    descriptionIsDetail: presentation.menuCard.extraRateWindowShowsResetDescriptionAsDetail(extra))
             }
 
             Self.appendProviderUsageSummaries(
@@ -628,14 +617,20 @@ struct MenuDescriptor {
         return Section(entries: entries)
     }
 
-    private static func metaSection(
+    static func metaSection(
         updateReady: Bool,
+        availableUpdateVersion: String? = nil,
+        isInstallingUpdate: Bool = false,
         canCheckForUpdates: Bool = false,
         versionText: String = AppVersion.shortVersion) -> Section
     {
         var entries: [Entry] = []
         if updateReady {
             entries.append(.action(L("Update ready, restart now?"), .installUpdate))
+        } else if isInstallingUpdate {
+            entries.append(.text(L("Updating with Homebrew…"), .secondary))
+        } else if let availableUpdateVersion {
+            entries.append(.action(String(format: L("Update to %@"), availableUpdateVersion), .installUpdate))
         } else if canCheckForUpdates {
             entries.append(.action(L("Check for Updates…"), .checkForUpdates))
         }
@@ -764,15 +759,24 @@ struct MenuDescriptor {
         window: RateWindow,
         resetStyle: ResetTimeDisplayStyle,
         showUsed: Bool,
-        resetOverride: String? = nil)
+        resetOverride: String? = nil,
+        descriptionIsDetail: Bool = false)
     {
         let line = UsageFormatter
             .usageLine(remaining: window.remainingPercent, used: window.usedPercent, showUsed: showUsed)
         entries.append(.text("\(title): \(line)", .primary))
         if let resetOverride {
             entries.append(.text(resetOverride, .secondary))
-        } else if let reset = UsageFormatter.resetLine(for: window, style: resetStyle) {
+        } else if !descriptionIsDetail || window.resetsAt != nil,
+                  let reset = UsageFormatter.resetLine(for: window, style: resetStyle)
+        {
             entries.append(.text(reset, .secondary))
+        }
+        if descriptionIsDetail,
+           let detail = window.resetDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !detail.isEmpty
+        {
+            entries.append(.text(detail, .secondary))
         }
     }
 }
@@ -807,6 +811,7 @@ extension MenuDescriptor.MenuAction {
         case .openTerminal: MenuDescriptor.MenuActionSystemImage.openTerminal.rawValue
         case .loginToProvider: MenuDescriptor.MenuActionSystemImage.loginToProvider.rawValue
         case .openCodexWorkspaces: MenuDescriptor.MenuActionSystemImage.workspaces.rawValue
+        case .openOpenAILiveUsage: MenuDescriptor.MenuActionSystemImage.liveUsage.rawValue
         case .copyError: MenuDescriptor.MenuActionSystemImage.copyError.rawValue
         case .focusAgentSession:
             nil

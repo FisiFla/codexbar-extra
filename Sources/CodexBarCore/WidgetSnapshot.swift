@@ -29,6 +29,7 @@ public struct WidgetSnapshot: Codable, Sendable {
         public let providerCost: ProviderCostSnapshot?
         public let quotaOwnerKey: String?
         public let balanceText: String?
+        public let details: [ProviderDetailSection]?
 
         public init(
             instanceID: ProviderInstanceID,
@@ -43,7 +44,8 @@ public struct WidgetSnapshot: Codable, Sendable {
             dailyUsage: [DailyUsagePoint],
             providerCost: ProviderCostSnapshot? = nil,
             quotaOwnerKey: String? = nil,
-            balanceText: String? = nil)
+            balanceText: String? = nil,
+            details: [ProviderDetailSection]? = nil)
         {
             self.provider = instanceID
             self.updatedAt = updatedAt
@@ -58,6 +60,7 @@ public struct WidgetSnapshot: Codable, Sendable {
             self.providerCost = providerCost
             self.quotaOwnerKey = quotaOwnerKey
             self.balanceText = balanceText
+            self.details = details
         }
 
         public init(
@@ -73,7 +76,8 @@ public struct WidgetSnapshot: Codable, Sendable {
             dailyUsage: [DailyUsagePoint],
             providerCost: ProviderCostSnapshot? = nil,
             quotaOwnerKey: String? = nil,
-            balanceText: String? = nil)
+            balanceText: String? = nil,
+            details: [ProviderDetailSection]? = nil)
         {
             self.init(
                 instanceID: provider.instanceID,
@@ -88,7 +92,8 @@ public struct WidgetSnapshot: Codable, Sendable {
                 dailyUsage: dailyUsage,
                 providerCost: providerCost,
                 quotaOwnerKey: quotaOwnerKey,
-                balanceText: balanceText)
+                balanceText: balanceText,
+                details: details)
         }
     }
 
@@ -177,6 +182,8 @@ public struct WidgetSnapshot: Codable, Sendable {
 
     public let entries: [ProviderEntry]
     public let accounts: [AccountEntry]
+    /// Counts only accounts omitted by the writer's per-provider snapshot cap; contains no identities.
+    public let accountOverflowCounts: [String: Int]
     public let enabledProviders: [ProviderInstanceID]
     public let usageBarsShowUsed: Bool
     public let generatedAt: Date
@@ -184,12 +191,14 @@ public struct WidgetSnapshot: Codable, Sendable {
     public init(
         entries: [ProviderEntry],
         accounts: [AccountEntry] = [],
+        accountOverflowCounts: [String: Int] = [:],
         enabledProviders: [ProviderInstanceID]? = nil,
         usageBarsShowUsed: Bool = false,
         generatedAt: Date)
     {
         self.entries = entries
         self.accounts = accounts
+        self.accountOverflowCounts = accountOverflowCounts
         self.enabledProviders = enabledProviders ?? entries.map(\.provider)
         self.usageBarsShowUsed = usageBarsShowUsed
         self.generatedAt = generatedAt
@@ -198,6 +207,7 @@ public struct WidgetSnapshot: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case entries
         case accounts
+        case accountOverflowCounts
         case enabledProviders
         case usageBarsShowUsed
         case generatedAt
@@ -207,6 +217,8 @@ public struct WidgetSnapshot: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.entries = try container.decode([ProviderEntry].self, forKey: .entries)
         self.accounts = try container.decodeIfPresent([AccountEntry].self, forKey: .accounts) ?? []
+        self.accountOverflowCounts = try container
+            .decodeIfPresent([String: Int].self, forKey: .accountOverflowCounts) ?? [:]
         self.generatedAt = try container.decode(Date.self, forKey: .generatedAt)
         self.enabledProviders = try container.decodeIfPresent([ProviderInstanceID].self, forKey: .enabledProviders)
             ?? self.entries.map(\.provider)
@@ -218,6 +230,9 @@ public struct WidgetSnapshot: Codable, Sendable {
         try container.encode(self.entries, forKey: .entries)
         if !self.accounts.isEmpty {
             try container.encode(self.accounts, forKey: .accounts)
+        }
+        if !self.accountOverflowCounts.isEmpty {
+            try container.encode(self.accountOverflowCounts, forKey: .accountOverflowCounts)
         }
         try container.encode(self.enabledProviders, forKey: .enabledProviders)
         try container.encode(self.usageBarsShowUsed, forKey: .usageBarsShowUsed)
@@ -244,15 +259,11 @@ public enum WidgetSnapshotStore {
         private var value: Value?
 
         func set(_ value: Value?) {
-            self.lock.lock()
-            self.value = value
-            self.lock.unlock()
+            self.lock.withLock { self.value = value }
         }
 
         func get() -> Value? {
-            self.lock.lock()
-            defer { self.lock.unlock() }
-            return self.value
+            self.lock.withLock { self.value }
         }
     }
 

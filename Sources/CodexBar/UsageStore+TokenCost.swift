@@ -170,6 +170,8 @@ extension UsageStore {
                 settings: self.settings,
                 tokenOverride: nil)
             : self.environmentBase
+        let antigravityProfileHomes = self.settings.providerConfig(for: provider)?
+            .antigravityAdditionalProfileHomes ?? []
         let scopedCodexHomePath = codexHomePath?.trimmingCharacters(in: .whitespacesAndNewlines)
         // Provider-specific by design: only Pi-owned, Claude-inclusive, or unscoped Codex scans consume Pi roots.
         let shouldDiscoverPiSessionProcessContexts = provider == .pi ||
@@ -185,6 +187,7 @@ extension UsageStore {
                 try await fetcher.loadTokenResult(
                     provider: provider,
                     environment: environment,
+                    antigravityAdditionalProfileHomes: antigravityProfileHomes,
                     now: now,
                     forceRefresh: force,
                     allowVertexClaudeFallback: !self.isEnabled(.claude),
@@ -303,7 +306,7 @@ extension UsageStore {
         accounting: PiSnapshotAccounting? = nil)
     {
         self.tokenSnapshotPublications[provider.instanceID] = TokenSnapshotPublication(
-            snapshot: snapshot,
+            snapshot: snapshot?.reporting(self.settings.costReportingPeriod),
             publicationRevision: self.tokenSnapshotPublicationRevision(for: provider),
             providerConfigRevision: self.settings.providerConfigRevision(for: provider),
             scopeSignature: self.tokenSnapshotScopeSignature(for: provider),
@@ -382,7 +385,9 @@ extension UsageStore {
             guard let self else { return }
             guard await self.refreshPiHistoryScope(for: .codex) else { return }
             let scope = self.tokenCostScope(for: .codex)
-            let historyDays = self.settings.costUsageHistoryDays
+            let historyDays = self.settings.costReportingPeriod.days(
+                now: now,
+                calendar: self.settings.costUsageBucketCalendar)
             let publicationRevision = self.providerPublicationRevision(for: .codex)
             let providerConfigRevision = self.settings.providerConfigRevision(for: .codex)
             let costUsageSettingsRevision = self.settings.costUsageSettingsRevision
@@ -464,6 +469,12 @@ extension UsageStore {
     }
 
     func tokenCostScope(for provider: UsageProvider) -> (codexHomePath: String?, signature: String) {
+        // Provider-specific by design: Antigravity history ownership includes every explicitly selected Gemini home.
+        if provider == .antigravity {
+            return (nil, "antigravity:" + CostUsageFetcher.antigravityHistoryScope(
+                environment: self.environmentBase,
+                additionalProfileHomes: self.settings.antigravityAdditionalProfileHomes))
+        }
         if provider == .vertexai {
             return (nil, "vertexai:allow-claude-fallback=\(!self.isEnabled(.claude))")
         }
@@ -529,7 +540,10 @@ extension UsageStore {
             base += "|piRows=\(piRowsScope)"
         }
         if includeSettingsRevision {
-            base += "|settingsRevision=\(self.settings.costUsageSettingsRevision)"
+            base += "|settingsRevision=\(self.settings.costUsageSettingsRevision)|"
+                + self.settings.costReportingPeriod.identity(
+                    now: Date(),
+                    calendar: self.settings.costUsageBucketCalendar)
         }
         guard provider == .cursor else {
             return base
@@ -562,7 +576,10 @@ extension UsageStore {
         let scope = self.tokenCostScope(for: .cursor)
         var signature = "\(scope.signature)|historyDays=\(historyDays)"
         if includeSettingsRevision {
-            signature += "|settingsRevision=\(self.settings.costUsageSettingsRevision)"
+            signature += "|settingsRevision=\(self.settings.costUsageSettingsRevision)|"
+                + self.settings.costReportingPeriod.identity(
+                    now: Date(),
+                    calendar: self.settings.costUsageBucketCalendar)
         }
         return "\(signature)|cursorCookie=\(source.rawValue):\(credentialFingerprint)"
     }
@@ -684,28 +701,33 @@ extension UsageStore {
         // Provider-specific by design: snapshot-backed spend sources own their live billing
         // projection. Grok contributes local session tokens only; xAI contributes Management API
         // daily spend only. Neither converts a quota or prepaid balance into dollars.
-        switch provider {
+        let result: CostUsageTokenSnapshot? = switch provider {
         case .openai:
-            return snapshot?.openAIAPIUsage?.toCostUsageTokenSnapshot()
+            snapshot?.openAIAPIUsage?.toCostUsageTokenSnapshot()
         case .mistral:
-            return snapshot?.mistralUsage?.toCostUsageTokenSnapshot(historyDays: windowDays)
+            snapshot?.mistralUsage?.toCostUsageTokenSnapshot(historyDays: windowDays)
         case .opencodego:
             // Web-only source mode and machines with no readable local database leave
             // `opencodegoUsage.daily` empty; a non-nil-but-dataless projection would still
             // surface a Cost row whose history submenu has nothing to render.
-            return snapshot?.opencodegoUsage.flatMap { usage in
+            snapshot?.opencodegoUsage.flatMap { usage in
                 usage.daily.isEmpty ? nil : usage
                     .toCostUsageTokenSnapshot(historyDays: windowDays)
             }
         case .deepseek, .openrouter:
-            return snapshot?.costUsage
+            snapshot?.costUsage
         case .xai:
-            return snapshot.flatMap { XAICostUsageMapping.tokenSnapshot(from: $0, historyDays: windowDays) }
+            snapshot.flatMap { XAICostUsageMapping.tokenSnapshot(from: $0, historyDays: windowDays) }
         case .grok:
-            return self.grokLocalTokenSnapshot(from: snapshot, historyDays: windowDays)
+            self.grokLocalTokenSnapshot(from: snapshot, historyDays: windowDays)
         default:
-            return nil
+            nil
         }
+        guard historyDays == nil else { return result }
+        return result?.selecting(
+            self.settings.costReportingPeriod,
+            now: Date(),
+            calendar: self.settings.costUsageBucketCalendar)
     }
 
     nonisolated static func tokenCostRequiresProviderSnapshot(_ provider: UsageProvider) -> Bool {

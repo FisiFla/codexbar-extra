@@ -34,6 +34,13 @@ extension SettingsStore {
         return self.selectedTokenAccount(for: provider)
     }
 
+    func modelRateLimitScope(for provider: UsageProvider) -> ProviderModelRateLimitScope {
+        if let account = self.effectiveSelectedTokenAccount(for: provider) {
+            return .tokenAccount(account.id)
+        }
+        return .provider
+    }
+
     func setActiveTokenAccountIndex(_ index: Int, for provider: UsageProvider) {
         guard let data = self.tokenAccountsData(for: provider), !data.accounts.isEmpty else { return }
         let clamped = min(max(index, 0), data.accounts.count - 1)
@@ -75,10 +82,10 @@ extension SettingsStore {
             token: trimmedToken,
             addedAt: Date().timeIntervalSince1970,
             lastUsed: nil,
-            externalIdentifier: Self.normalizedTokenAccountField(externalIdentifier),
-            usageScope: Self.normalizedTokenAccountField(usageScope),
-            organizationID: Self.normalizedTokenAccountField(organizationID),
-            workspaceID: Self.normalizedTokenAccountField(workspaceID))
+            externalIdentifier: Self.normalizedConfigField(externalIdentifier),
+            usageScope: Self.normalizedConfigField(usageScope),
+            organizationID: Self.normalizedConfigField(organizationID),
+            workspaceID: Self.normalizedConfigField(workspaceID))
         let updated = ProviderTokenAccountData(
             version: existing?.version ?? 1,
             accounts: accounts + [account],
@@ -125,12 +132,13 @@ extension SettingsStore {
             token: trimmedToken ?? existing.token,
             addedAt: existing.addedAt,
             lastUsed: existing.lastUsed,
-            externalIdentifier: externalIdentifier.map(Self.normalizedTokenAccountField) ?? existing.externalIdentifier,
-            usageScope: usageScope.map(Self.normalizedTokenAccountField) ?? existing.usageScope,
-            organizationID: organizationID.map(Self.normalizedTokenAccountField) ?? existing.organizationID,
-            workspaceID: workspaceID.map(Self.normalizedTokenAccountField) ?? existing.workspaceID,
-            seatCreditEntitlement: seatCreditEntitlement.map(Self.normalizedTokenAccountField)
-                ?? existing.seatCreditEntitlement)
+            externalIdentifier: externalIdentifier.map(Self.normalizedConfigField) ?? existing.externalIdentifier,
+            usageScope: usageScope.map(Self.normalizedConfigField) ?? existing.usageScope,
+            organizationID: organizationID.map(Self.normalizedConfigField) ?? existing.organizationID,
+            workspaceID: workspaceID.map(Self.normalizedConfigField) ?? existing.workspaceID,
+            seatCreditEntitlement: seatCreditEntitlement.map(Self.normalizedConfigField)
+                ?? existing.seatCreditEntitlement,
+            modelRateLimits: existing.modelRateLimits)
 
         var accounts = data.accounts
         accounts[index] = updatedAccount
@@ -192,28 +200,17 @@ extension SettingsStore {
     }
 
     func reloadTokenAccounts() {
-        let log = CodexBarLog.logger(LogCategories.tokenAccounts)
-        let accounts: [UsageProvider: ProviderTokenAccountData]
-        do {
-            guard let loaded = try self.configStore.load() else { return }
-            accounts = Dictionary(uniqueKeysWithValues: loaded.providers.compactMap { entry in
-                guard let provider = entry.id.firstPartyProvider,
-                      let data = entry.tokenAccounts
-                else { return nil }
-                return (provider, data)
-            })
-        } catch {
-            log.error("Failed to reload token accounts: \(error)")
-            return
-        }
-        self.updateProviderTokenAccounts(accounts)
+        self.reloadConfig(reason: "token-accounts", origin: .localFile)
     }
 
     func openTokenAccountsFile() {
         do {
-            let data = try self.configStore.encodedData(for: self.config)
-            try ConfigFileWatcher.withAppWrite(data, watcher: self.configFileWatcher) {
-                try self.configStore.saveEncodedData(data)
+            if !self.configNeedsReload {
+                try Self.writeConfig(
+                    self.config,
+                    to: self.configStore,
+                    watcher: self.configFileWatcher,
+                    permit: self.configPersistenceCoordinator.makeWritePermit())
             }
         } catch {
             CodexBarLog.logger(LogCategories.tokenAccounts).error("Failed to persist config: \(error)")
@@ -276,20 +273,20 @@ extension SettingsStore {
         _ shared: AntigravityOAuthCredentials,
         _ removed: AntigravityOAuthCredentials) -> Bool
     {
-        if let sharedRefreshToken = self.normalizedTokenAccountField(shared.refreshToken),
-           let removedRefreshToken = self.normalizedTokenAccountField(removed.refreshToken)
+        if let sharedRefreshToken = self.normalizedConfigField(shared.refreshToken),
+           let removedRefreshToken = self.normalizedConfigField(removed.refreshToken)
         {
             return sharedRefreshToken == removedRefreshToken
         }
-        if let sharedAccessToken = self.normalizedTokenAccountField(shared.accessToken),
-           let removedAccessToken = self.normalizedTokenAccountField(removed.accessToken)
+        if let sharedAccessToken = self.normalizedConfigField(shared.accessToken),
+           let removedAccessToken = self.normalizedConfigField(removed.accessToken)
         {
             return sharedAccessToken == removedAccessToken
         }
-        guard self.normalizedTokenAccountField(shared.refreshToken) == nil,
-              self.normalizedTokenAccountField(removed.refreshToken) == nil,
-              self.normalizedTokenAccountField(shared.accessToken) == nil,
-              self.normalizedTokenAccountField(removed.accessToken) == nil
+        guard self.normalizedConfigField(shared.refreshToken) == nil,
+              self.normalizedConfigField(removed.refreshToken) == nil,
+              self.normalizedConfigField(shared.accessToken) == nil,
+              self.normalizedConfigField(removed.accessToken) == nil
         else {
             return false
         }
@@ -306,13 +303,13 @@ extension SettingsStore {
         {
             return lhsEmail == rhsEmail
         }
-        if let lhsRefreshToken = self.normalizedTokenAccountField(lhs.refreshToken),
-           let rhsRefreshToken = self.normalizedTokenAccountField(rhs.refreshToken)
+        if let lhsRefreshToken = self.normalizedConfigField(lhs.refreshToken),
+           let rhsRefreshToken = self.normalizedConfigField(rhs.refreshToken)
         {
             return lhsRefreshToken == rhsRefreshToken
         }
-        if let lhsAccessToken = self.normalizedTokenAccountField(lhs.accessToken),
-           let rhsAccessToken = self.normalizedTokenAccountField(rhs.accessToken)
+        if let lhsAccessToken = self.normalizedConfigField(lhs.accessToken),
+           let rhsAccessToken = self.normalizedConfigField(rhs.accessToken)
         {
             return lhsAccessToken == rhsAccessToken
         }
@@ -320,15 +317,6 @@ extension SettingsStore {
     }
 
     private nonisolated static func normalizedAntigravityAccountEmail(_ email: String?) -> String? {
-        self.normalizedTokenAccountField(email)?.lowercased()
-    }
-
-    private nonisolated static func normalizedTokenAccountField(_ token: String?) -> String? {
-        guard let value = token?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty
-        else {
-            return nil
-        }
-        return value
+        self.normalizedConfigField(email)?.lowercased()
     }
 }

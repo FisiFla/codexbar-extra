@@ -41,11 +41,12 @@ extension CostUsageScanner {
     }
 
     static func isUnresolvedMissingParentFork(_ usage: CostUsageFileUsage) -> Bool {
-        guard usage.forkedFromId != nil else { return false }
-        if let key = usage.forkBaselineDependencyKey {
-            return key.hasPrefix("missing|")
-        }
-        return true
+        usage.forkedFromId != nil
+            && (usage.forkBaselineDependencyKey.map(self.codexDependencyIsMissing) ?? true)
+    }
+
+    static func codexDependencyIsMissing(_ key: String) -> Bool {
+        key.hasPrefix("missing|") || key.contains("|inherited|missing|")
     }
 
     static func codexFileHasBilledTokens(_ usage: CostUsageFileUsage) -> Bool {
@@ -103,6 +104,8 @@ extension CostUsageScanner {
         var breakdown: [CostUsageDailyReport.ModelBreakdown] = []
         var dayCost: Double = 0
         var dayCostSeen = false
+        var dayPricedRequests = 0
+        var dayUnpricedRequests = 0
 
         for model in modelNames {
             guard OpenCodexRouteDispatcher.countsTowardCodexSubscription(modelName: model) else { continue }
@@ -136,10 +139,13 @@ extension CostUsageScanner {
                 && CheckedSum.integers(rows.map(\.input)) == input
                 && CheckedSum.integers(rows.map(\.cached)) == cached
                 && CheckedSum.integers(rows.map(\.output)) == output
-            let rowCostIsTrusted = !pricing.unresolvedRowGroups.contains(group)
+            let rowsCoverGroup = !pricing.unresolvedRowGroups.contains(group)
                 && !pricing.modeOwnershipMismatchGroups.contains(group)
                 && (authoritativeOverflowCost
-                    || totalTokens.map { rowCost?.isTrusted(canonicalTotalTokens: $0) == true } == true)
+                    || totalTokens.map { rowCost?.coversGroup(canonicalTotalTokens: $0) == true } == true)
+            let rowCostIsTrusted = rowsCoverGroup && rowCost?.hasIncompletePricing != true
+            // Rows that cover the group but include unknown requests report the subtotal of the priced ones.
+            let partialRowCost = rowsCoverGroup && !rowCostIsTrusted ? rowCost : nil
             let aggregateCost = pricing.requestPricingEvidenceGroups.contains(group)
                 || pricing.incompletePricingEvidenceGroups.contains(group)
                 || (pricing.unresolvedRowGroups.contains(group)
@@ -156,9 +162,21 @@ extension CostUsageScanner {
                     modelsDevCacheRoot: pricing.modelsDevCacheRoot,
                     customPricing: pricing.customPricing,
                     pricingResolver: pricing.pricingResolver)
-            let cost = rowCostIsTrusted
-                ? rowCost?.totalCostUSD ?? aggregateCost
-                : aggregateCost
+            let cost = if rowCostIsTrusted {
+                rowCost?.totalCostUSD ?? aggregateCost
+            } else if let partialRowCost {
+                partialRowCost.totalCostUSD
+            } else {
+                aggregateCost
+            }
+            if let partialRowCost {
+                dayPricedRequests += partialRowCost.pricedRequestCount
+                dayUnpricedRequests += partialRowCost.unpricedRequestCount
+            } else if cost == nil, (totalTokens ?? 1) > 0 {
+                dayUnpricedRequests += 1
+            } else if cost != nil {
+                dayPricedRequests += rowCostIsTrusted ? max(1, rowCost?.pricedRequestCount ?? 0) : 1
+            }
             let hasModeSplit = rowCostIsTrusted && rowCost?.hasModeSplit == true
             breakdown.append(
                 CostUsageDailyReport.ModelBreakdown(
@@ -193,8 +211,11 @@ extension CostUsageScanner {
             costUSD: entryCost,
             modelsUsed: modelNames,
             modelBreakdowns: Self.sortedModelBreakdowns(breakdown),
-            unpricedRequestCount: entryCost == nil && (dayTotal ?? 1) > 0 ? 1 : nil,
-            unmeteredRequestCount: unmetered > 0 ? unmetered : nil)
+            unpricedRequestCount: dayUnpricedRequests > 0
+                ? dayUnpricedRequests
+                : entryCost == nil && (dayTotal ?? 1) > 0 ? 1 : nil,
+            unmeteredRequestCount: unmetered > 0 ? unmetered : nil,
+            pricedRequestCount: dayUnpricedRequests > 0 && entryCost != nil ? dayPricedRequests : nil)
     }
 }
 
@@ -210,22 +231,17 @@ extension CostUsageFileUsage {
             return true
         }
 
-        // Missing-parent forks keep empty billed days on purpose. Session timestamps still
-        // place them in the scan window so force-rescan prune cannot drop the unmetered gap.
-        let isIncompleteFork = (self.codexReadRetryBufferPresence?.unresolvedFork
-            ?? (self.codexBufferedUnresolvedForkLines != nil))
+        // Billed days are empty for unresolved forks. Use the entire observed event span,
+        // not just the start date: an old fork can contain current usage.
+        let isIncompleteFork = self.hasBufferedCodexUnresolvedForkLines
             || CostUsageScanner.isUnresolvedMissingParentFork(self)
         guard isIncompleteFork else { return false }
-
-        if let unixMs = self.codexSession?.startedAtUnixMs ?? self.codexSession?.latestActivityUnixMs {
-            let dayKey = CostUsageScanner.CostUsageDayRange.dayKey(
-                from: Date(timeIntervalSince1970: TimeInterval(unixMs) / 1000),
-                calendar: calendar)
-            return CostUsageScanner.CostUsageDayRange.isInRange(
-                dayKey: dayKey,
-                since: sinceKey,
-                until: untilKey)
-        }
-        return true
+        guard let first = self.codexSession?.startedAtUnixMs,
+              let last = self.codexSession?.latestActivityUnixMs else { return true }
+        let firstDay = CostUsageScanner.CostUsageDayRange.dayKey(
+            from: Date(timeIntervalSince1970: TimeInterval(first) / 1000), calendar: calendar)
+        let lastDay = CostUsageScanner.CostUsageDayRange.dayKey(
+            from: Date(timeIntervalSince1970: TimeInterval(last) / 1000), calendar: calendar)
+        return firstDay <= untilKey && lastDay >= sinceKey
     }
 }

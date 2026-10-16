@@ -8,13 +8,17 @@ read_when:
 
 # Keychain prompts
 
-CodexBar uses several credential sources, but two foreign-owned Keychain items are the common authorization surfaces:
+CodexBar uses several credential sources, but three foreign-owned Keychain items are the common authorization surfaces:
 
 - Chromium cookie import needs the browser's Safe Storage secret to decrypt its cookie database. Examples include
   `Chrome Safe Storage`, `Brave Safe Storage`, and `Microsoft Edge Safe Storage`.
 - Claude OAuth repair can read Claude Code's `Claude Code-credentials` item. Direct access to that foreign item is
   off by default and requires explicit consent in Claude's provider settings. The default prompt policy reserves
   interactive repair for a user action.
+- Muse Code subscription usage reads the Muse CLI's `ai.meta.dev.credentials` item. Background refreshes and
+  the CLI never prompt for it; a manual app refresh may ask once, after an explanation, so **Always Allow** can
+  grant later silent reads. This shares the action’s one interactive read with browser imports; a denial
+  suppresses another Muse prompt for six hours.
 
 CodexBar does not need the browser or Claude account password. macOS owns the authorization prompt and should name
 the requesting app or binary. Never send a Keychain item value, cookie header, OAuth token, API key, or password in a
@@ -22,11 +26,16 @@ support report.
 
 ## When CodexBar can prompt
 
-Background CodexBar paths are intended to fail or skip when a Keychain read would require interaction. This includes
-scheduled Chromium imports: CodexBar scopes the actual Safe Storage read as non-interactive, not just the preflight.
-A user-initiated import or acknowledged Claude repair may attempt interactive authorization because the user has
-chosen to continue. Denials temporarily suppress repeated Chromium-family attempts so one browser cannot lead to a
-prompt storm across the others.
+Scheduled and settings-triggered Chromium imports never request Keychain interaction, even when a settings change
+occurs during a manual refresh. Every import first tries the actual Safe Storage read without UI. A manual refresh
+shares one interactive retry across its browser imports and providers; successful no-UI reads do not spend that
+allowance. ACL preflight metadata cannot authorize additional prompts. Automatic cookie imports stop reading
+browsers once a provider accepts a session; missing or rejected sessions advance to the next browser in the
+provider's existing order. Explicit browser/profile selections keep their own scope.
+
+A denied browser prompt suppresses Chromium-family interactive retries for six hours, including repeated Refresh
+clicks in the menu or provider settings. Only `codexbar cookie refresh --allow-keychain-prompt` explicitly overrides
+that cooldown. An acknowledged Claude repair has its own user-action policy.
 
 Scheduled Chromium imports can recover during that denial cooldown when the current no-UI Safe Storage preflight
 explicitly confirms access. Interaction-required, missing, or failed preflights still suppress the import, and the
@@ -39,6 +48,11 @@ repeated checks within one operation reuse the final result. This applies to gen
 browser storage, credential repair, and CodexBar caches, without changing their permission requirements.
 
 Concurrent preflights for the same trusted application and executable share an in-flight code-signature validation.
+For the running executable (or its own main app bundle), preflight checks the ACL's signing requirement against the
+process's dynamic code identity with default Security flags, avoiding sealed-resource hashing. A bundled CLI helper
+only validates its own identity; it cannot authorize its enclosing app. Other paths and ACLs without an available
+signing requirement keep the static validator. Requirement mismatches remain confirmed rejections; other dynamic
+errors stay inconclusive.
 Completed successful validations and transient failures are not retained process-wide: executable and app metadata
 cannot detect every change to a sealed resource. The existing short, explicit operation memo can still reuse a
 generic-password preflight within that operation; it does not span asynchronous refreshes or deferred work.
@@ -66,6 +80,9 @@ When fresh cache data becomes available, CodexBar can delete and recreate its ow
 replacement is attempted at most once per cooldown; a failed retry starts another cooldown even if the old item is
 already gone. Successful replacement clears the rejection immediately, including when another first-party process wins
 the add race. Cache clearing honors an existing repair cooldown and uses no-UI deletion without requiring decrypt access.
+Signature validation during preflight has a bounded wait. If macOS stalls inside validation, preflight returns an
+inconclusive result so the caller can release its cache locks and the refresh cycle can finish. Timed-out validations
+retain their worker slots until they actually return; retries cannot create an unlimited queue of blocked workers.
 Foreign items are never recreated this way. A direct delete that is only temporarily unavailable stays retryable; it does
 not establish a stale ACL. A temporarily locked Keychain or an incomplete ACL preflight also remains retryable sooner and
 is not replaced.

@@ -54,13 +54,20 @@ public enum GeminiProviderDescriptor {
                     let display = UsageFormatter.cleanPlanName(plan)
                     return ProviderIdentityPresentation(badge: display, plan: display)
                 },
-                iconDecorations: [.gemini]),
+                iconDecorations: [.gemini],
+                menuBarWindowResolver: { context in
+                    guard context.metric == .automatic else { return .unhandled }
+                    let snapshot = context.snapshot
+                    return .resolved(
+                        ProviderUsagePresentation.exhausted(snapshot.primary, snapshot.secondary, snapshot.tertiary)
+                            ?? snapshot.primary ?? snapshot.secondary ?? snapshot.tertiary)
+                }),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto, .api],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [GeminiStatusFetchStrategy()] })),
             cli: ProviderCLIConfig(
                 name: "gemini",
-                binaryLocator: { BinaryLocator.resolveGeminiBinary() },
+                binaryLocator: { BinaryLocator.resolveGeminiBinary(env: $0) },
                 versionDetector: { _ in ProviderVersionDetector.geminiVersion() }))
     }
 }

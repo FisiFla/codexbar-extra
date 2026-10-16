@@ -106,7 +106,8 @@ public enum AntigravityProviderDescriptor {
             cli: ProviderCLIConfig(
                 name: "antigravity",
                 versionDetector: nil,
-                supportsCostCommand: true))
+                supportsCostCommand: true),
+            nativeAppBundleIdentifiers: ["com.google.antigravity"])
     }
 
     static let estimateHintKey = "antigravity_cost_estimate_hint"
@@ -260,28 +261,18 @@ public enum AntigravityProviderDescriptor {
 }
 
 struct AntigravityStatusFetchStrategy: ProviderFetchStrategy {
-    enum Source {
+    enum Source: String {
         case app
         case ide
 
         var id: String {
-            switch self {
-            case .app: "antigravity.app-local"
-            case .ide: "antigravity.ide-local"
-            }
+            "antigravity.\(self.rawValue)-local"
         }
 
         var processScope: AntigravityStatusProbe.ProcessScope {
             switch self {
             case .app: .appOnly
             case .ide: .ideOnly
-            }
-        }
-
-        var sourceLabel: String {
-            switch self {
-            case .app: "app"
-            case .ide: "ide"
             }
         }
     }
@@ -313,7 +304,7 @@ struct AntigravityStatusFetchStrategy: ProviderFetchStrategy {
         try AntigravitySelectedAccountGuard.validate(usage, context: context)
         return self.makeResult(
             usage: usage,
-            sourceLabel: self.source.sourceLabel)
+            sourceLabel: self.source.rawValue)
     }
 
     func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
@@ -529,6 +520,20 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
         } else {
             nil
         }
+        let versionResolver = AgyVersionResolver()
+        #if os(macOS)
+        let scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = {
+            try await self.fetchScopedPrintUsage(
+                binary: binary,
+                environment: context.env,
+                versionResolver: versionResolver,
+                credentialsUpdateHandler: {
+                    try await AntigravityOAuthFetchStrategy.persistCredentials($0, context: context)
+                })
+        }
+        #else
+        let scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = nil
+        #endif
         return try await Self.fetchWithReportFallback(
             context: context,
             legacyFetch: {
@@ -539,19 +544,27 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
                     expectedAccountEmail: expectedAccountEmail,
                     warmDependencies: warmDependencies,
                     spawnFetch: { binary, idleWindow, resetAfterFetch in
-                        let version = try await Self.agyVersion(binary: binary, environment: context.env)
+                        let version = try? await Self.agyVersion(
+                            binary: binary, environment: context.env, resolver: versionResolver)
+                        try Task.checkCancellation()
                         return try await Self.fetchBySpawningIfReachable(version: version) {
                             try await spawnFetch(binary, idleWindow, resetAfterFetch, expectedAccountEmail)
                         }
                     })
             },
-            reportFetch: { try await self.fetchPrintUsage(binary: binary, environment: context.env) })
+            reportFetch: {
+                try await self.fetchPrintUsage(
+                    binary: binary, environment: context.env, versionResolver: versionResolver)
+            },
+            scopedReportFetch: scopedReportFetch)
     }
 
     static func fetchWithReportFallback(
         context: ProviderFetchContext,
         legacyFetch: @Sendable () async throws -> ProviderFetchResult,
-        reportFetch: @Sendable () async throws -> ProviderFetchResult) async throws -> ProviderFetchResult
+        reportFetch: @Sendable () async throws -> ProviderFetchResult,
+        scopedReportFetch: (@Sendable () async throws -> ProviderFetchResult)? = nil)
+        async throws -> ProviderFetchResult
     {
         do {
             let result = try await legacyFetch()
@@ -563,7 +576,19 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
             // Identity-free reports must not replace a selected or injected OAuth account's fallback.
             guard context.sourceMode != .auto || (context.selectedTokenAccountID == nil &&
                 context.env[AntigravityOAuthCredentialsStore.environmentCredentialsKey] == nil)
-            else { throw error }
+            else {
+                // Scoped print verifies the effective access token before attributing usage.
+                guard let scopedReportFetch else { throw error }
+                do {
+                    return try await scopedReportFetch()
+                } catch let scopedError {
+                    try Task.checkCancellation()
+                    if scopedError is CancellationError { throw scopedError }
+                    Self.log.info(
+                        "Scoped agy usage fetch failed; preserving ambient error (reason: \(type(of: scopedError)))")
+                    throw error
+                }
+            }
         }
         return try await reportFetch()
     }
@@ -571,7 +596,8 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
     func fetchPrintUsage(
         binary: String,
         environment: [String: String],
-        timeout: TimeInterval = 90) async throws -> ProviderFetchResult
+        timeout: TimeInterval = 90,
+        versionResolver: AgyVersionResolver = AgyVersionResolver()) async throws -> ProviderFetchResult
     {
         let environment = Self.childEnvironment(environment)
         let directory = FileManager.default.temporaryDirectory
@@ -579,33 +605,65 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
-        func run(_ arguments: [String], timeout: TimeInterval) async throws -> SubprocessResult {
-            try await SubprocessRunner.run(
+        let snapshot = try await Self.runPrintUsage(
+            binary: binary,
+            environment: environment,
+            directory: directory,
+            timeout: timeout,
+            versionResolver: versionResolver)
+        return try self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: Self.sourceLabel)
+    }
+
+    static func runPrintUsage(
+        binary: String,
+        environment: [String: String],
+        directory: URL,
+        timeout: TimeInterval,
+        versionResolver: AgyVersionResolver = AgyVersionResolver()) async throws -> AntigravityStatusSnapshot
+    {
+        try Task.checkCancellation()
+        let result: SubprocessResult
+        do {
+            let version = try await Self.agyVersion(
                 binary: binary,
-                arguments: arguments,
+                environment: environment,
+                directory: directory,
+                timeout: min(timeout, 3),
+                maxOutputBytes: 1_048_576,
+                resolver: versionResolver)
+            // Earlier print implementations could turn unsupported slash commands into model prompts.
+            guard let version, version >= (1, 1, 11)
+            else { throw AntigravityStatusProbeError.parseFailed("CLI usage reports require agy 1.1.11 or later") }
+            // agy's OAuth launcher resolves these commands through PATH, even in print mode.
+            // Reuse the private probe directory; its owner removes the stubs after descendant cleanup.
+            var environment = environment
+            for command in ["open", "xdg-open"] {
+                guard FileManager.default.createFile(
+                    atPath: directory.appendingPathComponent(command).path,
+                    contents: Data("#!/bin/sh\nexit 1\n".utf8),
+                    attributes: [.posixPermissions: 0o700])
+                else { throw AntigravityStatusProbeError.cliReportFailed(.launchFailed) }
+            }
+            environment["PATH"] = directory.path + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
+            environment["BROWSER"] = directory.appendingPathComponent("open").path
+            result = try await SubprocessRunner.run(
+                binary: binary,
+                arguments: ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"],
                 environment: environment,
                 timeout: timeout,
                 maxOutputBytes: 1_048_576,
                 standardInput: FileHandle.nullDevice,
                 currentDirectoryURL: directory,
+                reapDescendants: true,
                 label: "antigravity-cli-usage")
-        }
-        let result: SubprocessResult
-        do {
-            let version = try await Self.parseVersion(run(["--version"], timeout: min(timeout, 3)).stdout)
-            // Earlier print implementations could turn unsupported slash commands into model prompts.
-            guard let version, version >= (1, 1, 11)
-            else { throw AntigravityStatusProbeError.parseFailed("CLI usage reports require agy 1.1.11 or later") }
-            result = try await run(
-                ["-p", "/usage", "--output-format", "json", "--print-timeout", "90s"], timeout: timeout)
         } catch let error as SubprocessRunnerError {
             try Task.checkCancellation()
             // Subprocess errors may contain raw stderr; classify them into safe,
             // fixed diagnostics instead of surfacing the process output.
             throw AntigravityCLIPrintFailure.error(for: error)
         }
-        let snapshot = try AntigravityStatusProbe.parseCLIUsageReport(Data(result.stdout.utf8))
-        return try self.makeResult(usage: snapshot.toUsageSnapshot(), sourceLabel: Self.sourceLabel)
+        try Task.checkCancellation()
+        return try AntigravityStatusProbe.parseCLIUsageReport(Data(result.stdout.utf8))
     }
 
     /// First `agy` release whose local server answers tokenless requests with
@@ -623,41 +681,63 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
         return (parts[0], parts[1], parts[2])
     }
 
-    /// Unknown versions keep the legacy spawn so older or unusual builds are unaffected.
-    static func spawnCanReachLocalServer(version: (UInt, UInt, UInt)?) -> Bool {
-        guard let version else { return true }
-        return version < Self.firstCSRFGatedVersion
-    }
-
     /// Skips the managed spawn and its readiness wait when the local server is known to reject
     /// CodexBar's tokenless requests, so the caller can move on to the print report immediately.
+    /// Unknown versions keep the legacy spawn so older or unusual builds are unaffected.
     static func fetchBySpawningIfReachable(
         version: (UInt, UInt, UInt)?,
         spawn: () async throws -> ProviderFetchResult) async throws -> ProviderFetchResult
     {
-        guard self.spawnCanReachLocalServer(version: version) else {
+        if let version, version >= firstCSRFGatedVersion {
             self.log.debug("Antigravity CLI HTTPS spawn skipped; agy local server requires a CSRF token")
             throw AntigravityStatusProbeError.apiError("agy 1.2.2 or later requires a local CSRF token")
         }
         return try await spawn()
     }
 
-    static func agyVersion(binary: String, environment: [String: String]) async throws -> (UInt, UInt, UInt)? {
-        let result: SubprocessResult
-        do {
-            result = try await SubprocessRunner.run(
+    /// Resolves the agy version once per fetch. Each `agy` invocation boots a full language server, so the
+    /// legacy CSRF gate and the print report share one `--version` run instead of spawning it twice.
+    actor AgyVersionResolver {
+        private var outcome: Result<(UInt, UInt, UInt)?, Error>?
+
+        /// Sequential fallback paths replay the first probe's outcome, including a failure.
+        /// Cancellation is never recorded, so a cancelled probe cannot poison a later caller.
+        func resolve(_ probe: () async throws -> (UInt, UInt, UInt)?) async throws -> (UInt, UInt, UInt)? {
+            try Task.checkCancellation()
+            if let outcome = self.outcome { return try outcome.get() }
+            do {
+                let version = try await probe()
+                try Task.checkCancellation()
+                self.outcome = .success(version)
+                return version
+            } catch {
+                if !(error is CancellationError) { self.outcome = .failure(error) }
+                throw error
+            }
+        }
+    }
+
+    /// The legacy gate treats failures as unknown; print mode retains the classified failure.
+    static func agyVersion(
+        binary: String,
+        environment: [String: String],
+        directory: URL? = nil,
+        timeout: TimeInterval = 3,
+        maxOutputBytes: Int = 4096,
+        resolver: AgyVersionResolver = AgyVersionResolver()) async throws -> (UInt, UInt, UInt)?
+    {
+        try await resolver.resolve {
+            let result = try await SubprocessRunner.run(
                 binary: binary,
                 arguments: ["--version"],
                 environment: Self.childEnvironment(environment),
-                timeout: 3,
-                maxOutputBytes: 4096,
+                timeout: timeout,
+                maxOutputBytes: maxOutputBytes,
                 standardInput: FileHandle.nullDevice,
+                currentDirectoryURL: directory,
                 label: "antigravity-cli-version")
-        } catch {
-            try Task.checkCancellation()
-            return nil
+            return Self.parseVersion(result.stdout)
         }
-        return Self.parseVersion(result.stdout)
     }
 
     private static func childEnvironment(_ environment: [String: String]) -> [String: String] {
@@ -847,13 +927,9 @@ struct AntigravityCLIHTTPSFetchStrategy: ProviderFetchStrategy {
             "Antigravity CLI started but no listening ports found")
     }
 
-    static func containsAuthenticationPrompt(_ output: Data) -> Bool {
-        AntigravityCLIAuthenticationPrompt.contains(output)
-    }
-
     private static func checkAuthenticationPrompt(_ dependencies: SnapshotWaitDependencies) async throws {
         let terminalOutput = await dependencies.drainOutput()
-        if Self.containsAuthenticationPrompt(terminalOutput) {
+        if AntigravityCLIAuthenticationPrompt.contains(terminalOutput) {
             throw AntigravityStatusProbeError.authenticationRequired
         }
     }
@@ -885,7 +961,7 @@ struct AntigravityOAuthFetchStrategy: ProviderFetchStrategy {
         from snapshot: AntigravityStatusSnapshot,
         updatedAt: Date = Date()) throws -> UsageSnapshot
     {
-        if snapshot.modelQuotas.isEmpty {
+        if snapshot.modelQuotas.isEmpty, snapshot.quotaSummary == nil {
             return UsageSnapshot(
                 primary: nil,
                 secondary: nil,
@@ -903,20 +979,25 @@ struct AntigravityOAuthFetchStrategy: ProviderFetchStrategy {
     func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
         let fetcher = AntigravityRemoteUsageFetcher(
             environment: context.env,
-            credentialsUpdateHandler: { credentials in
-                guard let accountID = context.selectedTokenAccountID,
-                      let updater = context.tokenAccountTokenUpdater
-                else {
-                    return
-                }
-                let token = try AntigravityOAuthCredentialsStore.tokenAccountValue(for: credentials)
-                await updater(.antigravity, accountID, token)
-            })
+            credentialsUpdateHandler: { try await Self.persistCredentials($0, context: context) })
         let snapshot = try await fetcher.fetch()
         let usage = try Self.usageSnapshot(from: snapshot)
         return self.makeResult(
             usage: usage,
             sourceLabel: "oauth")
+    }
+
+    static func persistCredentials(
+        _ credentials: AntigravityOAuthCredentials,
+        context: ProviderFetchContext) async throws
+    {
+        guard let accountID = context.selectedTokenAccountID,
+              let updater = context.tokenAccountTokenUpdater
+        else {
+            return
+        }
+        let token = try AntigravityOAuthCredentialsStore.tokenAccountValue(for: credentials)
+        await updater(.antigravity, accountID, token)
     }
 
     func shouldFallback(on _: Error, context: ProviderFetchContext) -> Bool {
@@ -1010,8 +1091,11 @@ struct AntigravityOfflineFetchStrategy: ProviderFetchStrategy {
                 return "check Diagnostics for per-source details"
             }
         case let remoteError as AntigravityRemoteFetchError:
-            if case .notLoggedIn = remoteError {
+            switch remoteError {
+            case .notLoggedIn, .reauthenticationRequired:
                 return remoteError.localizedDescription
+            case .permissionDenied, .apiError, .parseFailed:
+                break
             }
             return "the Antigravity API request failed"
         case let urlError as URLError:
@@ -1040,15 +1124,15 @@ struct AntigravityOfflineFetchStrategy: ProviderFetchStrategy {
 /// modes stay authoritative and are never second-guessed here.
 enum AntigravitySelectedAccountGuard {
     static func matches(snapshotAccountEmail: String?, expectedAccountEmail: String?) -> Bool {
-        guard let expected = self.normalizedEmail(expectedAccountEmail) else { return true }
-        guard let found = self.normalizedEmail(snapshotAccountEmail) else { return false }
+        guard let expected = expectedAccountEmail?.trimmedNonEmpty else { return true }
+        guard let found = snapshotAccountEmail?.trimmedNonEmpty else { return false }
         return found.caseInsensitiveCompare(expected) == .orderedSame
     }
 
     static func validate(_ usage: UsageSnapshot, context: ProviderFetchContext) throws {
         guard context.sourceMode == .auto, context.selectedTokenAccountID != nil else { return }
         let expected = self.selectedAccountEmail(context: context)
-        let found = self.normalizedEmail(usage.identity?.accountEmail)
+        let found = usage.identity?.accountEmail?.trimmedNonEmpty
         guard let expected, let found, found.caseInsensitiveCompare(expected) == .orderedSame else {
             throw AntigravityStatusProbeError.accountMismatch(expected: expected, found: found)
         }
@@ -1063,12 +1147,5 @@ enum AntigravitySelectedAccountGuard {
             return nil
         }
         return credentials.resolvedAccountEmail
-    }
-
-    private static func normalizedEmail(_ email: String?) -> String? {
-        guard let trimmed = email?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-            return nil
-        }
-        return trimmed
     }
 }

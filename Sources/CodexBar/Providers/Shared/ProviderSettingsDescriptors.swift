@@ -46,6 +46,20 @@ struct ProviderSettingsContext {
         self.settings.providerConfigBinding(provider: self.provider, field: field)
     }
 
+    func modelRateLimitsBinding(scope: ProviderModelRateLimitScope) -> Binding<[ProviderModelRateLimit]> {
+        Binding(
+            get: {
+                self.settings.providerConfig(for: self.provider)?.modelRateLimits(for: scope) ?? []
+            },
+            set: { limits in
+                self.settings.updateProviderConfig(provider: self.provider, affectsBackgroundWork: false) {
+                    $0.setModelRateLimits(
+                        ProviderModelRateLimit.validated(limits),
+                        for: scope)
+                }
+            })
+    }
+
     func providerConfigSecretBinding(key: String, logField: String) -> Binding<String> {
         self.settings.providerConfigSecretBinding(provider: self.provider, key: key, logField: logField)
     }
@@ -98,6 +112,9 @@ struct ProviderSettingsToggleDescriptor: Identifiable {
     /// Optional actions shown under the toggle when enabled.
     let actions: [ProviderSettingsActionDescriptor]
 
+    /// Optional text fields shown inline under the toggle when enabled.
+    let inlineFields: [ProviderSettingsFieldDescriptor]
+
     /// Optional runtime visibility gate.
     let isVisible: (() -> Bool)?
 
@@ -120,6 +137,7 @@ struct ProviderSettingsToggleDescriptor: Identifiable {
         binding: Binding<Bool>,
         statusText: (() -> String?)?,
         actions: [ProviderSettingsActionDescriptor],
+        inlineFields: [ProviderSettingsFieldDescriptor] = [],
         isVisible: (() -> Bool)?,
         isEnabled: (() -> Bool)? = nil,
         onChange: ((_ enabled: Bool) async -> Void)?,
@@ -132,6 +150,7 @@ struct ProviderSettingsToggleDescriptor: Identifiable {
         self.binding = binding
         self.statusText = statusText
         self.actions = actions
+        self.inlineFields = inlineFields
         self.isVisible = isVisible
         self.isEnabled = isEnabled
         self.onChange = onChange
@@ -157,6 +176,27 @@ struct ProviderSettingsFieldDescriptor: Identifiable {
     let binding: Binding<String>
     let actions: [ProviderSettingsActionDescriptor]
     let isVisible: (() -> Bool)?
+}
+
+/// Shared opt-in directory list; provider implementations supply data, not custom views.
+@MainActor
+struct ProviderSettingsDirectoryListDescriptor: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let binding: Binding<[String]>
+}
+
+/// Shared per-model throughput editor; providers contribute only data and actions.
+@MainActor
+struct ProviderSettingsModelLimitsDescriptor: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let binding: Binding<[ProviderModelRateLimit]>
+    let actions: [ProviderSettingsActionDescriptor]
+    var scopeText: String?
+    var scope: ProviderModelRateLimitScope?
 }
 
 /// Shared action row descriptor rendered in the Providers settings pane.
