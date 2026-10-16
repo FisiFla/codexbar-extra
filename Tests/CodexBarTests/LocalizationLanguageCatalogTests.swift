@@ -840,6 +840,9 @@ struct LocalizationLanguageCatalogTests {
             "spend_performance_seconds",
             "spend_tools_coverage",
             "spend_tools_milliseconds",
+            // CodexBar Extra fork: product name and the universal time-zone abbreviation.
+            "CodexBar Extra",
+            "UTC",
         ]
         let unchanged = Set(english.keys.filter { italian[$0] == english[$0] })
         #expect(unchanged == intentionallyUnchanged)

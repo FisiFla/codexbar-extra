@@ -2640,3 +2640,19 @@
 "Claude desktop app" = "App desktop Claude";
 "Use Claude desktop app cookies" = "Usa i cookie dell’app desktop Claude";
 "For Web usage, follow the account signed into Claude.app instead of a browser." = "Per l’utilizzo web, usa l’account connesso a Claude.app anziché quello del browser.";
+
+/* CodexBar Extra fork: DeepSeek peak price clock */
+"CodexBar Extra" = "CodexBar Extra";
+"Peak Price Clock" = "Orologio prezzi di picco";
+"PEAK PRICING" = "PREZZI DI PICCO";
+"OFF-PEAK PRICING (50% OFF)" = "PREZZI FUORI PICCO (SCONTO 50%)";
+"Off-peak" = "Fuori picco";
+"→ %@ starts %@ %@" = "→ %@ inizia %@ %@";
+"PRICE WINDOWS · UTC" = "FASCE PREZZI · UTC";
+"PRICE WINDOWS · YOUR TIME" = "FASCE PREZZI · ORA LOCALE";
+"now · %dh %02dm left" = "ora · %dh %02dm rimasti";
+"Excludes Chinese public holidays" = "Esclude le festività pubbliche cinesi";
+"UTC" = "UTC";
+"Peak and off-peak windows mirror DeepSeek's published pricing terms at %@, verified %@. Chinese public holidays and make-up workdays are not modelled, so treat this as an indicator rather than a bill." = "Le fasce di picco e fuori picco rispecchiano i termini di prezzo pubblicati da DeepSeek su %@, verificati %@. Le festività pubbliche cinesi e i giorni lavorativi di recupero non sono considerati, quindi trattalo come un indicatore e non come una fattura.";
+"Peak price clock" = "Orologio prezzi di picco";
+"Show peak and off-peak hours countdown and schedule in menu." = "Mostra nel menu il conto alla rovescia e il calendario delle fasce di picco e fuori picco.";

@@ -2635,3 +2635,19 @@
 "Claude desktop app" = "Claude-skrivbordsappen";
 "Use Claude desktop app cookies" = "Använd cookies från Claude-skrivbordsappen";
 "For Web usage, follow the account signed into Claude.app instead of a browser." = "För webbanvändning används kontot som är inloggat i Claude.app i stället för webbläsarkontot.";
+
+/* CodexBar Extra fork: DeepSeek peak price clock */
+"CodexBar Extra" = "CodexBar Extra";
+"Peak Price Clock" = "Peak Price Clock";
+"PEAK PRICING" = "PEAK PRICING";
+"OFF-PEAK PRICING (50% OFF)" = "OFF-PEAK PRICING (50% OFF)";
+"Off-peak" = "Off-peak";
+"→ %@ starts %@ %@" = "→ %@ starts %@ %@";
+"PRICE WINDOWS · UTC" = "PRICE WINDOWS · UTC";
+"PRICE WINDOWS · YOUR TIME" = "PRICE WINDOWS · YOUR TIME";
+"now · %dh %02dm left" = "now · %dh %02dm left";
+"Excludes Chinese public holidays" = "Excludes Chinese public holidays";
+"UTC" = "UTC";
+"Peak and off-peak windows mirror DeepSeek's published pricing terms at %@, verified %@. Chinese public holidays and make-up workdays are not modelled, so treat this as an indicator rather than a bill." = "Peak and off-peak windows mirror DeepSeek's published pricing terms at %@, verified %@. Chinese public holidays and make-up workdays are not modelled, so treat this as an indicator rather than a bill.";
+"Peak price clock" = "Peak price clock";
+"Show peak and off-peak hours countdown and schedule in menu." = "Show peak and off-peak hours countdown and schedule in menu.";

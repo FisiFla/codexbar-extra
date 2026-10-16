@@ -151,7 +151,7 @@ struct AboutPane: View {
             }
 
             VStack(spacing: 2) {
-                Text("CodexBar Extra")
+                Text(L("CodexBar Extra"))
                     .font(.title3).bold()
                 Text(String(format: L("version_format"), AppVersion.displayString))
                     .foregroundStyle(.secondary)
