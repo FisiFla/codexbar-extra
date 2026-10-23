@@ -278,6 +278,15 @@ Requires macOS 14+ and Swift 6.2+.
 open CodexBar.app
 ```
 
+CodexBar Extra fork: ad-hoc signing gives the app a new identity on every build, so macOS
+forgets its Files & Folders and Keychain grants and browser-cookie providers (DeepSeek,
+Muse Code, Cursor…) fail until re-approved. To sign with a stable local certificate so
+those grants persist, see [Local signing](docs/FORK_LOCAL_SIGNING.md):
+
+```bash
+CODEXBAR_SIGNING=local make release
+```
+
 Dev loop:
 ```bash
 ./Scripts/compile_and_run.sh

@@ -4,9 +4,9 @@ set -euo pipefail
 resolve_package_signing_mode() {
   local requested="${CODEXBAR_SIGNING:-adhoc}"
   case "$requested" in
-    adhoc|identity) ;;
+    adhoc|identity|local) ;;
     *)
-      echo "ERROR: Unsupported CODEXBAR_SIGNING: $requested (expected adhoc or identity)" >&2
+      echo "ERROR: Unsupported CODEXBAR_SIGNING: $requested (expected adhoc, identity or local)" >&2
       return 1
       ;;
   esac
@@ -19,13 +19,26 @@ resolve_package_signing_identity() {
     return
   fi
 
-  local requested="${APP_IDENTITY:-Developer ID Application: Peter Steinberger (Y5PE65HELJ)}"
+  # local: fork-local mode. Sign with a stable self-signed certificate from the login
+  # keychain. Unlike adhoc, whose identity is the per-build CDHash, the designated
+  # requirement becomes `identifier ... and certificate root = H"<cert>"`, so macOS TCC
+  # (Files & Folders) and Keychain grants survive future rebuilds. The certificate need
+  # not be trusted: codesign signs with it and the requirement is stable either way.
+  local identity_list="security find-identity -p codesigning -v"
+  local default_identity="Developer ID Application: Peter Steinberger (Y5PE65HELJ)"
+  if [[ "$SIGNING_MODE" == "local" ]]; then
+    default_identity="${CODEXBAR_LOCAL_IDENTITY:-CodexBar Local Signing}"
+    # Self-signed identities are never listed as valid, so include untrusted ones.
+    identity_list="security find-identity -p codesigning"
+  fi
+
+  local requested="${APP_IDENTITY:-$default_identity}"
   local identities line name hash selected_name="" selected_hash="" matches=0
-  if ! identities=$(security find-identity -p codesigning -v); then
-    echo "ERROR: Unable to list valid code-signing identities." >&2
+  if ! identities=$($identity_list); then
+    echo "ERROR: Unable to list code-signing identities." >&2
     return 1
   fi
-  local identity_pattern='^[[:space:]]*[[:digit:]]+\)[[:space:]]+([[:xdigit:]]{40})[[:space:]]+"([^"]+)"[[:space:]]*$'
+  local identity_pattern='^[[:space:]]*[[:digit:]]+\)[[:space:]]+([[:xdigit:]]{40})[[:space:]]+"([^"]+)"'
   local requested_hash
   requested_hash=$(printf '%s' "$requested" | tr '[:lower:]' '[:upper:]')
   while IFS= read -r line; do
@@ -41,6 +54,13 @@ resolve_package_signing_identity() {
   if [[ "$matches" != "1" ]]; then
     echo "ERROR: APP_IDENTITY must match exactly one valid identity (found $matches); use its full name or SHA-1 hash." >&2
     return 1
+  fi
+  if [[ "$SIGNING_MODE" == "local" ]]; then
+    # A self-signed certificate carries no Developer ID name or team suffix. Keep the
+    # configured team (default Y5PE65HELJ) so the app-group identifier stays unchanged.
+    APP_TEAM_ID="${APP_TEAM_ID:-Y5PE65HELJ}"
+    CODESIGN_ID="$selected_hash"
+    return
   fi
   # Developer ID names end in the Team ID; development names may end in a personal ID instead.
   local team_pattern='^Developer ID Application: .+ \(([A-Z0-9]{10})\)$'
@@ -579,6 +599,10 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/Mac
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
   CODESIGN_ID="-"
+  CODESIGN_ARGS=(--force --sign "$CODESIGN_ID")
+elif [[ "$SIGNING_MODE" == "local" ]]; then
+  # Local self-signed identity: nothing to timestamp against and no hardened runtime, so
+  # use the adhoc flags with CODESIGN_ID set by resolve_package_signing_identity.
   CODESIGN_ARGS=(--force --sign "$CODESIGN_ID")
 elif [[ "$ALLOW_LLDB" == "1" ]]; then
   CODESIGN_ID="-"
