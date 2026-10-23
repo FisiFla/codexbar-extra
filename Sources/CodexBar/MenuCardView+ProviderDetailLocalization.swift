@@ -17,6 +17,7 @@ extension UsageMenuCardView.Model {
                         value: row.value,
                         secondaryValue: self.localizedProviderDetailSecondaryValue(row, provider: provider),
                         progress: row.progress,
+                        severity: row.severity,
                         usageValue: row.usageValue)
                 }
                 return try? ProviderDetailSection(
@@ -35,6 +36,7 @@ extension UsageMenuCardView.Model {
                         self.localizedProviderDetailValue($0, provider: provider)
                     },
                     progress: row.progress,
+                    severity: row.severity,
                     usageValue: row.usageValue)
             }
             let chart = section.chart.flatMap { chart in
@@ -55,6 +57,9 @@ extension UsageMenuCardView.Model {
         _ row: ProviderDetailSection.Row,
         provider: UsageProvider) -> String?
     {
+        if provider == .kimi {
+            return row.secondaryValue.map { self.localizedResetCreditValue($0) }
+        }
         if provider == .amp {
             switch row.secondaryValue {
             case "For agent and orb usage": return L("For agent and orb usage")
@@ -121,13 +126,13 @@ extension UsageMenuCardView.Model {
         case .kiro:
             self.localizedKiroCapPhrase(value)
         case .grok:
-            self.localizedGrokResetValue(value)
+            self.localizedResetCreditValue(value)
         default:
             value
         }
     }
 
-    private static func localizedGrokResetValue(_ value: String) -> String {
+    private static func localizedResetCreditValue(_ value: String) -> String {
         if value == "1 available" {
             return L("1 available")
         }

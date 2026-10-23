@@ -208,7 +208,8 @@ struct ProviderDetailView<SupplementaryContent: View>: View {
 
             ProviderMenuBarPercentWindowSettingsView(
                 provider: self.provider,
-                settings: self.store.settings)
+                settings: self.store.settings,
+                snapshot: self.store.snapshot(for: self.provider.instanceID))
 
             if !self.menuBarSettingsPickers.isEmpty {
                 Section {
@@ -312,7 +313,7 @@ struct ProviderUsageItemVisibilitySettingsView: View {
             Button(L("Restore Defaults")) {
                 self.settings.restoreDefaultUsageItemVisibility(for: self.provider)
             }
-            .disabled(self.settings.hiddenUsageItemIDs(for: self.provider).isEmpty)
+            .disabled(!self.settings.hasCustomUsageItemVisibility(for: self.provider))
         } header: {
             Text(L("Visible usage items"))
         } footer: {

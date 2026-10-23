@@ -35,10 +35,17 @@ extension StatusItemController {
         return providerIDs.contains(fallbackProviderID) ? fallbackProviderID : providerIDs.first ?? fallbackProviderID
     }
 
+    func overviewProviderIDs(enabledProviders: [UsageProvider]) -> [ProviderInstanceID] {
+        let enabled = Set(enabledProviders)
+        return self.store.enabledProvidersForDisplay().filter {
+            $0.firstPartyProvider.map(enabled.contains) ?? true
+        }
+    }
+
     func includesOverviewTab(enabledProviders: [UsageProvider]) -> Bool {
-        enabledProviders.count > 1 &&
+        self.switcherProviderIDs(enabledFirstPartyProviders: enabledProviders).count > 1 &&
             !self.settings.resolvedMergedOverviewProviders(
-                activeProviders: enabledProviders,
+                activeProviders: self.overviewProviderIDs(enabledProviders: enabledProviders),
                 maxVisibleProviders: SettingsStore.mergedOverviewProviderLimit).isEmpty
     }
 
@@ -84,28 +91,7 @@ extension StatusItemController {
             menu.addItem(.separator())
         }
         for (index, plugin) in plugins.enumerated() {
-            let snapshot = self.store.snapshots[plugin.manifest.id]
-            let error = self.store.errors[plugin.manifest.id]
-            let view = UserPluginMenuCardView(
-                plugin: plugin,
-                snapshot: snapshot,
-                error: error,
-                isRefreshing: self.store.refreshingProviders.contains(plugin.manifest.id),
-                showUsed: self.settings.usageBarsShowUsed,
-                width: width,
-                onRefresh: { [weak self] in
-                    self?.startManualRefresh(
-                        for: plugin.manifest.id,
-                        originatingMenuID: nil,
-                        originatingMenuInteractionGeneration: nil)
-                })
-            menu.addItem(self.makeMenuCardItem(
-                view,
-                id: "pluginCard:\(plugin.manifest.id.rawValue)",
-                width: width,
-                heightCacheScope: plugin.manifest.id.rawValue,
-                heightCacheFingerprint: UserPluginMenuCardView.fingerprint(snapshot: snapshot, error: error),
-                containsInteractiveControls: true))
+            menu.addItem(self.makeUserPluginMenuCardItem(plugin, width: width))
             if index < plugins.count - 1 {
                 menu.addItem(.separator())
             }
@@ -113,15 +99,52 @@ extension StatusItemController {
         menu.addItem(.separator())
     }
 
+    func makeUserPluginMenuCardItem(
+        _ plugin: UserProviderPlugin,
+        width: CGFloat,
+        id: String? = nil,
+        onClick: (() -> Void)? = nil) -> NSMenuItem
+    {
+        let snapshot = self.store.snapshots[plugin.manifest.id]
+        let error = self.store.errors[plugin.manifest.id]
+        return self.makeMenuCardItem(
+            UserPluginMenuCardView(
+                plugin: plugin,
+                snapshot: snapshot,
+                error: error,
+                isRefreshing: self.store.refreshingProviders.contains(plugin.manifest.id),
+                showUsed: self.settings.usageBarsShowUsed,
+                resetStyle: self.settings.resetTimeDisplayStyle,
+                width: width,
+                onRefresh: { [weak self] in
+                    self?.startManualRefresh(
+                        for: plugin.manifest.id,
+                        originatingMenuID: nil,
+                        originatingMenuInteractionGeneration: nil)
+                }),
+            id: id ?? "pluginCard:\(plugin.manifest.id.rawValue)",
+            width: width,
+            heightCacheScope: plugin.manifest.id.rawValue,
+            heightCacheFingerprint: UserPluginMenuCardView.fingerprint(
+                snapshot: snapshot, error: error, resetStyle: self.settings.resetTimeDisplayStyle),
+            containsInteractiveControls: true,
+            onClick: onClick)
+    }
+
     func refreshOpenMenusAfterUserPluginRefresh(_ instanceID: ProviderInstanceID) {
         self.invalidateMenus()
         guard self.isMenuRefreshEnabled else { return }
         let cardID = "pluginCard:\(instanceID.rawValue)"
         // Plugin cards capture snapshots, so their visible payload needs the guarded rebuild path.
-        for menu in self.openMenus.values
-            where menu.items.contains(where: { $0.representedObject as? String == cardID })
-        {
-            self.scheduleOpenMenuRebuildIfStillVisible(menu, provider: self.menuProvider(for: menu))
+        let overviewID = "\(Self.overviewRowIdentifierPrefix)\(instanceID.rawValue)"
+        for menu in self.openMenus.values {
+            (menu.items.first?.view as? ProviderSwitcherView)?.updateQuotaIndicators()
+            if menu.items.contains(where: {
+                let id = $0.representedObject as? String
+                return id == cardID || id == overviewID
+            }) {
+                self.scheduleOpenMenuRebuildIfStillVisible(menu, provider: self.menuProvider(for: menu))
+            }
         }
     }
 
@@ -143,6 +166,9 @@ extension StatusItemController {
     }
 
     func userPluginSwitcherIcon(for plugin: UserProviderPlugin) -> NSImage {
+        if let image = Self.userPluginSVGImage(plugin) {
+            return image
+        }
         let size = NSSize(width: 16, height: 16)
         let image = NSImage(size: size, flipped: false) { rect in
             let rawTint = plugin.manifest.icon.tint.dropFirst()
@@ -167,18 +193,69 @@ extension StatusItemController {
         image.isTemplate = false
         return image
     }
+
+    /// The plugin's validated SVG as a template image, or nil when it has none or it does not decode.
+    static func userPluginSVGImage(_ plugin: UserProviderPlugin) -> NSImage? {
+        guard let svg = plugin.manifest.icon.svg,
+              let source = NSImage(data: Data(svg.utf8)),
+              source.size.width.isFinite, source.size.height.isFinite,
+              source.size.width > 0, source.size.height > 0,
+              source.size.width <= CGFloat(ProviderPluginIconSVG.maximumCanvasDimension),
+              source.size.height <= CGFloat(ProviderPluginIconSVG.maximumCanvasDimension),
+              let bitmap = NSBitmapImageRep(
+                  bitmapDataPlanes: nil,
+                  pixelsWide: 32,
+                  pixelsHigh: 32,
+                  bitsPerSample: 8,
+                  samplesPerPixel: 4,
+                  hasAlpha: true,
+                  isPlanar: false,
+                  colorSpaceName: .deviceRGB,
+                  bytesPerRow: 0,
+                  bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap)
+        else { return nil }
+        let scale = 32 / max(source.size.width, source.size.height)
+        guard scale.isFinite else { return nil }
+        source.size = NSSize(width: source.size.width * scale, height: source.size.height * scale)
+        let rect = NSRect(
+            x: (32 - source.size.width) / 2,
+            y: (32 - source.size.height) / 2,
+            width: source.size.width,
+            height: source.size.height)
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        context.cgContext.clear(NSRect(x: 0, y: 0, width: 32, height: 32))
+        source.draw(in: rect)
+        bitmap.size = NSSize(width: 16, height: 16)
+        let image = NSImage(size: bitmap.size)
+        image.addRepresentation(bitmap)
+        image.isTemplate = true
+        return image
+    }
 }
 
 struct UserPluginQuotaPresentation: Equatable {
+    let title: String
     let percent: Double
     let text: String
+    let resetText: String?
 
-    static func make(usedPercent: Double, showUsed: Bool) -> Self {
-        let used = min(100, max(0, usedPercent))
+    static func make(
+        title: String,
+        window: RateWindow,
+        showUsed: Bool,
+        resetStyle: ResetTimeDisplayStyle,
+        now: Date = Date()) -> Self
+    {
+        let used = min(100, max(0, window.usedPercent))
         let remaining = 100 - used
         return Self(
+            title: window.title ?? L(title),
             percent: showUsed ? used : remaining,
-            text: UsageFormatter.usageLine(remaining: remaining, used: used, showUsed: showUsed))
+            text: UsageFormatter.usageLine(remaining: remaining, used: used, showUsed: showUsed),
+            resetText: UsageFormatter.resetLine(for: window, style: resetStyle, now: now))
     }
 }
 
@@ -193,23 +270,29 @@ extension ProviderSwitcherView {
     }
 }
 
-private struct UserPluginMenuCardView: View {
+struct UserPluginMenuCardView: View {
     let plugin: UserProviderPlugin
     let snapshot: UsageSnapshot?
     let error: String?
     let isRefreshing: Bool
     let showUsed: Bool
+    let resetStyle: ResetTimeDisplayStyle
     let width: CGFloat
     let onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Text(self.plugin.manifest.icon.monogram)
-                    .font(.caption.bold())
-                    .foregroundStyle(.white)
-                    .frame(width: 26, height: 26)
-                    .background(self.tint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                Group {
+                    if let image = StatusItemController.userPluginSVGImage(self.plugin) {
+                        Image(nsImage: image).resizable().scaledToFit().padding(4)
+                    } else {
+                        Text(self.plugin.manifest.icon.monogram).font(.caption.bold())
+                    }
+                }
+                .foregroundStyle(.white)
+                .frame(width: 26, height: 26)
+                .background(self.tint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(self.plugin.manifest.name).font(.headline)
                     Text(self.plugin.fileURL.lastPathComponent)
@@ -225,6 +308,13 @@ private struct UserPluginMenuCardView: View {
                     }
                     .buttonStyle(.plain)
                     .help(L("Refresh"))
+                }
+            }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                if let snapshot {
+                    Text(LastKnownUsagePresentation.message(capturedAt: snapshot.updatedAt))
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
             if let snapshot {
@@ -247,9 +337,7 @@ private struct UserPluginMenuCardView: View {
                 if let identity = snapshot.identity(for: self.plugin.manifest.id) {
                     self.identity(identity)
                 }
-            } else if let error {
-                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
-            } else {
+            } else if self.error == nil {
                 Text(L("No usage fetched yet")).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -287,11 +375,13 @@ private struct UserPluginMenuCardView: View {
     private func window(_ title: String, _ window: RateWindow?) -> some View {
         if let window {
             let presentation = UserPluginQuotaPresentation.make(
-                usedPercent: window.usedPercent,
-                showUsed: self.showUsed)
+                title: title,
+                window: window,
+                showUsed: self.showUsed,
+                resetStyle: self.resetStyle)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(title).foregroundStyle(.secondary)
+                    Text(presentation.title).foregroundStyle(.secondary)
                     Spacer()
                     Text(presentation.text).monospacedDigit()
                 }
@@ -299,26 +389,37 @@ private struct UserPluginMenuCardView: View {
                 UsageProgressBar(
                     percent: presentation.percent,
                     tint: self.tint,
-                    accessibilityLabel: "\(title) usage")
+                    accessibilityLabel: presentation.title)
+                if let reset = presentation.resetText {
+                    Text(reset).font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
     }
 
     private var tint: Color {
-        let raw = self.plugin.manifest.icon.tint.dropFirst()
-        let value = UInt32(raw, radix: 16) ?? 0x6B7280
-        return Color(
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255)
+        let color = ProviderColor(hexString: self.plugin.manifest.icon.tint) ?? ProviderColor(hex: 0x6B7280)
+        return Color(red: color.red, green: color.green, blue: color.blue)
     }
 
-    static func fingerprint(snapshot: UsageSnapshot?, error: String?) -> String {
-        [
+    static func fingerprint(
+        snapshot: UsageSnapshot?, error: String?, resetStyle: ResetTimeDisplayStyle, now: Date = .now) -> String
+    {
+        let resets = [snapshot?.primary, snapshot?.secondary, snapshot?.tertiary].map { window in
+            window.flatMap { UsageFormatter.resetLine(for: $0, style: resetStyle, now: now) } ?? ""
+        }
+        return ([
+            codexBarLocalizationSignature(),
             snapshot?.updatedAt.timeIntervalSinceReferenceDate.description ?? "none",
             String(snapshot?.details.count ?? 0),
+            snapshot?.primary?.title ?? "",
+            snapshot?.secondary?.title ?? "",
+            snapshot?.tertiary?.title ?? "",
             error ?? "",
-        ].joined(separator: "|")
+            error == nil ? "" : snapshot.map {
+                LastKnownUsagePresentation.message(capturedAt: $0.updatedAt, now: now)
+            } ?? "",
+        ] + resets).joined(separator: "|")
     }
 }
 #endif

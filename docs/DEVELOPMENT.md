@@ -34,6 +34,10 @@ read_when:
 4. **Optional file log**: enable Debug → Logging → "Enable file logging" to write
    `~/Library/Logs/CodexBar/CodexBar.log` (verbosity defaults to "Verbose")
 
+## Localized countdowns
+
+`UsageFormatter.resetCountdownDescription` returns a complete relative phrase. Use `resetCountdownDuration` inside sentences that already include a preposition, such as “Runs out in %@”. Countdown wrappers such as “Regenerates %@” and “Expires %@” receive the complete relative phrase; keep their grammar without repeating its time words. Countdown units come from each language’s existing abbreviated templates; Ukrainian uses `дн.`, `год`, and `хв`, which do not require plural inflection. Keep widget catalogs generated from the app catalogs with `node Scripts/sync-widget-locales.mjs`.
+
 ## Swift Toolchain Compatibility
 
 CI builds and tests with Xcode 27 only, on GitHub's `xcode-27` image. Older
@@ -114,6 +118,13 @@ CodexBar/
 ├── TestsLinux/                # Portable and Linux-specific CLI/core tests (target exists on macOS too)
 └── Scripts/                   # Build and packaging scripts
 ```
+
+## Linux CLI linkage
+
+The glibc CLI must not depend on `libxml2`: newer distributions use an incompatible SONAME. Keep
+`FoundationXML` imports and XML parsing under `#if os(macOS)`. Plugin SVG icons fall back to their monogram
+on Linux. CI and release builds run `bash Scripts/check-linux-cli-linkage.sh <CodexBarCLI>` against each glibc
+binary; static musl builds do not have a dynamic dependency table.
 
 ## Common Tasks
 
@@ -201,6 +212,9 @@ Lint tools are installed at repository-pinned versions by `Scripts/install_lint_
 verified before installation. TypeScript 7 installs its native package for the running Node platform and architecture
 (including Rosetta). Plugin typechecking uses only its declared libraries and source declarations, so unrelated
 ancestor `node_modules/@types` packages do not affect the result. SwiftFormat targets the package's Swift 6.2 floor.
+
+`make check` and `make lint` use the portable `lint-linux` checks on Linux. On macOS, they run the full
+`lint` checks, including app localization, the AppleScript installer regression, and SwiftFormat.
 
 ```bash
 make test
@@ -717,6 +731,10 @@ alive until its output is observed; Darwin can discard unread output when the la
 The TTY runner retains its slave descriptor until it has harvested output after child exit, then closes it
 before checking EOF. The fast-exit regression waits for child exit before the first read, without a timed delay.
 Compare working directories after resolving symlinks.
+
+Detached SIGTERM-ignoring fixtures use `KiroProcessTestSupport` to watch the test process with kqueue
+`NOTE_EXIT`, with a 120-second backstop. Watch the test process rather than a short-lived fixture parent;
+heartbeat loops also retain an absolute deadline so they cannot wait forever while the owner remains alive.
 Test output is buffered per group. A direct runtime failure after execution begins fails the run;
 it does not silently rerun the suite through a different runtime. This opt-in adapter depends on
 SwiftPM's toolchain helper contract and needs compatibility validation when updating Xcode.

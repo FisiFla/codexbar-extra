@@ -204,20 +204,18 @@ struct ProvidersPane: View {
             })
     }
 
+    private func providerUsageText(_ provider: UsageProvider) -> String {
+        if self.store.isStale(provider: provider) { return L("last_fetch_failed") }
+        let snapshot = self.store.presentationSnapshot(for: provider)
+        // Successful refreshes clear remembered availability; resolve quota-less successes from the snapshot.
+        let availability = self.store.knownLimitsAvailability(for: provider)
+            ?? UsageLimitsAvailability.resolve(provider: provider, snapshot: snapshot)
+        if availability.isUnavailable { return L("Limits not available") }
+        return snapshot?.updatedAt.relativeDescription() ?? L("usage_not_fetched_yet")
+    }
+
     func providerSubtitle(_ provider: UsageProvider) -> String {
         let meta = self.store.metadata(for: provider)
-        let usageText: String
-        if self.store.isStale(provider: provider) {
-            usageText = L("last_fetch_failed")
-        } else if self.store.knownLimitsAvailability(for: provider)?.isUnavailable == true {
-            usageText = L("Limits not available")
-        } else if let snapshot = self.store.presentationSnapshot(for: provider) {
-            let relative = snapshot.updatedAt.relativeDescription()
-            usageText = relative
-        } else {
-            usageText = L("usage_not_fetched_yet")
-        }
-
         let presentationContext = ProviderPresentationContext(
             provider: provider,
             settings: self.settings,
@@ -228,21 +226,11 @@ struct ProvidersPane: View {
             ?? ProviderPresentation(detailLine: ProviderPresentation.standardDetailLine)
         let detailLine = presentation.detailLine(presentationContext)
 
-        return "\(detailLine)\n\(usageText)"
+        return "\(detailLine)\n\(self.providerUsageText(provider))"
     }
 
     func providerSidebarSubtitle(_ provider: UsageProvider) -> String {
         let meta = self.store.metadata(for: provider)
-        let usageText: String = if self.store.isStale(provider: provider) {
-            L("last_fetch_failed")
-        } else if self.store.knownLimitsAvailability(for: provider)?.isUnavailable == true {
-            L("Limits not available")
-        } else if let snapshot = self.store.presentationSnapshot(for: provider) {
-            snapshot.updatedAt.relativeDescription()
-        } else {
-            L("usage_not_fetched_yet")
-        }
-
         let detailLine: String = if let sourceLabel = self.store.lastSourceLabels[provider.instanceID],
                                     !sourceLabel.isEmpty
         {
@@ -253,7 +241,7 @@ struct ProvidersPane: View {
             meta.cliName
         }
 
-        return "\(detailLine)\n\(usageText)"
+        return "\(detailLine)\n\(self.providerUsageText(provider))"
     }
 
     func codexAccountsSectionState(for provider: UsageProvider) -> CodexAccountsSectionState? {
@@ -444,7 +432,7 @@ struct ProvidersPane: View {
         guard let support = TokenAccountSupportCatalog.support(for: provider) else { return nil }
         let context = self.makeSettingsContext(provider: provider)
         let implementation = ProviderCatalog.implementation(for: provider)
-        return ProviderSettingsTokenAccountsDescriptor(
+        var descriptor = ProviderSettingsTokenAccountsDescriptor(
             id: "token-accounts-\(provider.rawValue)",
             title: support.title,
             subtitle: support.subtitle,
@@ -471,14 +459,15 @@ struct ProvidersPane: View {
             },
             showsOrganizationField: support.showsOrganizationField,
             showsTeamModeControls: support.showsTeamModeControls,
-            addAccount: { label, token, usageScope, organizationID, workspaceID in
+            addAccount: { label, token, usageScope, organizationID, workspaceID, claudeConfigDirectory in
                 self.settings.addTokenAccount(
                     provider: provider,
                     label: label,
                     token: token,
                     usageScope: usageScope,
                     organizationID: organizationID,
-                    workspaceID: workspaceID)
+                    workspaceID: workspaceID,
+                    claudeConfigDirectory: claudeConfigDirectory)
                 Task { @MainActor in
                     await ProviderInteractionContext.$current.withValue(.userInitiated) {
                         await self.store.refreshProvider(provider, allowDisabled: true)
@@ -527,6 +516,26 @@ struct ProvidersPane: View {
                     }
                 }
             })
+        descriptor.editAccount = { accountID, label, token in
+            self.settings.updateTokenAccount(provider: provider, accountID: accountID, label: label, token: token)
+        }
+        descriptor.moveAccount = { accountID, destination in
+            self.settings.moveTokenAccount(provider: provider, accountID: accountID, to: destination)
+        }
+        // Provider-specific by design: only Claude accounts declare local transcript ownership.
+        if provider == .claude {
+            descriptor.claudeConfigDirectory = { accountID in
+                Binding(
+                    get: { self.settings.tokenAccounts(for: provider)
+                        .first(where: { $0.id == accountID })?.claudeConfigDirectory
+                    },
+                    set: { directory in
+                        self.settings.updateTokenAccount(
+                            provider: provider, accountID: accountID, claudeConfigDirectory: .some(directory))
+                    })
+            }
+        }
+        return descriptor
     }
 
     private func makeSettingsContext(provider: UsageProvider) -> ProviderSettingsContext {

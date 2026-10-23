@@ -53,6 +53,7 @@ struct MenuBarLayoutThroughputTests {
         #expect(v4Rules[0].elseToken == .hidden)
         let restoredRules = try MenuBarLayoutPersistence.preferredLibrary(
             current: decoder.decode([MenuBarLayoutConditional].self, from: rules.current),
+            v5: decoder.decode([MenuBarLayoutConditional].self, from: rules.v5),
             v4: v4Rules,
             v3: decoder.decode([MenuBarLayoutConditional].self, from: rules.v3),
             released: decoder.decode([MenuBarLayoutConditional].self, from: rules.released),
@@ -78,10 +79,11 @@ struct MenuBarLayoutThroughputTests {
 
     @Test
     func `sparkline buckets preserve peaks and stop at the reporting frontier`() {
-        let minutes = (0..<60).map { index in
-            ProviderThroughputSnapshot.Minute(
+        let minutes: [ProviderThroughputSnapshot.Minute] = (0..<60).map { (index: Int) in
+            let totalTokens: Int = index == 41 ? 151_000_000 : index == 56 ? 49_000_000 : index * 1_000_000
+            return ProviderThroughputSnapshot.Minute(
                 start: Date(timeIntervalSince1970: Double(index * 60)),
-                totalTokens: index == 41 ? 151_000_000 : index == 56 ? 49_000_000 : index * 1_000_000,
+                totalTokens: totalTokens,
                 requests: 50,
                 isPending: index >= 57)
         }

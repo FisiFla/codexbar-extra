@@ -77,6 +77,7 @@ public enum UsageProvider: String, CaseIterable, Sendable, Codable {
     case bifrost
     case aixy
     case deepgram
+    case soniox
     case poe
     case chutes
     case neuralwatt
@@ -103,6 +104,7 @@ public enum UsageProvider: String, CaseIterable, Sendable, Codable {
     case typesafe
     case hyper
     case gitkraken
+    case futureagi
     case devpass
     case atlascloud
     case vercel
@@ -123,6 +125,9 @@ public enum UsageProvider: String, CaseIterable, Sendable, Codable {
     case flora
     case parallel
     case claudeplatform
+    case munito
+    case traecn
+    case chatbox
 }
 
 // swiftformat:enable sortDeclarations

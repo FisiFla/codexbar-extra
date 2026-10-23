@@ -1,6 +1,29 @@
 import CodexBarCore
 
 extension StatusItemController {
+    nonisolated static func pluginMeterPercents(snapshot: UsageSnapshot?, showUsed: Bool)
+        -> (primary: Double?, secondary: Double?)
+    {
+        guard let snapshot, snapshot.primary != nil || snapshot.secondary != nil else {
+            return (self.pluginSwitcherMetricPercent(snapshot: snapshot, showUsed: showUsed), nil)
+        }
+        let lanes = IconRemainingResolver.resolvedPercents(snapshot: snapshot, style: .combined, showUsed: showUsed)
+        return (
+            lanes.primary.map { min(100, max(0, $0)) },
+            lanes.secondary.map { min(100, max(0, $0)) })
+    }
+
+    nonisolated static func pluginSwitcherMetricPercent(snapshot: UsageSnapshot?, showUsed: Bool) -> Double? {
+        let windows = ([snapshot?.primary, snapshot?.secondary, snapshot?.tertiary].compactMap(\.self) +
+            (snapshot?.extraRateWindows ?? []).filter(\.usageKnown).map(\.window))
+            .filter(\.usedPercent.isFinite)
+        let weekly = windows.filter { $0.windowMinutes == 7 * 24 * 60 }
+            .max { $0.usedPercent < $1.usedPercent }
+        guard let window = weekly ?? windows.first else { return nil }
+        let used = min(100, max(0, window.usedPercent))
+        return showUsed ? used : 100 - used
+    }
+
     nonisolated static func switcherWeeklyMetricPercent(
         for provider: UsageProvider,
         snapshot: UsageSnapshot?,

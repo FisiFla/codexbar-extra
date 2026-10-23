@@ -126,7 +126,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, StatusItemControllin
         didSet {
             guard oldValue !== self.cloudSyncState else { return }
             self.observeCloudSyncChanges()
-            self.invalidateMenus(refreshOpenMenus: true)
+            self.refreshForCloudSyncChange()
         }
     }
 
@@ -268,7 +268,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, StatusItemControllin
     private var lastSwitcherShowsIcons: Bool
     private var lastObservedUsageBarsShowUsed: Bool
     var lastWidgetDisplaySettingsSignature = ""
-    var lastAgentSessionsEnabled: Bool
+    var lastAgentSessionsVisibility: (local: Bool, remote: Bool)
     var lastAgentSessionsManualHosts: String
     var lastAgentSessionsRefreshFrequency: RefreshFrequency
     var lastStayAwakeEnabled: Bool
@@ -349,7 +349,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, StatusItemControllin
     }
 
     func menuBarMetricWindow(for provider: UsageProvider, snapshot: UsageSnapshot?, now: Date = Date()) -> RateWindow? {
-        if provider == .codex {
+        if provider == .codex, !self.menuBarUsageSource(for: provider).isFleet {
             return self.codexMenuBarMetricWindow(snapshot: snapshot, now: now)
         }
         return MenuBarMetricWindowResolver.rateWindow(
@@ -404,7 +404,7 @@ final class StatusItemController: NSObject, NSMenuDelegate, StatusItemControllin
         self.lastMergeIcons = settings.mergeIcons
         self.lastSwitcherShowsIcons = settings.switcherShowsIcons
         self.lastObservedUsageBarsShowUsed = settings.usageBarsShowUsed
-        self.lastAgentSessionsEnabled = settings.agentSessionsEnabled
+        self.lastAgentSessionsVisibility = (settings.agentSessionsEnabled, settings.agentSessionsRemoteEnabled)
         self.lastAgentSessionsManualHosts = settings.agentSessionsManualHosts
         self.lastAgentSessionsRefreshFrequency = settings.refreshFrequency
         self.lastStayAwakeEnabled = settings.stayAwakeEnabled
@@ -1012,6 +1012,15 @@ extension StatusItemController {
 #endif
 
 extension StatusItemController {
+    /// Fleet eligibility can create or remove provider items even when local refresh availability never changes.
+    func refreshForCloudSyncChange() {
+        self.lastAppliedMergedIconRenderSignature = nil
+        self.lastAppliedProviderIconRenderSignatures.removeAll()
+        self.updateVisibility()
+        self.updateIcons()
+        self.invalidateMenus(refreshOpenMenus: true, deferOpenParentMenuRebuild: true)
+    }
+
     func legacyDefaultItemIndex(forNewProvider provider: UsageProvider) -> Int? {
         let visibleProviders = self.settings.orderedFirstPartyProviders().filter { self.isVisible($0) }
         guard let providerOffset = visibleProviders.firstIndex(of: provider) else { return nil }

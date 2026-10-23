@@ -122,6 +122,11 @@ actor CostUsageStore {
         parserHash: CodexParserHash.value)
     static let cacheGeneration = "sqlite:\(CostUsageStore.schemaVersion)"
     static let compatiblePredecessorParserHashes: Set<String> = [
+        "54a95e8fe7bd6ee9", // Validating inspection checkpoints leaves persisted rows and scan progress unchanged.
+        "455876ace937d42a", // Selected-session detail reads leave current-main native rows and checkpoints unchanged.
+        "4feea9e203d85529", // Replacing eager inspection with bounded reads preserves saved rows and checkpoints.
+        "d9542d1ef3ce1875", // Claude-only Mythos prices leave native Codex rows, checkpoints, and reports unchanged.
+        "a47b70abaf8ad86c", // Immutable trace-database reads leave native rows, checkpoints, and reports unchanged.
         "3f88178bf03ad704", // Exact byte-marker searches preserve native rows, checkpoints, and reports.
         "fc698834d6329beb", // Opt-in request observation defaults to nil; saved rows and cursors are unchanged.
         "f406dae284de4a55", // Revision 13 reparses rows to record the session creator account for Auto-review.
@@ -235,15 +240,18 @@ actor CostUsageStore {
         parserHash: String = CodexParserHash.value,
         busyTimeoutMilliseconds: Int32 = 5000)
     {
-        let root = cacheRoot ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("CodexBar", isDirectory: true)
-        self.databaseURL = root
-            .appendingPathComponent("cost-usage", isDirectory: true)
-            .appendingPathComponent(Self.databaseFilename, isDirectory: false)
+        self.databaseURL = Self.databaseURL(cacheRoot: cacheRoot)
         self.executor = StoreSerialExecutor.shared(for: self.databaseURL)
         self.expectedSchemaVersion = schemaVersion
         self.expectedParserHash = parserHash
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
+    }
+
+    static func databaseURL(cacheRoot: URL?) -> URL {
+        let root = cacheRoot ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("CodexBar", isDirectory: true)
+        return root.appendingPathComponent("cost-usage", isDirectory: true)
+            .appendingPathComponent(Self.databaseFilename, isDirectory: false)
     }
 
     static func combinedSchemaVersion(base: Int, parserHash: String) -> Int32 {
