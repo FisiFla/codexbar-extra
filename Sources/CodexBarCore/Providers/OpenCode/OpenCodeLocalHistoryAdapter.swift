@@ -113,9 +113,17 @@ enum OpenCodeLocalHistoryAdapter {
             self.tokens = tokens?.isValid == true ? tokens : nil
         }
 
-        /// Provider-specific by design: this source imports only OpenAI-backed assistant usage.
+        /// Upstream rule, kept for legacy `message` rows: their eligibility drives an OpenAI-shaped
+        /// parts lookup, so widening it here would drag non-OpenAI rows through machinery built for them.
+        // Provider-specific by design: legacy `message` rows are admitted only when OpenAI-backed, matching upstream.
         var isAssistant: Bool {
             self.providerID == "openai" && self.role == "assistant"
+        }
+
+        /// Fork divergence: v2 `session_message` rows admit any provider that names itself, so locally
+        /// hosted models (Strata, Ollama, …) reach the token ledger at their recorded $0 cost.
+        var admitsAnyProvider: Bool {
+            self.role == "assistant" && (self.providerID?.isEmpty == false)
         }
     }
 
@@ -460,7 +468,12 @@ extension OpenCodeLocalHistoryAdapter {
                     self.validParents[row.id] = row.payload?.isAssistant == true
                     self.evaluated[row.id] = false
                 }
-                guard row.payload?.isAssistant == true else { self.remove(table, row.id); continue }
+                let eligible = if table == .message {
+                    row.payload?.isAssistant == true
+                } else {
+                    row.payload?.admitsAnyProvider == true
+                }
+                guard eligible else { self.remove(table, row.id); continue }
                 if table == .message {
                     self.checkpoint.pendingPartContinuation = .init(
                         message: row)

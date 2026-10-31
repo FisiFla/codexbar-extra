@@ -136,13 +136,14 @@ struct OpenCodeLocalHistoryAdapterTests {
             id: String,
             createdMs: Int64,
             cost: Double,
-            model: String = "gpt-5.2") throws -> Int64
+            model: String = "gpt-5.2",
+            provider: String = "openai") throws -> Int64
         {
             var db: OpaquePointer?
             guard sqlite3_open(self.databaseURL.path, &db) == SQLITE_OK else { throw SQLiteTestError.open }
             defer { sqlite3_close(db) }
             let payload: [String: Any] = [
-                "model": ["providerID": "openai", "id": model],
+                "model": ["providerID": provider, "id": model],
                 "cost": cost, "time": ["created": createdMs],
             ]
             let data = try JSONSerialization.data(withJSONObject: payload)
@@ -316,7 +317,8 @@ struct OpenCodeLocalHistoryAdapterTests {
         _ = try await fixture.runPass()
         let (file, global) = await fixture.aggregates()
 
-        // openai rows only; one valid step-finish behavior isn't in play here (no parts).
+        // Legacy `message` rows keep the OpenAI-only rule, so the `nchc` row is still excluded.
+        // One valid step-finish behavior isn't in play here (no parts).
         let fileTotal = file.reduce(0.0) { $0 + Double($1.aggregate.authoritativeCostNanos) / 1e9 }
         let globalTotal = global.reduce(0.0) { $0 + Double($1.authoritativeCostNanos) / 1e9 }
         #expect(abs(fileTotal - 2.2) < 0.0001)
@@ -340,6 +342,35 @@ struct OpenCodeLocalHistoryAdapterTests {
         let globalAfterTotal = globalAfter.reduce(0.0) { $0 + Double($1.authoritativeCostNanos) / 1e9 }
         #expect(abs(globalAfterTotal - 2.2) < 0.0001)
         _ = second
+    }
+
+    @Test
+    func `v2 local model rows are imported at their recorded zero cost`() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.cleanup() }
+        let now = Self.fixtureNowMs
+        try fixture.insertSessionMessage(
+            id: "local1",
+            createdMs: now,
+            cost: 0,
+            model: "qwen3.8-flash-next",
+            provider: "strata")
+        try fixture.insertSessionMessage(
+            id: "cloud1",
+            createdMs: now,
+            cost: 1.5,
+            model: "gpt-5.2")
+
+        _ = try await fixture.runPass()
+        let (file, global) = await fixture.aggregates()
+
+        // The local row is counted even though it names no OpenAI provider, and keeps $0.
+        let requests = file.reduce(Int64(0)) { $0 + $1.aggregate.requestCount }
+        #expect(requests == 2)
+        let fileTotal = file.reduce(0.0) { $0 + Double($1.aggregate.authoritativeCostNanos) / 1e9 }
+        let globalTotal = global.reduce(0.0) { $0 + Double($1.authoritativeCostNanos) / 1e9 }
+        #expect(abs(fileTotal - 1.5) < 0.0001)
+        #expect(abs(globalTotal - 1.5) < 0.0001)
     }
 
     @Test
