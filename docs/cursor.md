@@ -15,6 +15,8 @@ Cursor.app session and falls back to cookies when the app token is missing, expi
 automatic mode uses cached or stored cookies when available, then falls back to the signed-in Cursor app token, then to
 `cursor-agent`'s, because browser import is unavailable.
 
+Settings omits the Version row because this provider reads web APIs and does not detect a local app or CLI version.
+
 ## Data sources + fallback order
 
 Manual cookie configuration is always the explicit override. The automatic order is Cursor.app → cached cookie → browser
@@ -23,6 +25,14 @@ Linux. Explicit `web` mode never reads local Cursor credentials; macOS uses its 
 
 1) **Cursor.app local auth** (first automatic source on macOS; Linux fallback)
    - Reads Cursor.app's VS Code-style global state DB for `ItemTable` key `cursorAuth/accessToken`.
+   - On macOS, supports both plain JWTs and Cursor 3.27's `cursor-safe-storage:v1:` encrypted tokens. Encrypted
+     tokens use the `Cursor Safe Storage` Keychain item (account `Cursor`). Plain token decoding performs no
+     Keychain reads.
+     Background and settings refreshes never prompt. An explicit manual refresh may request access once, sharing
+     that action's prompt allowance with browser imports. Choose **Always Allow** to permit future refreshes without
+     another prompt; denying access keeps the six-hour cooldown, including subsequent manual refreshes.
+     Unreadable or malformed encrypted tokens fall through to the existing cookie sources without reusing an older
+     persisted Cursor.app identity. JWT user ID and expiry validation still run after decryption.
    - BLOB decoding recognizes BOM-less ASCII UTF-16LE tokens before UTF-8, which would otherwise keep interleaved
      NUL bytes. Other encodings retain the existing UTF-8/UTF-16LE fallback; tokens are not normalized, and malformed
      nonempty values remain distinct from a missing session so they cannot enable stale cached-account fallback.
@@ -33,6 +43,8 @@ Linux. Explicit `web` mode never reads local Cursor credentials; macOS uses its 
    - The database is opened read-only. Active WAL state is read normally; an idle WAL-mode main file with no
      sidecars uses SQLite immutable mode so CodexBar does not recreate files in Cursor's directory.
    - The token is used only while its JWT expiry is more than 60 seconds away. CodexBar never refreshes it.
+     If the app token has expired and no fallback session works, CodexBar reports that the Cursor app session expired:
+     open Cursor to sign in again, or sign in to cursor.com in your browser. An available browser session still wins.
    - On macOS, a validated derived session is also persisted owner-only at
      `~/Library/Application Support/CodexBar/cursor-session.json` through the standard credential-file writer. Linux
      reads the Cursor database directly and does not persist the app token.
@@ -47,12 +59,15 @@ Linux. Explicit `web` mode never reads local Cursor credentials; macOS uses its 
    - Keychain cache: `com.steipete.codexbar.cache` (account `cookie.cursor`).
 
 3) **Browser cookie import** (macOS only)
-   - Cookie order from provider metadata, falling back to SweetCookieKit's default browser catalog, including Aside, Opera, Opera Neon, and Ego Lite.
-   - Domain filters: `cursor.com`, `cursor.sh`.
-   - Cookie names required (any one counts):
+   - Cookie order from provider metadata, falling back to SweetCookieKit's default browser catalog, including Aside, Brave Origin, Opera, Opera Neon, and Ego Lite.
+   - Domain filters: `cursor.com`, `www.cursor.com`, `cursor.sh`, `authenticator.cursor.sh` (leading dots are normalized).
+   - Recognized session cookie names:
      - `WorkosCursorSessionToken`
      - `__Secure-next-auth.session-token`
      - `next-auth.session-token`
+     - `wos-session`, `__Secure-wos-session`
+     - `authjs.session-token`, `__Secure-authjs.session-token`
+   - If no recognized name is present, matching-domain cookies are still tried and validated through the API.
 
 4) **Stored session cookies** (legacy fallback on macOS and Linux)
    - Legacy sessions captured by older CodexBar releases remain readable.
@@ -70,10 +85,17 @@ Manual option:
 ## Add and switch account
 - **Add Account** opens `https://authenticator.cursor.sh/` in a supported browser.
 - Aside, Opera, and Opera Neon are supported with SweetCookieKit 0.5.5. The selected application's bundle identifier pins login to that browser's cookie store.
+- SweetCookieKit 0.5.11 adds Brave Origin cookie imports and Add/Switch Account support. Its `com.brave.Browser.origin` bundle identifier pins login to the separate `BraveSoftware/Brave-Origin` profile store, using the shared browser import order and Keychain prompt safeguards.
 - SweetCookieKit 0.5.6 adds Ego Lite cookie imports. Add/Switch Account does not offer Ego Lite until its application has a verified, unambiguous bundle-identifier mapping; display names and storage paths are insufficient for interactive login.
 - **Switch Account** opens the same authenticator and waits for a different stable account ID when available, falling back to normalized email when IDs are unavailable.
 - When the system's HTTPS handler is a supported browser, CodexBar opens the route there automatically. When the handler is an intermediary app, CodexBar asks the user to choose a concrete supported browser before opening the route.
 - CodexBar pins the original HTTPS route to that concrete browser and polls cookies only from the same application. Interactive login never falls back to another browser, a stored session, or Cursor.app; cancelling browser selection or the absence of a supported browser stops before login opens.
+- Login polls every two seconds with a two-minute deadline, and API requests are capped by the remaining time. The timeout
+  reports the last validation error. A Switch waits for a different account, even if the current account is signed in.
+- Firefox imports persistent cookies from each profile, but does not expose container/partition identity to Cursor.
+  Session-only recovery files support only the default, unpartitioned context. If login is not detected,
+  try a regular Firefox window outside a container and include the exact timeout error when reporting the problem;
+  never share cookie values, tokens, or the browser database.
 - An installed non-Safari browser remains eligible before its first profile or cookie database exists, and CodexBar detects the store created during login. Browsers with access-blocked profile data remain unavailable, while Safari still requires an existing readable cookie source.
 - CodexBar preserves its cached and legacy stored Cursor sessions while login is in progress. An accepted browser session must be durably cached before the legacy session is cleared, so cancellation or failure leaves the previous session intact. Add completes only after the authenticated response includes a Cursor account identity. Switch compares stable account IDs when both sides provide them and otherwise compares normalized email.
 - CodexBar checks all available profiles in the selected browser. Add accepts a sole unambiguous account automatically, while Switch always asks for confirmation before replacing the current account, even when only one eligible alternative is found. Multiple eligible accounts always require an explicit choice, and CodexBar caches only the chosen session.
@@ -196,9 +218,9 @@ downgrade preserves the full layout on return, while edits made in an older rele
 - `Sources/CodexBarCore/Providers/Cursor/CursorStatusProbe+UsageSummary.swift` (summary projection)
 - `Sources/CodexBarCore/Providers/Cursor/CursorTeamSpend.swift` (verified member budget)
 - `Sources/CodexBarCore/Providers/Cursor/CursorSandUsage.swift` (Grok Bot weekly included usage)
-- `Sources/CodexBar/CursorLoginRunner.swift` (login flow)
+- `Sources/CodexBar/Providers/Cursor/CursorLoginRunner.swift` (login flow)
 - `Sources/CodexBar/Providers/Cursor/CursorLoginFlow.swift` (menu integration)
-- `Sources/CodexBar/CursorLoginBrowserRouter.swift` (browser routing and selection)
+- `Sources/CodexBar/Providers/Cursor/CursorLoginBrowserRouter.swift` (browser routing and selection)
 
 ### Enterprise and Business member budgets
 

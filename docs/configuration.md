@@ -104,6 +104,8 @@ Events:
   successful poll. It can fire when values are unchanged. `usagePercent`, `windowMinutes`, and `resetAt`
   describe the positional primary window; `secondaryUsagePercent`, `secondaryWindowMinutes`, and
   `secondaryResetAt` describe the positional secondary window. Synthetic placeholder windows are omitted.
+  When the provider reported a raw plan identifier, the event also carries `plan`, `planSource`, and
+  `planObservedAt` as described below.
 - `provider_unavailable`: a provider status changes to a minor, major, or critical outage.
 - `provider_recovered`: that tracked outage returns to normal.
 - `refresh_failed`: a provider refresh fails; `CODEXBAR_STATUS` is a coarse category such as `timeout`, `offline`,
@@ -121,6 +123,20 @@ Payload environment variables are `CODEXBAR_EVENT`, `CODEXBAR_PROVIDER`, `CODEXB
 `CODEXBAR_WINDOW_MINUTES`, `CODEXBAR_RESET_AT`, `CODEXBAR_SECONDARY_USAGE_PERCENT`,
 `CODEXBAR_SECONDARY_WINDOW_MINUTES`, `CODEXBAR_SECONDARY_RESET_AT`, and `CODEXBAR_STATUS`. Enabling Hide personal info
 omits `CODEXBAR_ACCOUNT` and the matching JSON field.
+
+`usage_updated` can also carry sampled plan provenance. The fields are omitted entirely when the provider did not
+report a raw identifier:
+
+- `plan` (`CODEXBAR_PLAN`): the provider's raw plan/tier identifier, for example `pro`. It is not the display label
+  (`Pro 20x`) and it does not establish an allowance multiplier, baseline, or quota window.
+- `planSource` (`CODEXBAR_PLAN_SOURCE`): the provider surface that reported it. Current values are `usage_response`
+  (provider usage/rate-limit response), `oauth_claims` (OAuth ID-token claims), `pat_whoami` (token-auth whoami
+  response), and `local_rpc` (local Codex app-server response).
+- `planObservedAt` (`CODEXBAR_PLAN_OBSERVED_AT`): when CodexBar observed the value, not when the plan took effect.
+
+Only Codex currently reports raw plan identifiers. Display labels, pricing, and web-dashboard values are never
+promoted to these fields. `usage_updated` is throttled to one matching attempt per 600 seconds per account with no trailing
+delivery, so the fields describe a sampled observation rather than a complete plan transition history.
 
 The stdin JSON uses the same camel-case field names without the `CODEXBAR_` prefix. Dates are UTC ISO 8601 strings,
 usage percentages are `0...1` fractions, unavailable optional fields are omitted rather than encoded as `null`, and
@@ -197,6 +213,12 @@ Example placeholder config:
     }
   ]
 }
+```
+
+Or write the same two fields from the CLI, which also works where the app is unavailable (for example on Linux):
+
+```bash
+pbpaste | codexbar config set-cookie --provider claude --stdin
 ```
 
 Validate after editing:
@@ -282,7 +304,9 @@ z.ai team accounts also use `usageScope`, `organizationId`, and `workspaceID`; s
 See the [generated provider ID list](provider-ids.md), sourced from `UsageProvider` in enum order.
 
 ## Ordering
-The order of `providers` controls display/order in the app and CLI. Reorder the array to change ordering.
+The order of `providers` controls display/order in the app and CLI. Reorder the array to change ordering. The Settings sidebar also supports dragging providers to reorder them.
+Its Undo banner dismisses after four seconds of inactivity. Hovering, keyboard focus, or VoiceOver focus pauses
+the timer, and a new reorder restarts it. Reduce Motion disables the fade animation.
 
 ## iCloud sync
 The three sync sub-options are disabled while the main sync switch is off, iCloud is unavailable, or a newer app version is required. Their saved choices are retained when sync is turned off and restored when it is enabled again.
@@ -292,6 +316,8 @@ Opt-in (Settings → iCloud Sync, off by default; requires a signed release buil
 - **Provider configuration** — portable fields of each provider entry (enabled intent, extras, region, workspace, quota-warning overrides, ordering-relevant metadata). Secrets (`apiKey`, `secretKey`, `cookieHeader`, `tokenAccounts`) sync only when "Include API keys, cookies, and tokens" is on, and travel exclusively in CloudKit `encryptedValues` (end-to-end encrypted; readable only on the user's devices).
 - **A curated preferences subset** — notification/threshold/display settings.
 - **Usage snapshots** — per-device current usage per account, so other Macs can show last-known data ("via <Mac> · 1h ago") and accounts discovered on other Macs.
+
+A dropped account-snapshot upload can be retried by a later push without restarting CodexBar. Delayed results from an older upload cannot mark newer snapshot data as uploaded.
 
 With Usage snapshots and Show accounts from other Macs enabled, an enabled provider without local usage can also use the freshest fleet fallback in separate, current-selection, highest-usage, and stacked menu bar icons. The menu labels its source and age; accessibility help includes the source Mac and capture time, respecting Hide personal info. Local snapshots remain authoritative. Remote usage does not enable local credential-dependent fetches or populate local costs, pace, credits, or account labels. Highest usage compares the same presentation snapshots without enabling local fetches. Fleet refreshes preserve an open menu's provider switcher until the menu is closed and reopened.
 
@@ -353,7 +379,8 @@ and notification windows; sound, on-screen alerts and threshold markers; pace vi
 and tick appearance; usage/reset display; local cost display, comparisons and summary style; privacy,
 blink/confetti effects, highest-usage selection, optional credits/extra usage, changelog links, currency
 and alphabetical provider sorting. JSON keys match the `SyncedPreferences` fields. It additionally includes
-`limitResetNotificationsEnabled`, `mergeIcons`, `mergeIconsStacked`, `switcherShowsIcons`, `mergedOverviewLayout`,
+`limitResetNotificationsEnabled`, `upcomingResetNotificationsEnabled`, `mergeIcons`, `mergeIconsStacked`, `switcherShowsIcons`,
+`mergedOverviewLayout`,
 `mergedOverviewSelectedProviders`, and `switcherShortcuts`. An overview selection is applied intentionally
 to the receiving Mac's active providers, including an empty selection. `weeklyProgressWorkDays: null`
 restores the seven-day default. Missing keys leave the receiving Mac's settings unchanged. Unknown preference keys,
@@ -361,7 +388,8 @@ unsupported versions, invalid types and invalid shortcut mappings are rejected b
 
 Credentials, accounts, hooks, launch at login, global hotkeys, local paths, device identity, iCloud switches,
 debug settings, and consent are excluded. Import does not enable activity-scan consent. Only the existing
-iCloud projection syncs onward; reset notifications, the additional menu settings, and switcher shortcuts stay local
+iCloud projection syncs onward; reset and upcoming-reset notifications, the additional menu settings, and switcher
+shortcuts stay local
 unless explicitly exported and imported. Import does not modify `config.json` or iCloud's remote-update suppression.
 
 ### Menu bar controls

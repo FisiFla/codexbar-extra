@@ -1,9 +1,9 @@
 import Foundation
+import Testing
+@testable import CodexBarCore
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
-import Testing
-@testable import CodexBarCore
 #if os(macOS)
 @testable import SweetCookieKit
 #endif
@@ -99,7 +99,15 @@ struct TraeCNPluginTests {
         #expect(usage.subscriptionExpiresAt == nil)
         #expect(usage.identity?.providerID == .traecn)
         #expect(usage.identity?.loginMethod == "Fixture Pro")
+        #expect(usage.details.first?.title == "Credits")
         #expect(usage.details.first?.rows.map(\.value) == ["2,000", "10,000", "8,000"])
+    }
+
+    @Test(arguments: BundledPluginTestSupport.engines)
+    func `fractional credits align all summary rows to two decimals`(engine: ProviderPluginEngineKind) async throws {
+        let body = #"{"is_credits_billing":true,"usage_summary":{"total_amount":16400,"consumed_amount":5677.34}}"#
+        let usage = try await Self.fetch(body: body, engine: engine)
+        #expect(usage.details.first?.rows.map(\.value) == ["5,677.34", "16,400.00", "10,722.66"])
     }
 
     @Test(arguments: BundledPluginTestSupport.engines)
@@ -115,6 +123,7 @@ struct TraeCNPluginTests {
     func `invalid credits and dollar billing do not become zero usage`(engine: ProviderPluginEngineKind) async {
         for body in [
             "null",
+            #"{"is_credits_billing":true}"#,
             #"{"is_credits_billing":true,"usage_summary":{"total_amount":100}}"#,
             #"{"is_credits_billing":true,"usage_summary":{"total_amount":100,"consumed_amount":-1}}"#,
             #"{"is_credits_billing":true,"usage_summary":{"total_amount":"100","consumed_amount":1}}"#,

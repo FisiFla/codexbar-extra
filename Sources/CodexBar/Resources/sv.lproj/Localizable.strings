@@ -1,4 +1,5 @@
 /* Swedish localization for CodexBar */
+"Copilot subscription ended" = "Copilot-prenumerationen har upphört";
 
 /* iCloud Sync */
 "+ %d more" = "+ %d till";
@@ -177,6 +178,7 @@
 "Individual credits" = "Individuella krediter";
 "Workspace" = "Arbetsyta";
 "Credits history" = "Kredithistorik";
+"Cursor app session expired — open Cursor to sign in again, or sign in to cursor.com in your browser." = "Sessionen i Cursor-appen har gått ut — öppna Cursor för att logga in igen eller logga in på cursor.com i webbläsaren.";
 "Cursor login failed" = "Cursor-inloggning misslyckades";
 "Custom" = "Anpassat";
 "Custom Path" = "Anpassad sökväg";
@@ -733,6 +735,8 @@
 "acknowledgements_authors" = "Upphovspersoner";
 "acknowledgements_license" = "Licens";
 "check_updates_auto" = "Sök efter uppdateringar automatiskt";
+"install_updates_auto" = "Hämta och installera uppdateringar automatiskt";
+"install_updates_auto_subtitle" = "När det är av tillfrågas du innan en ny version installeras.";
 "update_channel" = "Uppdateringskanal";
 "check_for_updates" = "Sök efter uppdateringar…";
 "updates_unavailable" = "Uppdateringar är inte tillgängliga i det här bygget.";
@@ -1342,11 +1346,8 @@
 "Share Stats…" = "Dela statistik…";
 "Stats copied" = "Statistiken kopierades";
 "DeepSeek this month token usage trend" = "Trend för DeepSeek-tokenanvändning den här månaden";
-"Chrome profile" = "Chrome-profil";
 "Choose which signed-in DeepSeek Platform session supplies detailed usage." = "Välj vilken inloggad DeepSeek Platform-session som ska ge detaljerad användning.";
 "Detailed usage unavailable." = "Detaljerad användning är inte tillgänglig.";
-"Sign in to DeepSeek Platform in Chrome for detailed usage." = "Logga in på DeepSeek Platform i Chrome för detaljerad användning.";
-"Select a DeepSeek Chrome profile in Settings." = "Välj en DeepSeek Chrome-profil i Inställningar.";
 "Select profile…" = "Välj profil…";
 
 "%@: %@" = "%@: %@";
@@ -2360,6 +2361,7 @@
 "Core Monthly" = "Core Monthly";
 "Bobcoin usage" = "Bobcoin användning";
 "Code 7-day" = "Kod 7-dagars Kvot";
+"Other features" = "Övriga funktioner";
 "Quota services" = "Kvot tjänster";
 "Billing history" = "Faktureringshistorik";
 "Renews" = "Förnyar";
@@ -2569,7 +2571,6 @@
 "Also restores the provider order in the menu bar. Can be undone." = "Återställer även leverantörsordningen i menyraden. Kan ångras.";
 "Local Codex details; excluded from combined totals." = "Lokala Codex-detaljer; ingår inte i de sammanlagda totalerna.";
 
-"Auto uses an API key when configured, otherwise browser cookies." = "Auto uses an API key when configured, otherwise browser cookies.";
 "Stored in the CodexBar config file. You can also set COMMAND_CODE_API_KEY." = "Stored in the CodexBar config file. You can also set COMMAND_CODE_API_KEY.";
 /* OpenAI organization rate limits and live usage */
 "%@ tokens · %@ requests" = "%@ token · %@ förfrågningar";
@@ -2757,3 +2758,52 @@
 "Chatbox AI is rate limiting requests. Try again later." = "Chatbox AI begränsar antalet förfrågningar. Försök igen senare.";
 "Chatbox AI request failed. Try refreshing later." = "Chatbox AI-förfrågan misslyckades. Försök uppdatera senare.";
 "Chatbox AI returned an unrecognized response. Update CodexBar and try again." = "Chatbox AI returnerade ett okänt svar. Uppdatera CodexBar och försök igen.";
+
+/* abliteration.ai */
+"abliteration.ai" = "abliteration.ai";
+"Show abliteration.ai usage" = "Visa abliteration.ai-användning";
+"abliteration.ai is rate limiting requests. Try again later." = "abliteration.ai begränsar antalet förfrågningar. Försök igen senare.";
+"abliteration.ai request failed. Try refreshing later." = "abliteration.ai-förfrågan misslyckades. Försök uppdatera senare.";
+"abliteration.ai returned an unrecognized response. Update CodexBar and try again." = "abliteration.ai returnerade ett okänt svar. Uppdatera CodexBar och försök igen.";
+"Check your API key in Settings." = "Kontrollera din API-nyckel i Inställningar.";
+"Kimi Code" = "Kimi Code";
+
+"OpenCode local history" = "Lokal OpenCode-historik";
+
+"Show this Mac's recorded OpenCode usage in Codex history. Off by default; scoped or alternate CODEX_HOME locations always stay excluded." = "Visar OpenCode-användningen som registrerats på den här Mac-datorn i Codex-historiken. Avstängt som standard; CODEX_HOME-platser med begränsad omfattning eller alternativa platser förblir alltid undantagna.";
+"Auto uses the active saved session, otherwise an API key or browser cookies." = "Automatiskt använder den aktiva sparade sessionen, annars en API-nyckel eller webbläsarcookies.";
+"Store multiple Command Code subscription sessions." = "Spara flera prenumerationssessioner för Command Code.";
+
+"codex_reset_credit_expiry_notifications_title" = "Codex-återställningskrediter löper ut";
+
+"codex_reset_credit_expiry_notifications_subtitle" = "Lägger till påminnelser när användningen uppdateras, 1 dag och 1 timme före utgången.";
+/* OpenDesign */
+"OpenDesign" = "OpenDesign";
+"Show OpenDesign usage" = "Visa OpenDesign-användning";
+"Sign in to OpenDesign, then refresh CodexBar." = "Logga in på OpenDesign och uppdatera sedan CodexBar.";
+"OpenDesign usage response format changed." = "Formatet på användningssvaret från OpenDesign har ändrats.";
+"OpenDesign billing access was denied." = "Åtkomst till OpenDesigns faktureringsuppgifter nekades.";
+"OpenDesign request failed. Try again later." = "Förfrågan till OpenDesign misslyckades. Försök igen senare.";
+"OpenDesign subscription usage is unavailable for this workspace." = "OpenDesign-abonnemangets användning är inte tillgänglig för den här arbetsytan.";
+"upcoming_reset_notifications_title" = "Varningar för kommande återställning";
+"upcoming_reset_notifications_subtitle" = "Varnar för Codex innan veckogränsen återställs medan kvoten fortfarande är delvis oanvänd.";
+"upcoming_reset_notification_title" = "Gräns för %1$@ återställs snart (%2$@)";
+"upcoming_reset_notification_body" = "%1$@ av kvoten används fortfarande inte. Den återställs om %2$@ och oanvänd kvot går förlorad.";
+"upcoming_reset_notification_body_with_account" = "Konto %1$@. %2$@ av kvoten används fortfarande inte. Den återställs om %3$@ och oanvänd kvot går förlorad.";
+"Sign in to DeepSeek Platform in a Chromium-based browser for detailed usage." = "Logga in på DeepSeek Platform i en Chromium-baserad webbläsare för detaljerad användning.";
+"Select a DeepSeek browser profile in Settings." = "Välj en DeepSeek-webbläsarprofil i Inställningar.";
+"menu_bar_layout_token_separator_glyph_accessibility" = "Avgränsare %@";
+"menu_bar_layout_separator_pipe" = "Lodrätt streck";
+"menu_bar_layout_separator_slash" = "Snedstreck";
+"menu_bar_layout_separator_hyphen" = "Bindestreck";
+"menu_bar_layout_separator_bullet" = "Punkt";
+"menu_bar_layout_separator_diamond" = "Fylld romb";
+"menu_bar_layout_separator_hollowDiamond" = "Ofylld romb";
+"menu_bar_layout_separator_tilde" = "Tilde";
+"menu_bar_layout_separator_doubleBar" = "Dubbelt lodrätt streck";
+"Rename" = "Byt namn";
+"Rename account" = "Byt namn på konto";
+"Account name" = "Kontonamn";
+"Leave blank to use the default name." = "Lämna tomt för att använda standardnamnet.";
+"Rewards" = "Belöningar";
+"Reward expiry" = "Belöningarnas utgångsdatum";

@@ -149,9 +149,12 @@ extension CodexBarCLI {
           Use --provider codex --remote <host> for separate local and SSH-host summaries.
           --summary-only emits versioned Codex JSON totals without account or session details.
           --identified-only requires --provider codex and JSON. It exports strong native request identities
-          over one UTC window (30 days by default); legacy and unidentified usage are excluded. Prices are unavailable.
-          Add --remote to deduplicate that export with one SSH host using the same millisecond window.
-          Both hosts need a CLI supporting --identified-only. Failures retain an explicitly partial local subtotal.
+          over one UTC window (30 days by default); legacy and unidentified usage are excluded.
+          Repeat --remote to deduplicate exports from several SSH hosts using the same millisecond window.
+          Every host needs schema 2 support. Combined API-price estimates use the collector’s pricing snapshot;
+          unknown prices remain null with unpricedRequestCount. Pricing disagreements retain tokens, unpriced;
+          timestamp/token conflicts exclude requests. Failed hosts retain successful sources and exit nonzero.
+          Source rows include local/ssh origin and collection time; failed rows omit that time.
           These modes accept --days 1...365, not --period, --summary-only, grouping or breakdown.
 
         Examples:
@@ -162,7 +165,7 @@ extension CodexBarCLI {
           codexbar cost --provider antigravity --format json
           codexbar cost --provider muse --format json
           codexbar cost --provider codex --remote build-host --format json
-          codexbar cost --provider codex --identified-only --format json --remote build-host
+          codexbar cost --provider codex --identified-only --format json --remote build-a --remote build-b
         """
     }
 
@@ -316,6 +319,10 @@ extension CodexBarCLI {
                                     [--organization-id <org>] [--workspace-id <project>]
                                     [--no-enable]
                                     [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar config set-cookie --provider <name> (--cookie <header>|--stdin) [--no-enable]
+                                   [--format text|json] [--json] [--json-only] [--pretty]
+          codexbar config clear-credential --provider <name> [--api-key] [--cookie]
+                                         [--format text|json] [--json] [--json-only] [--pretty]
 
         Description:
           Validate or print the CodexBar config file (default: validate).
@@ -329,6 +336,10 @@ extension CodexBarCLI {
           set-api-key stores a provider API key in the resolved config file and enables that provider by default.
           For z.ai team usage, add --usage-scope team with BigModel organization and project IDs; this stores
           the key as a token account instead of a provider-level personal key.
+          set-cookie stores a manual Cookie header and sets the provider's cookie source to manual, like pasting
+          a cookie in Settings; it enables that provider by default and rejects providers that do not read one.
+          clear-credential removes the stored API key and manual cookie; pass --api-key or --cookie to clear only one.
+          Enablement, data and cookie sources, and token accounts are unchanged.
 
         Examples:
           codexbar config validate --format json --pretty
@@ -340,6 +351,8 @@ extension CodexBarCLI {
           printf '%s' "$ELEVENLABS_API_KEY" | codexbar config set-api-key --provider elevenlabs --stdin
           printf '%s' "$Z_AI_API_KEY" | codexbar config set-api-key --provider zai --stdin \\
             --label Team --usage-scope team --organization-id org_... --workspace-id proj_...
+          pbpaste | codexbar config set-cookie --provider claude --stdin
+          codexbar config clear-credential --provider claude --cookie
         """
     }
 
@@ -535,6 +548,8 @@ extension CodexBarCLI {
           codexbar config set-api-key --provider <name> (--api-key <key>|--stdin)
           codexbar config set-api-key --provider zai --stdin --usage-scope team
                                    --organization-id <org> --workspace-id <project>
+          codexbar config set-cookie --provider <name> (--cookie <header>|--stdin)
+          codexbar config clear-credential --provider <name> [--api-key] [--cookie]
           codexbar hooks <list|enable|disable> [--format text|json] [--pretty]
           codexbar hooks test <event> --provider <name>
           codexbar plugins <list|fetch <id>> [--json] [--pretty]

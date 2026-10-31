@@ -8,7 +8,7 @@ read_when:
 
 # Providers
 
-CodexBar currently registers 109 provider IDs. Some companies expose multiple surfaces, such as Codex vs OpenAI API or
+CodexBar currently registers 111 provider IDs. Some companies expose multiple surfaces, such as Codex vs OpenAI API or
 OpenCode vs OpenCode Go, because the auth source and quota shape differ.
 
 ## Fetch strategies (current)
@@ -62,6 +62,8 @@ double-count the same traffic. An optional toggle can hide native Codex while Op
 emits the currently aggregated model (provenance, mix, coverage). Invalid numeric fields are omitted while valid
 neighboring fields remain available. Existing cached rows are reparsed once after the numeric parser update;
 subsequent unchanged reads continue to reuse the corrected cache.
+Imports read 64 KiB chunks and preserve records spanning reads, avoiding a separate whole-file buffer and newline
+index. Decoded usage rows and the current unfinished record still require memory proportional to their size.
 Rows explicitly billed to `nous` appear under Nous Portal with OpenCodex provenance, even when their model IDs
 name another vendor. Their dollar amounts are estimates from exact Nous/model pricing, never Portal credits or
 the producer's ignored `_meta` values; missing rates stay unpriced. See [Nous local usage and spend](nous.md#local-usage-and-spend).
@@ -81,7 +83,7 @@ complete when the available scan window covers fewer days.
 | Antigravity | Local LSP/HTTP probe (`local`). |
 | Cursor | Web API via cookies → legacy stored session → Cursor.app local auth (`web`). |
 | OpenCode | Web dashboard via cookies (`web`). |
-| OpenCode Go | Unscoped Auto: local SQLite cost history with API overlay (`local+api`) → usage API (`api`) → web dashboard (`web`). Scoped Auto (selected account/manual cookie/workspace): web → local → API. Explicit API/Web: selected source only. |
+| OpenCode Go | Unscoped Auto: local SQLite history with configured API, browser, then CLI quotas (`local+api`/`local+web`/`local+cli`). Without history: configured API key first; otherwise web → CLI. Scoped Auto (selected account/manual cookie/workspace): web → local → API. Explicit API/Web: selected source only. |
 | Alibaba Coding Plan | Console RPC via web cookies (auto/manual) with API key fallback (`web`, `api`). |
 | Alibaba Token Plan | Signed-in Bailian CLI (`cli`) → subscription summary API via browser or manual cookies (`web`). |
 | Qwen Cloud | Qwen Cloud 5-hour/weekly Token Plan APIs via browser or manual cookies (`web`). |
@@ -93,7 +95,7 @@ complete when the available scan window covers fewer days.
 | Kimi | Kimi Code API key (`api`), then `kimi-auth` cookie/manual token/env fallback (`web`). |
 | Kilo | API token from config/env → usage API (`api`); auto falls back to CLI session auth (`cli`). |
 | Copilot | Device-flow/env/config token → `copilot_internal` API (`api`). |
-| Kiro | CLI command via `kiro-cli chat --no-interactive "/usage"` (`cli`). |
+| Kiro | Existing CLI token → `GetUsageLimits` API, then V2 CLI report (`cli`). |
 | Vertex AI | Google ADC OAuth (gcloud) → Cloud Monitoring quota usage (`oauth`). |
 | Augment | `auggie` CLI first, then browser-cookie web fallback (`cli`, `web`). |
 | JetBrains AI | Local XML quota file (`local`). |
@@ -171,7 +173,7 @@ complete when the available scan window covers fewer days.
 | [X API](xapi.md) | Browser or manual console.x.com cookies for prepaid and free credits, including negative balances. |
 | [Future AGI](futureagi.md) | API key and secret key (billing-period usage, allowances, and estimated cost). |
 | [LithosAI](lithosai.md) | Browser or manual console cookies for prepaid USD balance and optional UTC spend. |
-| [WorkBuddy](workbuddy.md) | Chrome or manual www.workbuddy.cn cookies for the monthly credits allowance, plan name, and cycle reset. |
+| [WorkBuddy](workbuddy.md) | Chrome or manual www.workbuddy.cn cookies for the monthly credits allowance, plan name, cycle reset, and the platform reward credits. |
 | [Tavily](tavily.md) | API key for account-plan, per-key, and pay-as-you-go credit totals. |
 | [Linkup](linkup.md) | API key for the current prepaid USD credit balance. |
 | [TinyApi](tinyapi.md) | Browser or manual session cookies for aggregate available credits. |
@@ -187,6 +189,8 @@ complete when the available scan window covers fewer days.
 | [Munito](munito.md) | Admin API key with Read account data permission for today's and this month's spend against the organization's spend limits. |
 | [Trae CN](traecn.md) | Browser session for account credit usage. |
 | [Chatbox AI](chatbox.md) | API token |
+| [abliteration.ai](abliteration.md) | API key for prepaid USD credits and cumulative usage. |
+| [OpenDesign](opendesign.md) | Browser or manual session cookies for the active workspace's five-hour and weekly subscription allowance. |
 
 <!-- End generated provider additions -->
 
@@ -313,10 +317,11 @@ complete when the available scan window covers fewer days.
 
 ## OpenCode Go
 - Preferred usage source: `GET https://opencode.ai/zen/go/v1/usage` with an API key from Settings,
-  `providers[].apiKey`, or `OPENCODE_API_KEY`.
+  `providers[].apiKey`, `OPENCODE_API_KEY`, or an existing active OpenCode CLI login.
 - Web dashboard via browser or manual cookies (`opencode.ai`).
 - Unscoped Auto mode prefers local cost history from `~/.local/share/opencode/opencode.db` on macOS and Linux,
-  enriches it with API quota windows when configured, then falls back to standalone API and legacy web sources.
+  enriches it with quota windows from a configured key, browser session, then active CLI login. Without local history,
+  the configured key stays first; otherwise web precedes the CLI login.
 - Auto mode stays web-first for selected token accounts, manual cookies, and workspace overrides; explicit Web mode does
   not include local fallback.
 - Uses the public usage API for rolling 5-hour, weekly, and monthly usage windows, with the workspace Go page/server
@@ -688,6 +693,7 @@ JavaScriptCore is the macOS rollback engine. The committed `.js` is generated fr
 - API key from config or `LITELLM_API_KEY`; base URL from config `enterpriseHost` or `LITELLM_BASE_URL`.
 - Reads `/key/info` first, then `/user/info?user_id=...` for user-bound keys or `/team/info?team_id=...` for team-only keys.
 - User-bound keys show personal budget usage as the primary window and the key's exact matching team as the secondary window.
+- When a team key has no personal budget, the primary window shows the team-member budget (the member's own, else the team default from `/team/info`) with the member's spend.
 - Team-only keys show the team budget as their sole usage window. Automatic menu-bar selection prefers the enforced team budget.
 - Spend remains visible in the API-spend row when LiteLLM has no budget limit configured.
 - Accepts base URLs with or without a `/v1` suffix; management requests are sent to the proxy root.

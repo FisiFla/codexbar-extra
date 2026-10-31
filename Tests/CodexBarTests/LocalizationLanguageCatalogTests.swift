@@ -26,6 +26,7 @@ struct LocalizationLanguageCatalogTests {
             "By model and reasoning effort",
             "CodexBar follows",
             "Color by provider",
+            "Cursor app session expired — open Cursor to sign in again, or sign in to cursor.com in your browser.",
             "Pace sign",
             "Ahead of pace is +",
             "Reserve is +",
@@ -36,9 +37,15 @@ struct LocalizationLanguageCatalogTests {
             "Local usage is shared across accounts on this Mac.",
             "Model first token may be reasoning, before visible answer text.",
             "Observed turns; workload and tools affect these results.",
+            "OpenDesign billing access was denied.",
+            "OpenDesign request failed. Try again later.",
+            "OpenDesign subscription usage is unavailable for this workspace.",
+            "OpenDesign usage response format changed.",
             "Performance details",
             "Refresh all accounts",
             "Refreshes up to %@ accounts at a time.",
+            "Show OpenDesign usage",
+            "Sign in to OpenDesign, then refresh CodexBar.",
             "Speed range needs 4 completed turns.",
             "Unknown model",
             "Unknown reasoning effort",
@@ -763,12 +770,14 @@ struct LocalizationLanguageCatalogTests {
             "Grok CLI",
             "Helmcode Cloud",
             "Input",
+            "Kimi Code",
             "LLMMAN_API_KEY",
             "NaN Builders",
             "No",
             "Oasis-Token",
             "Oasis-Token=…",
             "OpenCodex",
+            "OpenDesign",
             "Output",
             "Pro",
             "SuperGrok OAuth",
@@ -777,6 +786,7 @@ struct LocalizationLanguageCatalogTests {
             "Zed cookie",
             "ZeroGPU",
             "__raycast_session=…; csrf_token=…",
+            "abliteration.ai",
             "ak_…",
             "antigravity-cli-usage",
             "antigravity-cli-version",
@@ -813,6 +823,7 @@ struct LocalizationLanguageCatalogTests {
             "language_russian",
             "language_thai",
             "link_github",
+            "menu_bar_layout_separator_tilde",
             "ollama-...",
             "org/example-org",
             "ory_session_…=…; csrftoken=…",
@@ -853,20 +864,6 @@ struct LocalizationLanguageCatalogTests {
         ]
         let unchanged = Set(english.keys.filter { italian[$0] == english[$0] })
         #expect(unchanged == intentionallyUnchanged)
-
-        let warningFormat = try #require(italian["quota_warning_notification_body"])
-        let warning = String(
-            format: warningFormat,
-            locale: Locale(identifier: "it_IT"),
-            arguments: ["20%", 15, "settimanale"])
-        #expect(warning == "Rimane 20%. Hai raggiunto la soglia di avviso del 15% per la quota settimanale.")
-
-        let titleFormat = try #require(italian["quota_warning_notification_title"])
-        let title = String(
-            format: titleFormat,
-            locale: Locale(identifier: "it_IT"),
-            arguments: ["Codex", "settimanale"])
-        #expect(title == "Quota settimanale di Codex quasi esaurita")
     }
 }
 

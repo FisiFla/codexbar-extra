@@ -32,7 +32,7 @@ struct MenuBarPaceSignTests {
             #expect(restored.menuBarLayout == layout)
             #expect(restored.menuBarLayoutOverrides == overrides)
             #expect(restored.menuBarLayoutConditionals == conditionals)
-            #expect(!restored.menuBarColorPace)
+            #expect(restored.menuBarColorPace)
         }
     }
 
@@ -57,11 +57,14 @@ struct MenuBarPaceSignTests {
         }
         #expect(store.menuBarLayoutPaceText(
             provider: .claude, window: nil, dataConfidence: .unknown, now: now) == nil)
-        #expect(!settings.menuBarColorPace)
+        #expect(settings.menuBarColorPace)
     }
 
     @Test(arguments: [false, true], [23.0, -23.0, 0.0])
-    func `live editor preview renders every pace token with the saved sign`(reservePositive: Bool, delta: Double) {
+    func `live editor preview renders every pace token with the saved sign`(
+        reservePositive: Bool,
+        delta: Double) throws
+    {
         let (settings, store) = self.fixture(reservePositive: reservePositive)
         let now = Date()
         let window = { (minutes: Int) in
@@ -84,25 +87,33 @@ struct MenuBarPaceSignTests {
                 thenToken: .pace(window: window),
                 elseToken: .hidden)
             let renderer = MenuBarLayoutRenderer()
-            let output = MenuBarLayoutRenderer().render(
+            let expectedPace = self.expected(delta: delta, reservePositive: reservePositive)
+            let expectedValue = "\u{FFFC}\u{2009}\(expectedPace)"
+            let expectedTitle = window == .automatic ? "5h \(expectedValue)" : expectedValue
+            let output = renderer.render(
                 layout: MenuBarLayout(lines: [[.pace(window: window)]]),
                 data: data,
                 icon: nil,
                 options: self.options())
-            #expect(output.attributedTitle.string == self.expected(delta: delta, reservePositive: reservePositive))
+            #expect(output.attributedTitle.string == expectedTitle)
             let expectedColor: NSColor = delta > 0 ? .systemRed : (delta < 0 ? .systemGreen : .controlTextColor)
-            #expect(output.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
-                == expectedColor)
             let conditionalOutput = renderer.render(
                 layout: MenuBarLayout(lines: [[.conditional(id: conditional.id)]]),
                 data: data,
                 icon: nil,
                 options: self.options(conditionals: [conditional]))
             #expect(conditionalOutput.attributedTitle.string
-                == (delta > 0 ? self.expected(delta: delta, reservePositive: reservePositive) : ""))
-            if delta > 0 {
-                #expect(conditionalOutput.attributedTitle.attribute(
-                    .foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .systemRed)
+                == (delta > 0 ? expectedTitle : ""))
+            for rendered in delta > 0 ? [output, conditionalOutput] : [output] {
+                let valueRange = (rendered.attributedTitle.string as NSString).range(of: "\u{FFFC}")
+                try #require(valueRange.location != NSNotFound)
+                rendered.attributedTitle.enumerateAttribute(.foregroundColor, in: valueRange) { color, _, _ in
+                    #expect(color as? NSColor == expectedColor)
+                }
+                if window == .automatic {
+                    #expect(rendered.attributedTitle.attribute(
+                        .foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .controlTextColor)
+                }
             }
         }
     }
@@ -125,8 +136,11 @@ struct MenuBarPaceSignTests {
                 data: data,
                 icon: nil,
                 options: self.options())
-            #expect(output.attributedTitle.string
-                == (reservePositive ? "+23%\u{2009}·\u{2009}-5%" : "-23%\u{2009}·\u{2009}+5%"))
+            let sessionLabel = MenuBarLayoutToken.pace(window: .session).editorLabel(provider: .claude)
+            let weeklyLabel = MenuBarLayoutToken.pace(window: .weekly).editorLabel(provider: .claude)
+            #expect(output.accessibilityLabel == (reservePositive
+                    ? "\(sessionLabel) +23%, \(weeklyLabel) -5%"
+                    : "\(sessionLabel) -23%, \(weeklyLabel) +5%"))
         }
     }
 
@@ -169,42 +183,6 @@ struct MenuBarPaceSignTests {
             pace: pace,
             paceReservePositive: reservePositive,
             showUsed: true) == (reservePositive ? "73% · -23%" : "73% · +23%"))
-    }
-
-    @Test
-    func `render synthetic before and after pace sign proof`() throws {
-        guard let directory = ProcessInfo.processInfo.environment["CODEXBAR_PACE_SIGN_PROOF_DIR"] else { return }
-        let (settings, store) = self.fixture(reservePositive: false)
-        let preview = MenuBarLayoutPreview(layout: .defaultLayout, provider: .claude, settings: settings, store: store)
-        for reservePositive in [false, true] {
-            settings.menuBarPaceReservePositive = reservePositive
-            let data = preview.representativeData(provider: .claude)
-            let image = NSImage(size: NSSize(width: 560, height: 220))
-            image.lockFocus()
-            NSColor.white.setFill()
-            NSRect(x: 0, y: 0, width: 560, height: 220).fill()
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.black,
-            ]
-            let title = reservePositive ? L("Reserve is +") : L("Ahead of pace is +")
-            ("\(L("Pace sign")): \(title)" as NSString).draw(at: NSPoint(x: 20, y: 180), withAttributes: attributes)
-            for (index, window) in [PercentWindow.session, .weekly, .automatic].enumerated() {
-                let token = MenuBarLayoutToken.pace(window: window)
-                (token.editorLabel(provider: .claude) as NSString).draw(
-                    at: NSPoint(x: 20, y: 140 - index * 35), withAttributes: attributes)
-                let rendered = MenuBarLayoutRenderer().render(
-                    layout: MenuBarLayout(lines: [[token]]), data: data, icon: nil, options: self.options())
-                rendered.attributedTitle.draw(at: NSPoint(x: 210, y: 140 - index * 35))
-            }
-            ("Synthetic editor sample · reserve green, deficit red" as NSString).draw(
-                at: NSPoint(x: 20, y: 20), withAttributes: attributes)
-            image.unlockFocus()
-            let tiff = try #require(image.tiffRepresentation)
-            let bitmap = try #require(NSBitmapImageRep(data: tiff))
-            let png = try #require(bitmap.representation(using: .png, properties: [:]))
-            try png.write(to: URL(fileURLWithPath: directory)
-                .appendingPathComponent(reservePositive ? "after.png" : "before.png"))
-        }
     }
 
     private func options(conditionals: [MenuBarLayoutConditional] = []) -> MenuBarLayoutRenderOptions {

@@ -1,4 +1,5 @@
 /* Ukrainian localization for CodexBar */
+"Copilot subscription ended" = "Підписка Copilot закінчилася";
 
 /* iCloud Sync */
 "+ %d more" = "Ще %d";
@@ -177,6 +178,7 @@
 "Individual credits" = "Особисті кредити";
 "Workspace" = "Робоча область";
 "Credits history" = "Історія кредитів";
+"Cursor app session expired — open Cursor to sign in again, or sign in to cursor.com in your browser." = "Термін дії сеансу програми Cursor закінчився — відкрийте Cursor, щоб увійти знову, або увійдіть на cursor.com у браузері.";
 "Cursor login failed" = "Помилка входу в Cursor";
 "Custom" = "Користувацький";
 "Custom Path" = "Власний шлях";
@@ -734,6 +736,8 @@
 "acknowledgements_authors" = "Автори";
 "acknowledgements_license" = "Ліцензія";
 "check_updates_auto" = "Автоматично перевіряти наявність оновлень";
+"install_updates_auto" = "Автоматично завантажувати та встановлювати оновлення";
+"install_updates_auto_subtitle" = "Якщо вимкнено, перед встановленням нової версії буде запит на підтвердження.";
 "update_channel" = "Канал оновлень";
 "check_for_updates" = "Перевірити наявність оновлень…";
 "updates_unavailable" = "Оновлення недоступні в цій збірці.";
@@ -1344,11 +1348,8 @@
 "Share Stats…" = "Поділитися статистикою…";
 "Stats copied" = "Статистику скопійовано";
 "DeepSeek this month token usage trend" = "Тенденція використання токенів DeepSeek цього місяця";
-"Chrome profile" = "Профіль Chrome";
 "Choose which signed-in DeepSeek Platform session supplies detailed usage." = "Виберіть сеанс DeepSeek Platform із виконаним входом, який надаватиме докладні дані про використання.";
 "Detailed usage unavailable." = "Докладні дані про використання недоступні.";
-"Sign in to DeepSeek Platform in Chrome for detailed usage." = "Увійдіть у DeepSeek Platform у Chrome, щоб переглянути докладні дані про використання.";
-"Select a DeepSeek Chrome profile in Settings." = "Виберіть профіль Chrome для DeepSeek у налаштуваннях.";
 "Select profile…" = "Вибрати профіль…";
 
 "%@: %@" = "%@: %@";
@@ -2362,6 +2363,7 @@
 "Core Monthly" = "Основна місячна квота";
 "Bobcoin usage" = "Використання Bobcoin";
 "Code 7-day" = "7-денна квота Code";
+"Other features" = "Інші функції";
 "Quota services" = "Сервіси з квотами";
 "Billing history" = "Історія платежів";
 "Renews" = "Поновлюється";
@@ -2571,7 +2573,6 @@
 "Also restores the provider order in the menu bar. Can be undone." = "Також відновлює порядок провайдерів у рядку меню. Дію можна скасувати.";
 "Local Codex details; excluded from combined totals." = "Локальні дані Codex; не враховуються в загальних підсумках.";
 
-"Auto uses an API key when configured, otherwise browser cookies." = "Режим «Автоматично» використовує ключ API, якщо його налаштовано, інакше — файли cookie браузера.";
 "Stored in the CodexBar config file. You can also set COMMAND_CODE_API_KEY." = "Зберігається у файлі конфігурації CodexBar. Також можна задати COMMAND_CODE_API_KEY.";
 /* OpenAI organization rate limits and live usage */
 "%@ tokens · %@ requests" = "%@ токенів · %@ запитів";
@@ -2759,3 +2760,52 @@
 "Chatbox AI is rate limiting requests. Try again later." = "Chatbox AI обмежує частоту запитів. Спробуйте пізніше.";
 "Chatbox AI request failed. Try refreshing later." = "Запит до Chatbox AI не виконано. Спробуйте оновити пізніше.";
 "Chatbox AI returned an unrecognized response. Update CodexBar and try again." = "Chatbox AI повернув невідому відповідь. Оновіть CodexBar і спробуйте знову.";
+
+/* abliteration.ai */
+"abliteration.ai" = "abliteration.ai";
+"Show abliteration.ai usage" = "Показувати використання abliteration.ai";
+"abliteration.ai is rate limiting requests. Try again later." = "abliteration.ai обмежує частоту запитів. Спробуйте пізніше.";
+"abliteration.ai request failed. Try refreshing later." = "Запит до abliteration.ai не виконано. Спробуйте оновити пізніше.";
+"abliteration.ai returned an unrecognized response. Update CodexBar and try again." = "abliteration.ai повернув невідому відповідь. Оновіть CodexBar і спробуйте знову.";
+"Check your API key in Settings." = "Перевірте ключ API в налаштуваннях.";
+"Kimi Code" = "Kimi Code";
+
+"OpenCode local history" = "Локальна історія OpenCode";
+
+"Show this Mac's recorded OpenCode usage in Codex history. Off by default; scoped or alternate CODEX_HOME locations always stay excluded." = "Показує використання OpenCode, записане на цьому Mac, в історії Codex. Типово вимкнено; розташування CODEX_HOME з обмеженою областю дії або альтернативні розташування завжди виключаються.";
+"Auto uses the active saved session, otherwise an API key or browser cookies." = "Автоматичний режим використовує активний збережений сеанс, інакше — ключ API або файли cookie браузера.";
+"Store multiple Command Code subscription sessions." = "Зберігати кілька сеансів передплати Command Code.";
+
+"codex_reset_credit_expiry_notifications_title" = "Закінчення строку кредитів скидання Codex";
+
+"codex_reset_credit_expiry_notifications_subtitle" = "Нагадує під час оновлення використання за 1 день і за 1 годину до завершення терміну дії.";
+/* OpenDesign */
+"OpenDesign" = "OpenDesign";
+"Show OpenDesign usage" = "Показувати використання OpenDesign";
+"Sign in to OpenDesign, then refresh CodexBar." = "Увійдіть в OpenDesign, а потім оновіть CodexBar.";
+"OpenDesign usage response format changed." = "Формат відповіді про використання OpenDesign змінився.";
+"OpenDesign billing access was denied." = "Доступ до платіжних даних OpenDesign відхилено.";
+"OpenDesign request failed. Try again later." = "Запит до OpenDesign не вдався. Спробуйте пізніше.";
+"OpenDesign subscription usage is unavailable for this workspace." = "Дані про використання підписки OpenDesign недоступні для цього робочого простору.";
+"upcoming_reset_notifications_title" = "Попередження про швидке скидання";
+"upcoming_reset_notifications_subtitle" = "Попереджає про швидке скидання тижневого ліміту Codex, поки квота ще не витрачена.";
+"upcoming_reset_notification_title" = "Незабаром скидання ліміту %1$@ (%2$@)";
+"upcoming_reset_notification_body" = "%1$@ квоти ще не витрачено. Ліміт скинеться за %2$@, а невитрачена квота зникне.";
+"upcoming_reset_notification_body_with_account" = "Обліковий запис %1$@. %2$@ квоти ще не витрачено. Ліміт скинеться за %3$@, а невитрачена квота зникне.";
+"Sign in to DeepSeek Platform in a Chromium-based browser for detailed usage." = "Увійдіть у DeepSeek Platform у браузері на базі Chromium, щоб переглянути докладні дані про використання.";
+"Select a DeepSeek browser profile in Settings." = "Виберіть профіль браузера для DeepSeek у налаштуваннях.";
+"menu_bar_layout_token_separator_glyph_accessibility" = "Роздільник %@";
+"menu_bar_layout_separator_pipe" = "Вертикальна риска";
+"menu_bar_layout_separator_slash" = "Скісна риска";
+"menu_bar_layout_separator_hyphen" = "Дефіс";
+"menu_bar_layout_separator_bullet" = "Маркер";
+"menu_bar_layout_separator_diamond" = "Заповнений ромб";
+"menu_bar_layout_separator_hollowDiamond" = "Порожній ромб";
+"menu_bar_layout_separator_tilde" = "Тильда";
+"menu_bar_layout_separator_doubleBar" = "Подвійна вертикальна риска";
+"Rename" = "Перейменувати";
+"Rename account" = "Перейменувати обліковий запис";
+"Account name" = "Назва облікового запису";
+"Leave blank to use the default name." = "Залиште поле порожнім, щоб використовувати назву за замовчуванням.";
+"Rewards" = "Винагороди";
+"Reward expiry" = "Термін дії винагород";

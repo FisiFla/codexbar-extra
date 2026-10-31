@@ -9,7 +9,7 @@ read_when:
 
 ## Settings
 
-On macOS 26 and later, Settings uses the system split-view sidebar, toolbar, search, and scroll-edge effects. The native sidebar toggle and divider can hide or restore the sidebar; its saved width is preserved. Earlier macOS versions keep the existing sidebar and titlebar layout.
+On macOS 26 and later, Settings uses the system split-view sidebar, toolbar, search, and scroll-edge effects. The native sidebar toggle and divider can hide or restore the sidebar; its saved width is preserved. The detail scroll view and frosted toolbar backing fill the available column even in wide windows. Earlier macOS versions keep the existing sidebar, titlebar layout, and detail reading-width cap.
 
 - Back and Forward revisit the panes you opened, using Command-[ and Command-] as in System Settings. Selecting a new pane after going back clears forward history; reselecting the current pane preserves it. The last pane still restores at launch, while navigation history lasts only for the current app session. Hidden Debug panes are removed from history. On macOS 26 and later, the controls use the native toolbar; macOS 14/15 retain the native window title and show the controls above the pane content. The native window title stays set on every version for accessibility and the Window menu. About and Acknowledgements share this history. Opening About explicitly returns to its root; reopening Settings preserves the current destination during the session. Only the pane, not a subpage or history, restores after relaunch.
 - Dock presence follows startup and actual window transitions instead of rescanning windows on every app update. Scheduled Sparkle alerts still request temporary Dock presence, including alerts shown behind another app.
@@ -42,7 +42,8 @@ On macOS 26 and later, Settings uses the system split-view sidebar, toolbar, sea
 - Calendar columns keep their chronological left-to-right order in right-to-left interfaces, so paging and keyboard date reveal follow the same coordinates as the drawn activity cells; surrounding controls retain the interface's layout direction.
 - Both the application menu and status menu open About in the Settings window. An existing Settings window is reused
   and switches to the About pane.
-- Homebrew-managed installs show an Updates section in About with the automatic-check toggle, Check for Updates, and the owning cask's status: checking, up to date, or "CodexBar x is available" with a prominent "Update to x" button. The menu shows the same "Update to x" action, then "Updating with Homebrew…" while `brew upgrade` runs; the app relaunches after verifying the installed version reached the offered update.
+- Homebrew-managed installs show an Updates section in About with the automatic-check toggle, Check for Updates, and the owning cask's status: checking, up to date, or "CodexBar x is available" with a prominent "Update to x" button. The menu shows the same "Update to x" action, then "Updating with Homebrew…" while Homebrew runs; the app relaunches after verifying the installed version reached the offered update.
+- The explicit Update action verifies the owning cask, then uses `brew reinstall --cask` if its receipt already matches the latest cask version, or `brew upgrade --cask` otherwise. This repairs an older app bundle behind a current receipt. Automatic and manual update checks never run `brew`; non-Homebrew installs retain Sparkle updates.
 - If a Homebrew check or update fails, About shows the error and, when the active receipt identifies the cask, a selectable monospaced upgrade command for that cask with a trailing copy control. The control confirms successful copies briefly; copying does not run an update.
 
 ## Menu bar
@@ -76,9 +77,13 @@ Stacked rows with leading window labels align their values and meters after the 
 - Display → Menu Bar → Layout provides presets plus a token editor. Tokens can be clicked to append, dragged from the
   palette, reordered between one or two lines, dragged out, or removed with Delete. Layouts can be global or overridden
   per provider. Manual edits select the Custom preset.
-- To hide Session, Weekly, and Scoped weekly percentage prefixes (such as `5h` and `W`), turn off **Show window labels**
-  next to **Monospaced digits**. It defaults on and applies to all layouts. Percentages keep their full VoiceOver
-  descriptions; named provider lanes, named allowances, Spend currency symbols, and progress-bar labels remain visible.
+- To hide Session, Weekly, Scoped weekly, and automatic window prefixes (such as `5h` and `W`), turn off **Show window labels**
+  next to **Monospaced digits**. It defaults on and applies to all layouts. Auto percentage, pace, and reset tokens identify
+  their selected window when multiple quotas are available and the selection is unambiguous. A row names that window
+  once (`5h 0% –`, not `5h 0% 5h –`); separate rows, tokens after a different window, and the reset branch of
+  **Auto % / Resets in** keep their own label. Monthly and named allowances reuse their
+  existing labels; single-window and balance output stays bare. Full window names remain in VoiceOver descriptions.
+  Explicit named provider lanes, named allowances, Spend currency symbols, and progress-bar labels remain visible.
   The preference is stored separately as `menuBarLayoutShowWindowLabels`; saved layouts and V5/V6 projections are unchanged.
 - For a provider-specific bare Session percentage, select Codex or Claude in Layout, remove the existing percentage,
   and add the **second Session %** chip from Usage (the provider's primary lane). This works with window labels enabled.
@@ -120,7 +125,7 @@ Stacked rows with leading window labels align their values and meters after the 
 | Usage | Session pace, Weekly pace, Auto pace, Spend pace | Signed pace delta for that window |
 | Time | Resets in, Reset at (automatic, Session, Weekly, Spend), Runs out | Selected-window relative reset, absolute reset, or pace estimate |
 | Money | Balance, Cost today, Cost (History window), Spend, Spend / budget | Provider balance or remaining credits, or local cost estimate. Cost (History window) is the total for the selected [History window](cost-reporting-periods.md), and cost thresholds compare that window's total. Spend and Spend / budget show the provider-reported amount spent, alone or against its budget |
-| Structure | Separator dot, Space, Line break | Spacing and optional two-line composition |
+| Structure | Separator dot, eight more separator glyphs (`\|`, `/`, `-`, `•`, `◆`, `◇`, `~`, `‖`), Space, Line break | Spacing and optional two-line composition. Each separator is a single visible glyph |
 
 Spend items use the provider-reported budget behind the Extra usage metric and honor **Show optional credits,
 spending & billing details**. They do not use prepaid balances or local cost estimates. Spend % carries the budget's
@@ -128,9 +133,10 @@ currency symbol; credit-denominated caps have no currency prefix and no monetary
 reported period and becomes available after 1% of that period. Existing layouts are unchanged; new installs also
 include a **Spend over 90% used** conditional rule.
 
-Spend layouts, overrides, and rules are stored in V6. Older builds read a V5 projection without Spend tokens or rules;
-V4 and earlier projections retain their existing compatibility behavior. Returning restores the full layout when the
-older copy was unchanged. Edits in an older build take precedence, while untouched overrides and Spend rules survive;
+Layouts, overrides, and rules are stored in V7. A build that reads V6 gets a projection that maps each extra separator
+glyph to the separator dot, so the layout stays visible there. Older builds read a V5 projection without Spend tokens
+or rules; V4 and earlier projections retain their existing compatibility behavior. Returning restores the full layout
+when the older copy was unchanged. Edits in an older build take precedence, while untouched overrides and Spend rules survive;
 clearing the older rule library deliberately clears all rules.
 
 The pace tokens render the same delta the menu card shows as "in deficit"/"in reserve", in the compact signed form the
@@ -147,14 +153,16 @@ tokens, including conditional layouts, and both live and sample layout previews.
 pace stays an en dash. The menu card's reserve/deficit wording and the numeric meaning of saved conditional rules
 do not change: positive pace thresholds still mean usage ahead of pace.
 
-Enable **Color Pace Indicator** under **Menu Bar → Icon** to show usage behind pace (reserve) in green and usage ahead
-of pace (risk of running out early) in red. The option defaults off, applies to all four pace tokens and the layout
-preview, and keeps the signed percentages. Zero and unavailable pace stay neutral; stale pace colors are dimmed unless high-contrast rendering is active.
-It colors **Session pace**, **Weekly pace**, **Auto pace**, and **Spend pace** in the layout editor. Enabling it does not add tokens,
-rewrite stored layouts, or migrate legacy display modes. Existing installs stay monochrome until the option is enabled.
+Enable **Color Pace Indicator** under **Menu Bar → Icon** to show a green bar for usage behind pace (reserve) and a red bar
+for usage ahead of pace (risk of running out early). Signed percentages keep their neutral text color, and the bars scale
+with the font. The option defaults on and applies to all four pace tokens and the layout preview.
+Zero pace uses a neutral bar; unavailable pace stays a plain dash.
+Stale pace colors are dimmed unless high-contrast rendering is active.
+It applies to **Session pace**, **Weekly pace**, **Auto pace**, and **Spend pace** in the layout editor. Enabling it does not add tokens,
+rewrite stored layouts or migrate legacy display modes. Saved on/off choices are preserved; state bars are enabled when no choice has been saved.
 These colors keep the same meaning with either pace sign: reserve is green and deficit is red.
 
-Enable **Color by provider** under **Menu Bar → Icon** to tint each provider slot with its accent color, including custom accents. This single toggle defaults off and works with Critters, Meter bars, and Icon & percent, including stacked provider rows; it never changes the saved layout or the Brand/Monochrome artwork used in Usage & Spend. Pace tokens keep their independent green/red colors and VoiceOver keeps the same spoken labels.
+Enable **Color by provider** under **Menu Bar → Icon** to tint each provider slot with its accent color, including custom accents. This single toggle defaults off and works with Critters, Meter bars, and Icon & percent, including stacked provider rows; it never changes the saved layout or the Brand/Monochrome artwork used in Usage & Spend. Pace indicators keep their independent green/red colors and VoiceOver keeps the same spoken labels.
 
 Provider color falls back to monochrome while a menu is open, data is stale, system Increase Contrast is enabled, or the inactive-display contrast option is enabled. Color returns immediately when the menu closes. Accents must meet a 2:1 contrast threshold against conservative reference backgrounds (25% sRGB gray in dark appearance, 85% in light appearance); this is not a WCAG text-conformance claim or wallpaper sampling. Unsupported or low-contrast accents use the system template rendering. The layout preview follows its own light/dark and accessibility environment.
 

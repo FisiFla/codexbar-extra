@@ -1,4 +1,5 @@
 /* Brazilian Portuguese localization for CodexBar */
+"Copilot subscription ended" = "A assinatura do Copilot terminou";
 
 /* iCloud Sync */
 "+ %d more" = "+ %d mais";
@@ -177,6 +178,7 @@
 "Individual credits" = "Créditos individuais";
 "Workspace" = "Espaço de trabalho";
 "Credits history" = "Histórico de créditos";
+"Cursor app session expired — open Cursor to sign in again, or sign in to cursor.com in your browser." = "A sessão do app Cursor expirou — abra o Cursor para entrar novamente ou entre em cursor.com no navegador.";
 "Cursor login failed" = "Falha no login do Cursor";
 "Custom" = "Personalizado";
 "Custom Path" = "Caminho personalizado";
@@ -731,6 +733,8 @@
 "acknowledgements_authors" = "Autores";
 "acknowledgements_license" = "Licença";
 "check_updates_auto" = "Buscar atualizações automaticamente";
+"install_updates_auto" = "Baixar e instalar atualizações automaticamente";
+"install_updates_auto_subtitle" = "Quando desativado, você será consultado antes de instalar uma nova versão.";
 "update_channel" = "Canal de atualização";
 "check_for_updates" = "Buscar atualizações…";
 "updates_unavailable" = "Atualizações indisponíveis nesta build.";
@@ -1344,11 +1348,8 @@
 "Share Stats…" = "Compartilhar estatísticas…";
 "Stats copied" = "Estatísticas copiadas";
 "DeepSeek this month token usage trend" = "Tendência de uso de tokens do DeepSeek neste mês";
-"Chrome profile" = "Perfil do Chrome";
 "Choose which signed-in DeepSeek Platform session supplies detailed usage." = "Escolha qual sessão conectada do DeepSeek Platform fornece o uso detalhado.";
 "Detailed usage unavailable." = "Uso detalhado indisponível.";
-"Sign in to DeepSeek Platform in Chrome for detailed usage." = "Entre no DeepSeek Platform pelo Chrome para ver o uso detalhado.";
-"Select a DeepSeek Chrome profile in Settings." = "Selecione um perfil do Chrome para o DeepSeek nos Ajustes.";
 "Select profile…" = "Selecionar perfil…";
 
 "%@: %@" = "%@: %@";
@@ -2361,6 +2362,7 @@
 "Core Monthly" = "Núcleo Mensal";
 "Bobcoin usage" = "Uso de Bobcoin";
 "Code 7-day" = "Código Cota de 7 dias";
+"Other features" = "Outros recursos";
 "Quota services" = "Serviços Cota";
 "Billing history" = "Histórico de cobrança";
 "Renews" = "Renova";
@@ -2570,7 +2572,6 @@
 "Also restores the provider order in the menu bar. Can be undone." = "Também restaura a ordem dos provedores na barra de menus. Pode ser desfeito.";
 "Local Codex details; excluded from combined totals." = "Detalhes locais do Codex; excluídos dos totais combinados.";
 
-"Auto uses an API key when configured, otherwise browser cookies." = "Auto uses an API key when configured, otherwise browser cookies.";
 "Stored in the CodexBar config file. You can also set COMMAND_CODE_API_KEY." = "Stored in the CodexBar config file. You can also set COMMAND_CODE_API_KEY.";
 /* OpenAI organization rate limits and live usage */
 "%@ tokens · %@ requests" = "%@ tokens · %@ requisições";
@@ -2758,3 +2759,52 @@
 "Chatbox AI is rate limiting requests. Try again later." = "O Chatbox AI está limitando a frequência das solicitações. Tente novamente mais tarde.";
 "Chatbox AI request failed. Try refreshing later." = "A solicitação ao Chatbox AI falhou. Tente atualizar mais tarde.";
 "Chatbox AI returned an unrecognized response. Update CodexBar and try again." = "O Chatbox AI retornou uma resposta desconhecida. Atualize o CodexBar e tente novamente.";
+
+/* abliteration.ai */
+"abliteration.ai" = "abliteration.ai";
+"Show abliteration.ai usage" = "Mostrar uso do abliteration.ai";
+"abliteration.ai is rate limiting requests. Try again later." = "O abliteration.ai está limitando a frequência das solicitações. Tente novamente mais tarde.";
+"abliteration.ai request failed. Try refreshing later." = "A solicitação ao abliteration.ai falhou. Tente atualizar mais tarde.";
+"abliteration.ai returned an unrecognized response. Update CodexBar and try again." = "O abliteration.ai retornou uma resposta desconhecida. Atualize o CodexBar e tente novamente.";
+"Check your API key in Settings." = "Verifique sua chave de API nos Ajustes.";
+"Kimi Code" = "Kimi Code";
+
+"OpenCode local history" = "Histórico local do OpenCode";
+
+"Show this Mac's recorded OpenCode usage in Codex history. Off by default; scoped or alternate CODEX_HOME locations always stay excluded." = "Mostra no histórico do Codex o uso do OpenCode registrado neste Mac. Desativado por padrão; locais CODEX_HOME com escopo restrito ou alternativos são sempre excluídos.";
+"Auto uses the active saved session, otherwise an API key or browser cookies." = "Automático usa a sessão salva ativa; caso contrário, uma chave API ou cookies do navegador.";
+"Store multiple Command Code subscription sessions." = "Armazena várias sessões de assinatura do Command Code.";
+
+"codex_reset_credit_expiry_notifications_title" = "Expiração dos créditos de redefinição do Codex";
+
+"codex_reset_credit_expiry_notifications_subtitle" = "Adiciona lembretes ao atualizar o uso, 1 dia e 1 hora antes do vencimento.";
+/* OpenDesign */
+"OpenDesign" = "OpenDesign";
+"Show OpenDesign usage" = "Mostrar uso do OpenDesign";
+"Sign in to OpenDesign, then refresh CodexBar." = "Entre no OpenDesign e atualize o CodexBar.";
+"OpenDesign usage response format changed." = "O formato da resposta de uso do OpenDesign mudou.";
+"OpenDesign billing access was denied." = "O acesso ao faturamento do OpenDesign foi negado.";
+"OpenDesign request failed. Try again later." = "A solicitação ao OpenDesign falhou. Tente novamente mais tarde.";
+"OpenDesign subscription usage is unavailable for this workspace." = "O uso da assinatura do OpenDesign não está disponível para este espaço de trabalho.";
+"upcoming_reset_notifications_title" = "Avisos de redefinição próxima";
+"upcoming_reset_notifications_subtitle" = "Avisa sobre o Codex antes que o limite semanal seja redefinido enquanto ainda há cota sem usar.";
+"upcoming_reset_notification_title" = "%1$@: redefinição em breve (%2$@)";
+"upcoming_reset_notification_body" = "%1$@ da cota ainda está sem uso. Ela será redefinida em %2$@ e a cota não usada será perdida.";
+"upcoming_reset_notification_body_with_account" = "Conta %1$@. %2$@ da cota ainda está sem uso. Ela será redefinida em %3$@ e a cota não usada será perdida.";
+"Sign in to DeepSeek Platform in a Chromium-based browser for detailed usage." = "Entre no DeepSeek Platform por um navegador baseado em Chromium para ver o uso detalhado.";
+"Select a DeepSeek browser profile in Settings." = "Selecione um perfil de navegador do DeepSeek nos Ajustes.";
+"menu_bar_layout_token_separator_glyph_accessibility" = "Separador %@";
+"menu_bar_layout_separator_pipe" = "Barra vertical";
+"menu_bar_layout_separator_slash" = "Barra";
+"menu_bar_layout_separator_hyphen" = "Hífen";
+"menu_bar_layout_separator_bullet" = "Marcador";
+"menu_bar_layout_separator_diamond" = "Losango preenchido";
+"menu_bar_layout_separator_hollowDiamond" = "Losango vazio";
+"menu_bar_layout_separator_tilde" = "Til";
+"menu_bar_layout_separator_doubleBar" = "Barra vertical dupla";
+"Rename" = "Renomear";
+"Rename account" = "Renomear conta";
+"Account name" = "Nome da conta";
+"Leave blank to use the default name." = "Deixe em branco para usar o nome padrão.";
+"Rewards" = "Recompensas";
+"Reward expiry" = "Validade das recompensas";
