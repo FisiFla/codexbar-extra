@@ -1,0 +1,187 @@
+{
+  "generatedAt" : "2026-11-08T22:47:19Z",
+  "host" : {
+    "codexBarVersion" : null,
+    "refreshIntervalSeconds" : 0,
+    "usageBarsShowUsed" : false
+  },
+  "providers" : [
+    {
+      "cost" : {
+        "last30DaysUSD" : 0,
+        "todayUSD" : null
+      },
+      "credits" : null,
+      "display" : {
+        "accentColor" : "#49A3B0",
+        "priority" : "normal",
+        "sortKey" : 0
+      },
+      "enabled" : true,
+      "error" : null,
+      "id" : "codex",
+      "identity" : {
+        "accountEmail" : "<email>",
+        "plan" : "Free"
+      },
+      "name" : "Codex",
+      "source" : "oauth",
+      "status" : null,
+      "updatedAt" : "2026-11-08T22:47:18Z",
+      "windows" : [
+        {
+          "kind" : "session",
+          "label" : "Session",
+          "remainingPercent" : 99,
+          "resetAt" : "2026-11-24T09:25:42Z",
+          "usedPercent" : 1
+        }
+      ]
+    },
+    {
+      "cost" : {
+        "last30DaysUSD" : 698.2726216650002,
+        "todayUSD" : 83.20543440000006
+      },
+      "credits" : null,
+      "display" : {
+        "accentColor" : "#CC7C5E",
+        "priority" : "normal",
+        "sortKey" : 10
+      },
+      "enabled" : true,
+      "error" : null,
+      "id" : "claude",
+      "identity" : {
+        "accountEmail" : "<email>",
+        "plan" : "Team"
+      },
+      "name" : "Claude",
+      "source" : "oauth",
+      "status" : null,
+      "updatedAt" : "2026-11-08T22:47:18Z",
+      "windows" : [
+        {
+          "kind" : "session",
+          "label" : "Session",
+          "remainingPercent" : 98,
+          "resetAt" : "2026-11-09T01:30:00Z",
+          "usedPercent" : 2
+        },
+        {
+          "kind" : "weekly",
+          "label" : "Weekly",
+          "remainingPercent" : 94,
+          "resetAt" : "2026-11-15T07:00:00Z",
+          "usedPercent" : 6
+        },
+        {
+          "kind" : "claude-weekly-scoped-fable",
+          "label" : "Fable only",
+          "remainingPercent" : 100,
+          "resetAt" : "2026-11-15T07:00:00Z",
+          "usedPercent" : 0
+        }
+      ]
+    },
+    {
+      "cost" : {
+        "last30DaysUSD" : 0,
+        "todayUSD" : null
+      },
+      "credits" : null,
+      "display" : {
+        "accentColor" : "#60BA7E",
+        "priority" : "normal",
+        "sortKey" : 60
+      },
+      "enabled" : true,
+      "error" : null,
+      "id" : "antigravity",
+      "identity" : {
+        "accountEmail" : null,
+        "plan" : "Offline"
+      },
+      "name" : "Antigravity",
+      "source" : "offline",
+      "status" : null,
+      "updatedAt" : "2026-11-08T22:47:18Z",
+      "windows" : [
+        {
+          "kind" : "antigravity-offline-conversations",
+          "label" : "Offline · 13 conversations",
+          "remainingPercent" : 100,
+          "resetAt" : null,
+          "usedPercent" : 0
+        }
+      ]
+    },
+    {
+      "cost" : null,
+      "credits" : null,
+      "display" : {
+        "accentColor" : "#4D6BFE",
+        "priority" : "normal",
+        "sortKey" : 320
+      },
+      "enabled" : true,
+      "error" : null,
+      "id" : "deepseek",
+      "identity" : {
+        "accountEmail" : "codexbar",
+        "plan" : null
+      },
+      "name" : "DeepSeek",
+      "source" : "api",
+      "status" : null,
+      "updatedAt" : "2026-11-08T22:47:18Z",
+      "windows" : [
+        {
+          "kind" : "session",
+          "label" : "Balance",
+          "remainingPercent" : 100,
+          "resetAt" : null,
+          "usedPercent" : 0
+        }
+      ]
+    },
+    {
+      "cost" : null,
+      "credits" : null,
+      "display" : {
+        "accentColor" : "#0668E1",
+        "priority" : "normal",
+        "sortKey" : 700
+      },
+      "enabled" : true,
+      "error" : null,
+      "id" : "muse",
+      "identity" : {
+        "accountEmail" : "<email>",
+        "plan" : "Muse Code Power Usage"
+      },
+      "name" : "Muse Code",
+      "source" : "oauth",
+      "status" : null,
+      "updatedAt" : "2026-11-08T22:47:18Z",
+      "windows" : [
+        {
+          "kind" : "session",
+          "label" : "5 hours",
+          "remainingPercent" : 34,
+          "resetAt" : "2026-11-09T01:30:17Z",
+          "usedPercent" : 66
+        },
+        {
+          "kind" : "weekly",
+          "label" : "Weekly",
+          "remainingPercent" : 57,
+          "resetAt" : "2026-11-09T00:00:00Z",
+          "usedPercent" : 43
+        }
+      ]
+    }
+  ],
+  "schemaVersion" : 1,
+  "staleAfterSeconds" : 180
+}

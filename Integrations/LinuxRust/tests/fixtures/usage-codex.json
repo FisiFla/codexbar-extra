@@ -1,0 +1,53 @@
+[
+  {
+    "pace" : {
+      "primary" : {
+        "deltaPercent" : -48,
+        "expectedUsedPercent" : 49,
+        "stage" : "farBehind",
+        "summary" : "48% in reserve | Expected 49% used | Lasts until reset | 1.5× headroom",
+        "willLastToReset" : true
+      }
+    },
+    "provider" : "codex",
+    "rateWindowLabels" : {
+      "primary" : "Session"
+    },
+    "resetCredits" : {
+      "available" : 0
+    },
+    "source" : "oauth",
+    "usage" : {
+      "accountEmail" : "<email>",
+      "codexResetCredits" : {
+        "availableCount" : 0,
+        "credits" : [
+
+        ],
+        "updatedAt" : "2026-11-08T22:47:17Z"
+      },
+      "dataConfidence" : "exact",
+      "identity" : {
+        "accountEmail" : "<email>",
+        "loginMethod" : "free",
+        "providerID" : "codex"
+      },
+      "loginMethod" : "free",
+      "planObservation" : {
+        "observedAt" : "2026-11-08T22:47:17Z",
+        "rawPlan" : "free",
+        "source" : "usage_response"
+      },
+      "primary" : {
+        "resetDescription" : "Nov 24 at 10:25 AM",
+        "resetsAt" : "2026-11-24T09:25:42Z",
+        "usedPercent" : 1,
+        "windowMinutes" : 43200
+      },
+      "secondary" : null,
+      "tertiary" : null,
+      "updatedAt" : "2026-11-08T22:47:17Z"
+    },
+    "version" : "0.167.0"
+  }
+]

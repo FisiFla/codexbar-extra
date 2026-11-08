@@ -1,0 +1,80 @@
+[
+ {
+  "displayName": "Codex",
+  "enabled": true,
+  "provider": "codex",
+  "defaultEnabled": true,
+  "authentication": {
+   "sourceModes": [
+    "api",
+    "auto",
+    "cli",
+    "oauth",
+    "web"
+   ],
+   "environmentVariables": [],
+   "supportsConfigAPIKey": false,
+   "supportsConfigCookieHeader": true
+  },
+  "setup": {
+   "status": "unknown",
+   "routes": [],
+   "optionalCapabilities": []
+  }
+ },
+ {
+  "displayName": "Claude",
+  "enabled": true,
+  "provider": "claude",
+  "defaultEnabled": false,
+  "authentication": {
+   "supportsConfigCookieHeader": true,
+   "supportsConfigAPIKey": true,
+   "tokenAccounts": {
+    "title": "Claude credentials",
+    "setupHint": "Store Claude sessionKey cookies, OAuth tokens, or Anthropic Admin API keys."
+   },
+   "sourceModes": [
+    "api",
+    "auto",
+    "cli",
+    "oauth",
+    "web"
+   ],
+   "environmentVariables": [
+    "ANTHROPIC_ADMIN_KEY",
+    "ANTHROPIC_ADMIN_WORKSPACE_SPEND"
+   ]
+  },
+  "setup": {
+   "routes": [],
+   "optionalCapabilities": [],
+   "status": "unknown"
+  }
+ },
+ {
+  "displayName": "Cursor",
+  "enabled": false,
+  "provider": "cursor",
+  "defaultEnabled": false,
+  "authentication": {
+   "supportsConfigCookieHeader": true,
+   "environmentVariables": [],
+   "tokenAccounts": {
+    "setupHint": "Store multiple Cursor Cookie headers.",
+    "title": "Session tokens"
+   },
+   "supportsConfigAPIKey": false,
+   "sourceModes": [
+    "auto",
+    "cli",
+    "web"
+   ]
+  },
+  "setup": {
+   "optionalCapabilities": [],
+   "status": "unknown",
+   "routes": []
+  }
+ }
+]
