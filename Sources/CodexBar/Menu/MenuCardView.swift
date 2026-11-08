@@ -51,6 +51,7 @@ struct UsageMenuCardView: View {
             let cardStyle: Bool
             var sessionEquivalentDetail: UsagePaceText.SessionEquivalentDetail?
             let isSyntheticCreditLane: Bool
+            let retainedMeasurementOverride: Bool?
             var helpText: String?
 
             init(
@@ -71,7 +72,8 @@ struct UsageMenuCardView: View {
                 workdayTickAppearance: WorkdayTickAppearance = .subtle,
                 cardStyle: Bool = false,
                 sessionEquivalentDetail: UsagePaceText.SessionEquivalentDetail? = nil,
-                isSyntheticCreditLane: Bool = false)
+                isSyntheticCreditLane: Bool = false,
+                retainedMeasurementOverride: Bool? = nil)
             {
                 self.id = id
                 self.title = title
@@ -91,6 +93,7 @@ struct UsageMenuCardView: View {
                 self.cardStyle = cardStyle
                 self.sessionEquivalentDetail = sessionEquivalentDetail
                 self.isSyntheticCreditLane = isSyntheticCreditLane
+                self.retainedMeasurementOverride = retainedMeasurementOverride
             }
 
             var percentLabel: String {
@@ -201,6 +204,8 @@ struct UsageMenuCardView: View {
         var providerCost: ProviderCostSection?
         let tokenUsage: TokenUsageSection?
         let placeholder: String?
+        /// The latest refresh failed, so the bars still show the previous measurement.
+        var showsRetainedMeasurement = false
         let progressColor: Color
     }
 
@@ -531,19 +536,19 @@ private struct TokenUsageSectionContent: View {
                         .accessibilityLabel(L("Refreshing"))
                 }
             }
-            Text(self.tokenUsage.sessionLine)
+            Text(self.tokenUsage.sessionLine).monospacedDigit()
                 .font(self.lineFont)
                 .lineLimit(1)
-            Text(self.tokenUsage.monthLine)
+            Text(self.tokenUsage.monthLine).monospacedDigit()
                 .font(self.lineFont)
                 .lineLimit(1)
             if let metered = self.tokenUsage.meteredLine, !metered.isEmpty {
-                Text(metered)
+                Text(metered).monospacedDigit()
                     .font(self.lineFont)
                     .lineLimit(1)
             }
             ForEach(self.tokenUsage.comparisonLines, id: \.self) { line in
-                Text(line)
+                Text(line).monospacedDigit()
                     .font(self.lineFont)
                     .lineLimit(1)
             }
@@ -654,6 +659,7 @@ private struct UsageMenuCardUsageContentView: View {
                 layoutMetric: self.layoutModel.metrics.first { $0.id == metric.id } ?? metric,
                 title: UsageMenuCardView.popupMetricTitle(provider: self.model.provider, metric: metric),
                 progressColor: self.model.progressColor,
+                isRetainedMeasurement: self.model.showsRetainedMeasurement,
                 compact: self.compactMetrics)
         }
     }
@@ -828,18 +834,18 @@ private struct CreditsBarContent: View {
                     tint: self.progressColor,
                     accessibilityLabel: L("Credits remaining"))
                 HStack(alignment: .firstTextBaseline) {
-                    Text(self.creditsText)
+                    Text(self.creditsText).monospacedDigit()
                         .font(.caption)
                         .lineLimit(1)
                     Spacer()
                     if let scaleText {
-                        Text(scaleText)
+                        Text(scaleText).monospacedDigit()
                             .font(.caption)
                             .foregroundStyle(MenuHighlightStyle.secondary(self.isHighlighted))
                     }
                 }
             } else {
-                Text(self.creditsText)
+                Text(self.creditsText).monospacedDigit()
                     .font(.caption)
             }
             if let hintText, !hintText.isEmpty {
@@ -976,6 +982,8 @@ extension UsageMenuCardView.Model {
                 hasLastKnownUsage: input.lastKnownUsageCapturedAt != nil,
                 now: input.now)
         let redacted = Self.redactedText(input: input, subtitle: subtitle)
+        // Derived from the refresh outcome, not the subtitle, which account overrides can replace.
+        let showsRetainedMeasurement = input.snapshot != nil && input.quotaRefreshFailed
         let placeholder = Self.placeholder(input: input)
         let providerDetails = Self.visibleProviderDetails(
             input: input,
@@ -1018,6 +1026,8 @@ extension UsageMenuCardView.Model {
             providerCost: providerCost,
             tokenUsage: tokenUsage,
             placeholder: placeholder,
+            showsRetainedMeasurement: showsRetainedMeasurement,
+            // Quota rows apply retained-measurement tint independently of supplemental costs and charts.
             progressColor: Self.progressColor(for: input.provider))
     }
 
@@ -1324,7 +1334,8 @@ extension UsageMenuCardView.Model {
                 detailLeftText: nil,
                 detailRightText: nil,
                 pacePercent: nil,
-                paceOnTop: true))
+                paceOnTop: true,
+                retainedMeasurementOverride: input.dashboardRefreshFailed))
         }
         return Self.blockingQuotaMetrics(metrics, input: input, snapshot: snapshot)
     }
