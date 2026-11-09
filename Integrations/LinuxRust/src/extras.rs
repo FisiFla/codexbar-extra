@@ -17,6 +17,8 @@ pub struct Extras {
     pub confetti_on_session_reset: bool,
     /// mac `confettiOnWeeklyLimitResetsEnabled` (default false).
     pub confetti_on_weekly_reset: bool,
+    /// mac `stayAwakeEnabled` (default false): hold an idle inhibitor while an agent runs.
+    pub stay_awake: bool,
 }
 
 impl Default for Extras {
@@ -26,6 +28,7 @@ impl Default for Extras {
             quota_warning_overlay: false,
             confetti_on_session_reset: false,
             confetti_on_weekly_reset: false,
+            stay_awake: false,
         }
     }
 }
@@ -98,7 +101,7 @@ mod tests {
     fn defaults_match_mac_all_off() {
         let e = Extras::default();
         assert!(!e.quota_warning_overlay && !e.confetti_on_session_reset);
-        assert!(!e.confetti_on_weekly_reset);
+        assert!(!e.confetti_on_weekly_reset && !e.stay_awake);
         assert_eq!(e.version, 1);
         assert_eq!(load_from(&dir("missing").join("x.json")), e);
     }

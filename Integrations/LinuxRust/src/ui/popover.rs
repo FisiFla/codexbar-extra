@@ -199,7 +199,7 @@ pub fn view(app: &App) -> Element<Message> {
 }
 
 fn header(app: &App) -> Element<'_, Message> {
-    let refresh = button(text("Refresh").size(12))
+    let refresh = crate::ui::style::button(text("Refresh").size(12))
         .on_press_maybe(if app.busy {
             None
         } else {
@@ -239,18 +239,10 @@ fn meter_bar(
     tick: Option<f32>,
     height: f32,
 ) -> Element<'static, Message> {
-    let radius = height / 2.0;
     let bar = progress_bar(0.0..=100.0, meter_fraction(display_value) * 100.0)
         .height(height)
         .width(Length::Fill)
-        .style(move |theme: &Theme| {
-            let track = theme.extended_palette().background.strong.color;
-            progress_bar::Style {
-                background: Background::Color(track),
-                bar: Background::Color(fill),
-                border: Border::default().rounded(radius),
-            }
-        });
+        .style(crate::ui::style::meter(fill, height));
     match tick {
         None => bar.into(),
         Some(f) => {
@@ -341,7 +333,7 @@ fn switcher(app: &App) -> Element<'_, Message> {
         muted()
     };
     tabs = tabs.push(
-        button(
+        crate::ui::style::button(
             column![
                 overview_glyph(overview_color),
                 text("Overview").size(11).color(overview_color),
@@ -374,7 +366,7 @@ fn switcher(app: &App) -> Element<'_, Message> {
             None => text(EM_DASH).size(11).color(fg).into(),
         };
         tabs = tabs.push(
-            button(
+            crate::ui::style::button(
                 column![
                     text(crate::descriptors::tag(&entry.provider))
                         .size(12)
@@ -492,22 +484,14 @@ fn overview_body(app: &App) -> Element<'_, Message> {
             lines = lines.push(meter);
         }
         col = col.push(
-            button(container(lines).padding(11).width(Length::Fill))
+            crate::ui::style::button(container(lines).padding(11).width(Length::Fill))
                 .on_press(Message::SelectEntry(i as i32))
                 .style(|theme: &Theme, status: button::Status| {
-                    let palette = theme.extended_palette();
-                    let bg = if matches!(status, button::Status::Hovered | button::Status::Pressed)
-                    {
-                        palette.background.strong.color
-                    } else {
-                        palette.background.weak.color
-                    };
-                    button::Style {
-                        background: Some(Background::Color(bg)),
-                        text_color: palette.background.base.text,
-                        border: Border::default().rounded(10.0),
-                        ..Default::default()
-                    }
+                    let hovered =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    let mut s = crate::ui::style::card_button(theme, hovered);
+                    s.text_color = theme.palette().text;
+                    s
                 })
                 .padding(0)
                 .width(Length::Fill),
@@ -518,7 +502,7 @@ fn overview_body(app: &App) -> Element<'_, Message> {
 
 fn footer() -> Element<'static, Message> {
     let action = |label: &'static str, msg: Message| {
-        button(text(label).size(13).width(Length::Fill))
+        crate::ui::style::button(text(label).size(13).width(Length::Fill))
             .on_press(msg)
             .style(|theme: &Theme, status: button::Status| {
                 let base = button::text(theme, status);
@@ -612,10 +596,10 @@ fn provider_body<'a>(
     // OpenAI-only: Admin API live usage window (mac "Live Usage" card action).
     if entry.provider == "openai" {
         col = col.push(
-            button(text("Live usage…").size(13))
+            crate::ui::style::button(text("Live usage…").size(13))
                 .on_press(Message::ShowPage(Page::OpenAiLive))
                 .padding([4, 10])
-                .style(button::secondary),
+                .style(crate::ui::style::push),
         );
     }
     // Credits
@@ -822,7 +806,7 @@ fn cost_section(app: &App, cost: Option<&CostEntry>) -> Element<'static, Message
 }
 
 fn section_header(key: String, title: &'static str, open: bool) -> Element<'static, Message> {
-    button(
+    crate::ui::style::button(
         row![
             text(title).size(14).font(semibold()).width(Length::Fill),
             text(if open { "Hide" } else { "Show" })
@@ -851,16 +835,10 @@ fn series_picker(key: &str, titles: &[String], selected: usize) -> Element<'stat
     for (i, t) in titles.iter().enumerate() {
         let key = key.to_string();
         r = r.push(
-            button(text(t.clone()).size(12))
+            crate::ui::style::button(text(t.clone()).size(12))
                 .on_press(Message::ChartSeries { key, index: i })
                 .padding([2, 8])
-                .style(move |theme: &Theme, status: button::Status| {
-                    if i == selected {
-                        button::primary(theme, status)
-                    } else {
-                        button::secondary(theme, status)
-                    }
-                }),
+                .style(crate::ui::style::segment(i == selected)),
         );
     }
     r.into()
@@ -1114,6 +1092,37 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         }
     }
 
+    // Credits history (local balance snapshots; mac scrapes the OpenAI web dashboard instead).
+    if let Some(bars) = app.history.credit_bars(provider, tz) {
+        let key = format!("{provider}:credits");
+        let open = app.expanded_charts.contains(&key);
+        col = col.push(horizontal_rule(1));
+        col = col.push(section_header(key.clone(), "Credits history", open));
+        if open {
+            let total: f64 = bars.iter().filter_map(|b| b.value).sum();
+            col = col.push(chart_canvas(crate::charts::BarChart {
+                hover: hover_for(&key),
+                key,
+                bars,
+                color: accent,
+                peak_cap: true,
+                fmt: credits_label,
+                axis: credits_label,
+                y_max: None,
+            }));
+            col = col.push(
+                text(format!("Credits used (total {})", credits_label(total)))
+                    .size(12)
+                    .color(muted()),
+            );
+            col = col.push(
+                text("Daily drops in the credit balance, sampled hourly on this machine; top-ups are ignored.")
+                    .size(11)
+                    .color(muted()),
+            );
+        }
+    }
+
     // Storage breakdown (cached scan of the provider's local data dirs).
     if let Some(fp) = app.storage.get(provider).filter(|f| f.has_local_data()) {
         let key = format!("{provider}:storage");
@@ -1161,6 +1170,14 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         }
     }
     col.into()
+}
+
+fn credits_label(v: f64) -> String {
+    if v >= 100.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
 }
 
 fn chart_canvas(chart: crate::charts::BarChart) -> Element<'static, Message> {

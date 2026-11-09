@@ -10,7 +10,7 @@ use crate::menubar_layout::{
 };
 use crate::state::{App, Message};
 use crate::tray::{self, TrayIcon, TrayParams};
-use iced::widget::{button, column, container, image, pick_list, row, text, text_input};
+use iced::widget::{column, container, image, pick_list, row, text};
 use iced::{Color, Element, Length};
 use std::fmt;
 
@@ -36,9 +36,9 @@ fn edit(e: LayoutEdit) -> Message {
 }
 
 fn small_button(label: &'static str, msg: Option<Message>) -> Element<'static, Message> {
-    button(text(label).size(12))
+    crate::ui::style::button(text(label).size(12))
         .padding([1, 6])
-        .style(button::secondary)
+        .style(crate::ui::style::push)
         .on_press_maybe(msg)
         .into()
 }
@@ -140,9 +140,9 @@ fn presets() -> Element<'static, Message> {
     let buttons: Vec<Element<'static, Message>> = Preset::ALL
         .iter()
         .map(|p| {
-            button(text(p.label()).size(12))
+            crate::ui::style::button(text(p.label()).size(12))
                 .padding([3, 8])
-                .style(button::secondary)
+                .style(crate::ui::style::push)
                 .on_press(edit(LayoutEdit::Preset(*p)))
                 .into()
         })
@@ -281,7 +281,7 @@ fn conditional_editor<'a>(layout: &'a MenuBarLayout, c: &'a Conditional) -> Elem
     let name_id = id.clone();
     let mut col = column![row![
         text(format!("{}:", c.id)).size(13),
-        text_input("Name", &c.name)
+        crate::ui::style::text_input("Name", &c.name)
             .on_input(move |v| edit(LayoutEdit::SetConditionalName(name_id.clone(), v)))
             .width(Length::Fixed(220.0)),
         small_button(

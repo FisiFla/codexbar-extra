@@ -20,6 +20,7 @@ mod share;
 mod shots;
 mod spend;
 mod state;
+mod stay_awake;
 mod storage;
 mod throughput;
 mod tray;
@@ -72,7 +73,7 @@ fn main() -> iced::Result {
         .subscription(subscription)
         .theme(|app, id| match app.windows.get(&id) {
             Some(Page::QuotaAlert | Page::Confetti) => ui::overlay_view::clear_theme(),
-            _ => iced::Theme::Dark,
+            _ => ui::style::mac_theme(),
         })
         .run_with(move || {
             let mut settings = settings::load();
@@ -151,6 +152,7 @@ fn main() -> iced::Result {
                 alert: None,
                 confetti: None,
                 focus_status: String::new(),
+                stay_awake: stay_awake::StayAwake::new(),
             };
             let cmds = vec![fetch_usage(&app), fetch_catalog(&app), scan_storage()];
             (app, iced::Task::batch(cmds))
@@ -260,6 +262,14 @@ fn fetch_sessions(app: &mut App) -> iced::Task<Message> {
         async move { cli::fetch_sessions(&exe).await },
         Message::SessionsLoaded,
     )
+}
+
+/// Hold or drop the idle inhibitor from the current setting and the last session list.
+fn sync_stay_awake(app: &mut App) {
+    app.stay_awake.sync(
+        app.extras.stay_awake,
+        stay_awake::has_live_session(&app.sessions),
+    );
 }
 
 fn fetch_catalog(app: &App) -> iced::Task<Message> {
@@ -457,10 +467,15 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             show_confetti(app, "codex".into()),
         ]),
         Message::ExtrasChanged(e) => {
+            let was = app.extras.stay_awake;
             app.extras = *e;
             match extras::save(&app.extras) {
                 Ok(()) => app.error.clear(),
                 Err(e) => app.error = e,
+            }
+            sync_stay_awake(app);
+            if app.extras.stay_awake && !was {
+                return fetch_sessions(app);
             }
             iced::Task::none()
         }
@@ -558,7 +573,11 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             }
             sync_shared(app);
             let obs = history::observations(&app.entries);
-            if app.history.record(&obs, chrono::Utc::now().timestamp()) {
+            let now = chrono::Utc::now().timestamp();
+            let credit_obs = history::credit_observations(&app.entries);
+            let mut history_changed = app.history.record(&obs, now);
+            history_changed |= app.history.record_credits(&credit_obs, now);
+            if history_changed {
                 overlay_tasks.push(save_history(app));
             }
             iced::Task::batch(overlay_tasks)
@@ -668,7 +687,10 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 app.busy = true;
                 iced::Task::batch([fetch_usage(app), fetch_costs(app)])
             }
-            TrayCommand::Quit => iced::exit(),
+            TrayCommand::Quit => {
+                app.stay_awake.release();
+                iced::exit()
+            }
         },
         Message::IpcCmd(c) => match c {
             IpcCommand::Show(p) => open_page(
@@ -700,10 +722,14 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 }
                 iced::Task::none()
             }
-            IpcCommand::Quit => iced::exit(),
+            IpcCommand::Quit => {
+                app.stay_awake.release();
+                iced::exit()
+            }
             IpcCommand::ReloadSettings => {
                 app.settings = settings::load();
                 app.extras = extras::load();
+                sync_stay_awake(app);
                 app.menubar_layout = menubar_layout::load();
                 sync_shared(app);
                 iced::Task::none()
@@ -835,6 +861,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 Ok(rows) => {
                     app.sessions = rows;
                     app.sessions_error.clear();
+                    sync_stay_awake(app);
                 }
                 // Keep the last good list on screen; the window shows the error above it.
                 Err(e) => app.sessions_error = e,
@@ -941,7 +968,10 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 Some(std::time::Instant::now() + Duration::from_secs(live.interval_secs));
             iced::Task::none()
         }
-        Message::Quit => iced::exit(),
+        Message::Quit => {
+            app.stay_awake.release();
+            iced::exit()
+        }
     }
 }
 
@@ -994,11 +1024,13 @@ fn subscription(app: &App) -> iced::Subscription<Message> {
     let tray_sub = iced::Subscription::run(|| tray::stream(shared())).map(Message::TrayCmd);
     let ipc_sub = iced::Subscription::run(|| ipc::stream(shared())).map(Message::IpcCmd);
     // Agent Sessions auto-refresh every 10 s, only while its window is open.
-    let sessions_poll = if app.windows.values().any(|p| *p == Page::Sessions) {
-        iced::time::every(Duration::from_secs(10)).map(|_| Message::RefreshSessions)
-    } else {
-        iced::Subscription::none()
-    };
+    // It also runs windowless while Stay Awake is on, so the inhibitor tracks live sessions.
+    let sessions_poll =
+        if app.extras.stay_awake || app.windows.values().any(|p| *p == Page::Sessions) {
+            iced::time::every(Duration::from_secs(10)).map(|_| Message::RefreshSessions)
+        } else {
+            iced::Subscription::none()
+        };
     let storage_poll =
         iced::time::every(Duration::from_secs(storage::REFRESH_SECS)).map(|_| Message::ScanStorage);
     // Redraw every frame only while the confetti animation is on screen.

@@ -6,7 +6,7 @@
 use crate::share::{self, SharePayload};
 use crate::state::{App, Message};
 use iced::font::Weight;
-use iced::widget::{button, column, container, horizontal_space, row, text, Space};
+use iced::widget::{column, container, horizontal_space, row, text, Space};
 use iced::{Alignment, Background, Border, Color, Element, Font, Length};
 
 pub const CARD_W: f32 = 1200.0;
@@ -446,11 +446,11 @@ pub fn current_payload(app: &App) -> Option<SharePayload> {
 }
 
 fn choice<'a>(label: &str, selected: bool, msg: Message) -> Element<'a, Message> {
-    let b = button(text(label.to_string())).on_press(msg);
+    let b = crate::ui::style::button(text(label.to_string())).on_press(msg);
     if selected {
-        b.style(button::primary)
+        b.style(crate::ui::style::segment(true))
     } else {
-        b.style(button::secondary)
+        b.style(crate::ui::style::segment(false))
     }
     .into()
 }
@@ -476,9 +476,12 @@ pub fn view(app: &App) -> Element<'_, Message> {
             choice("Dark", app.share_dark, Message::ShareSetDark(true)),
             choice("Light", !app.share_dark, Message::ShareSetDark(false)),
             horizontal_space(),
-            button(text("Copy image")).on_press_maybe(has.then_some(Message::ShareCopyImage)),
-            button(text("Copy stats")).on_press_maybe(has.then_some(Message::ShareCopyText)),
-            button(text("Save PNG…")).on_press_maybe(has.then_some(Message::ShareSave)),
+            crate::ui::style::button(text("Copy image"))
+                .on_press_maybe(has.then_some(Message::ShareCopyImage)),
+            crate::ui::style::button(text("Copy stats"))
+                .on_press_maybe(has.then_some(Message::ShareCopyText)),
+            crate::ui::style::button(text("Save PNG…"))
+                .on_press_maybe(has.then_some(Message::ShareSave)),
         ]
         .spacing(8)
         .align_y(Alignment::Center),

@@ -16,7 +16,7 @@ use crate::scan::Provider;
 use crate::state::{App, Message, SessionSort};
 use chrono::{Local, TimeZone, Utc};
 use iced::widget::canvas::Canvas;
-use iced::widget::{button, column, container, horizontal_space, row, text, text_input, Space};
+use iced::widget::{column, container, horizontal_space, row, text, Space};
 use iced::{Color, Element, Length, Theme};
 
 const TOOL_ROWS_COLLAPSED: usize = 8;
@@ -220,7 +220,7 @@ fn stat(label: &str, value: String) -> Element<'static, Message> {
         .spacing(2),
     )
     .padding(8)
-    .style(container::bordered_box)
+    .style(crate::ui::style::card)
     .into()
 }
 
@@ -280,11 +280,12 @@ pub fn hourly(app: &App) -> Element<'static, Message> {
         })
         .collect();
     let zone_btn = |label: &str, z: Zone| -> Element<'static, Message> {
-        let b = button(text(label.to_string()).size(12)).on_press(Message::SetScanZone(z));
+        let b = crate::ui::style::button(text(label.to_string()).size(12))
+            .on_press(Message::SetScanZone(z));
         if z == app.scan_zone {
-            b.style(button::primary).into()
+            b.style(crate::ui::style::segment(true)).into()
         } else {
-            b.style(button::secondary).into()
+            b.style(crate::ui::style::segment(false)).into()
         }
     };
     let mut col = column![row![
@@ -431,7 +432,7 @@ pub fn tool_table(app: &App, tools: &[ToolRow], title: &str) -> Element<'static,
     let mut col = column![row![
         heading(title),
         horizontal_space(),
-        text_input("Filter tools", &app.tool_filter)
+        crate::ui::style::text_input("Filter tools", &app.tool_filter)
             .on_input(Message::ToolFilter)
             .size(13)
             .width(Length::Fixed(180.0)),
@@ -504,8 +505,8 @@ pub fn tool_table(app: &App, tools: &[ToolRow], title: &str) -> Element<'static,
             format!("Show {} more", shown_all.len() - TOOL_ROWS_COLLAPSED)
         };
         col = col.push(
-            button(text(label).size(12))
-                .style(button::secondary)
+            crate::ui::style::button(text(label).size(12))
+                .style(crate::ui::style::push)
                 .on_press(Message::ToggleToolsExpanded),
         );
     }
@@ -621,7 +622,7 @@ fn session_button(app: &App, s: &SessionRow) -> Element<'static, Message> {
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
-    let b = button(line)
+    let b = crate::ui::style::button(line)
         .width(Length::Fill)
         .padding([4, 8])
         .on_press(Message::SelectSession(if selected {
@@ -630,18 +631,19 @@ fn session_button(app: &App, s: &SessionRow) -> Element<'static, Message> {
             Some((s.provider, s.id.clone()))
         }));
     if selected {
-        b.style(button::primary).into()
+        b.style(crate::ui::style::segment(true)).into()
     } else {
-        b.style(button::secondary).into()
+        b.style(crate::ui::style::segment(false)).into()
     }
 }
 
 fn sort_button(label: &str, sort: SessionSort, current: SessionSort) -> Element<'static, Message> {
-    let b = button(text(label.to_string()).size(12)).on_press(Message::SessionSort(sort));
+    let b = crate::ui::style::button(text(label.to_string()).size(12))
+        .on_press(Message::SessionSort(sort));
     if sort == current {
-        b.style(button::primary).into()
+        b.style(crate::ui::style::segment(true)).into()
     } else {
-        b.style(button::secondary).into()
+        b.style(crate::ui::style::segment(false)).into()
     }
 }
 
@@ -655,7 +657,7 @@ pub fn sessions_tab(app: &App) -> Element<'static, Message> {
     }
     let list = browse_sessions(all, &app.session_query, app.session_sort);
     let mut col = column![row![
-        text_input("Search sessions, projects, models", &app.session_query)
+        crate::ui::style::text_input("Search sessions, projects, models", &app.session_query)
             .on_input(Message::SessionQuery)
             .size(13)
             .width(Length::Fixed(280.0)),
@@ -712,8 +714,8 @@ fn session_detail(app: &App, s: &SessionRow) -> Element<'static, Message> {
             ))
             .size(18),
             horizontal_space(),
-            button(text("Close").size(12))
-                .style(button::secondary)
+            crate::ui::style::button(text("Close").size(12))
+                .style(crate::ui::style::push)
                 .on_press(Message::SelectSession(None)),
         ],
         row![
@@ -772,7 +774,7 @@ fn session_detail(app: &App, s: &SessionRow) -> Element<'static, Message> {
     container(col)
         .padding(12)
         .width(Length::Fill)
-        .style(container::bordered_box)
+        .style(crate::ui::style::card)
         .into()
 }
 

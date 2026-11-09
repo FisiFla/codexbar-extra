@@ -12,9 +12,7 @@ use crate::spend::SpendModel;
 use crate::state::{App, Message};
 use chrono::{Datelike, NaiveDate};
 use iced::widget::canvas::{self, Canvas, Frame, Geometry};
-use iced::widget::{
-    button, column, container, horizontal_space, progress_bar, row, scrollable, text,
-};
+use iced::widget::{column, container, horizontal_space, progress_bar, row, scrollable, text};
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 use std::collections::BTreeMap;
 
@@ -420,50 +418,53 @@ impl canvas::Program<Message> for HeatmapChart {
 // ---------------------------------------------------------------------------
 
 fn period_button(label: &str, days: i64, current: i64) -> Element<'static, Message> {
-    let b = button(text(label.to_string())).on_press(Message::SetSpendPeriod(days));
+    let b =
+        crate::ui::style::button(text(label.to_string())).on_press(Message::SetSpendPeriod(days));
     if days == current {
-        b.style(button::primary).into()
+        b.style(crate::ui::style::segment(true)).into()
     } else {
-        b.style(button::secondary).into()
+        b.style(crate::ui::style::segment(false)).into()
     }
 }
 
 pub(crate) fn tab_button(label: &str, tab: &str, current: &str) -> Element<'static, Message> {
-    let b = button(text(label.to_string())).on_press(Message::SetSpendTab(tab.to_string()));
+    let b = crate::ui::style::button(text(label.to_string()))
+        .on_press(Message::SetSpendTab(tab.to_string()));
     if tab == current {
-        b.style(button::primary).into()
+        b.style(crate::ui::style::segment(true)).into()
     } else {
-        b.style(button::secondary).into()
+        b.style(crate::ui::style::segment(false)).into()
     }
 }
 
 fn summary_card(label: &str, value: String) -> Element<'static, Message> {
     container(column![text(label.to_string()).size(12), text(value).size(20)].spacing(2))
-        .padding(10)
-        .style(container::bordered_box)
+        .padding(12)
+        .style(crate::ui::style::card)
         .into()
 }
 
 /// Inline share/quota bar: filled track sized by `fraction` (0..=1).
 pub(crate) fn share_bar(fraction: f32, color: Color) -> Element<'static, Message> {
     let filled = (fraction.clamp(0.0, 1.0) * 160.0).max(if fraction > 0.0 { 2.0 } else { 0.0 });
-    row![
-        container(text(""))
-            .width(Length::Fixed(filled))
-            .height(Length::Fixed(10.0))
-            .style(move |_theme: &Theme| container::Style {
-                background: Some(color.into()),
-                ..Default::default()
-            }),
-        container(text(""))
-            .width(Length::Fixed(160.0 - filled))
-            .height(Length::Fixed(10.0))
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into()),
-                ..Default::default()
-            }),
-    ]
-    .into()
+    let track = Length::Fixed(160.0);
+    let fill = container(iced::widget::Space::new(
+        Length::Fixed(filled),
+        Length::Fixed(6.0),
+    ))
+    .style(move |_theme: &Theme| container::Style {
+        background: Some(color.into()),
+        border: iced::Border::default().rounded(3.0),
+        ..Default::default()
+    });
+    container(fill)
+        .width(track)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.12).into()),
+            border: iced::Border::default().rounded(3.0),
+            ..Default::default()
+        })
+        .into()
 }
 
 pub(crate) fn swatch(color: Color) -> Element<'static, Message> {
@@ -508,7 +509,12 @@ fn usage_card(app: &App, e: &Entry) -> Element<'static, Message> {
             ]
             .spacing(8),
         );
-        col = col.push(progress_bar(0.0..=100.0, qv as f32));
+        let (r, g, b) = crate::ui::popover::accent_rgb(&e.provider);
+        col = col.push(
+            progress_bar(0.0..=100.0, qv as f32)
+                .height(6)
+                .style(crate::ui::style::meter(Color::from_rgb8(r, g, b), 6.0)),
+        );
         if !w.reset_text.is_empty() {
             col = col.push(text(w.reset_text.clone()).size(12));
         }
@@ -546,7 +552,7 @@ fn usage_card(app: &App, e: &Entry) -> Element<'static, Message> {
     }
     container(col)
         .padding(12)
-        .style(container::bordered_box)
+        .style(crate::ui::style::card)
         .width(Length::Fill)
         .into()
 }
@@ -562,10 +568,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
             period_button("30d", 30, period),
             period_button("90d", 90, period),
             period_button("All", 0, period),
-            button(text(if app.cost_busy { "Refreshing…" } else { "Refresh" }))
+            crate::ui::style::button(text(if app.cost_busy { "Refreshing…" } else { "Refresh" }))
                 .on_press_maybe((!app.cost_busy).then_some(Message::RefreshCosts)),
-            button(text("Refresh usage")).on_press_maybe((!app.busy).then_some(Message::Refresh)),
-            button(text("Share…")).on_press(Message::ShowPage(crate::state::Page::ShareStats)),
+            crate::ui::style::button(text("Refresh usage")).on_press_maybe((!app.busy).then_some(Message::Refresh)),
+            crate::ui::style::button(text("Share…")).on_press(Message::ShowPage(crate::state::Page::ShareStats)),
         ]
         .spacing(6),
         text(format!(

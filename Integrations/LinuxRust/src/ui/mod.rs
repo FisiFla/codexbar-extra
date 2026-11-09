@@ -7,3 +7,4 @@ pub mod settings_view;
 pub mod share_view;
 pub mod spend_sessions;
 pub mod spend_view;
+pub mod style;

@@ -108,6 +108,7 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                 "quick-view-burn",
                 "quick-view-tpm",
                 "quick-view-cost",
+                "quick-view-credits",
                 "quick-view-models",
                 "quick-view-storage",
             ]
@@ -182,6 +183,7 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
             };
             let pick = app.entries.iter().position(|e| match chart {
                 "util" | "burn" => !app.history.series_for(&e.provider).is_empty(),
+                "credits" => app.history.credit_bars(&e.provider, 0).is_some(),
                 "storage" => app.storage.contains_key(&e.provider),
                 _ => has_cost(&e.provider),
             });
@@ -197,6 +199,10 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                         let tz = chrono::Local::now().offset().local_minus_utc() as i64;
                         crate::history::utilization_bars(s, tz)
                     }),
+                    "credits" => {
+                        let tz = chrono::Local::now().offset().local_minus_utc() as i64;
+                        app.history.credit_bars(&provider, tz)
+                    }
                     _ => None,
                 };
                 if let Some(bars) = bars {

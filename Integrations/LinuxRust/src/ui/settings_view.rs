@@ -8,9 +8,7 @@
 
 use crate::settings::Settings;
 use crate::state::{App, Message, Page, SettingsPane};
-use iced::widget::{
-    button, checkbox, column, container, radio, row, scrollable, slider, text, text_input,
-};
+use iced::widget::{checkbox, column, container, radio, row, scrollable, slider, text};
 use iced::{Color, Element, Length};
 use std::path::PathBuf;
 
@@ -148,23 +146,6 @@ pub fn list_plugins() -> Vec<String> {
     names
 }
 
-/// macOS-style source list row: plain text, accent fill only on the selected row.
-fn sidebar_style(selected: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
-    move |theme, status| {
-        let mut style = if selected {
-            button::primary(theme, status)
-        } else {
-            button::text(theme, status)
-        };
-        if !selected && matches!(status, button::Status::Hovered) {
-            style.background = Some(Color::from_rgba(1.0, 1.0, 1.0, 0.06).into());
-        }
-        style.border = iced::Border::default().rounded(6.0);
-        style
-    }
-}
-
-/// Status dot drawn as a shape (the default font has no U+25CF glyph).
 fn status_dot<'a>(c: Color) -> Element<'a, Message> {
     let dot = container(iced::widget::Space::new(
         Length::Fixed(8.0),
@@ -215,7 +196,7 @@ fn text_field<'a>(
     base: Settings,
     set: impl Fn(&mut Settings, String) + 'a,
 ) -> Element<'a, Message> {
-    text_input(placeholder, cur)
+    crate::ui::style::text_input(placeholder, cur)
         .on_input(move |v| {
             let mut s = base.clone();
             set(&mut s, v);
@@ -261,15 +242,21 @@ fn radio_group<'a>(
 }
 
 fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
-    column![text(title.to_string()).size(16), body]
-        .spacing(8)
-        .into()
+    column![
+        text(title.to_string()).size(15).font(iced::Font {
+            weight: iced::font::Weight::Semibold,
+            ..iced::Font::DEFAULT
+        }),
+        body
+    ]
+    .spacing(8)
+    .into()
 }
 
 fn note(s: &str) -> Element<'_, Message> {
     text(s.to_string())
         .size(12)
-        .color(Color::from_rgb(0.65, 0.65, 0.65))
+        .color(crate::ui::style::SECONDARY)
         .into()
 }
 
@@ -298,7 +285,16 @@ pub fn view(app: &App) -> Element<Message> {
         SettingsPane::Debug => debug_pane(app),
         SettingsPane::About => about_pane(app),
     };
-    let mut detail_col = column![text(pane_title(app.settings_pane)).size(20), detail].spacing(12);
+    let mut detail_col = column![
+        text(pane_title(app.settings_pane))
+            .size(22)
+            .font(iced::Font {
+                weight: iced::font::Weight::Semibold,
+                ..iced::Font::DEFAULT
+            }),
+        detail
+    ]
+    .spacing(12);
     if !app.error.trim().is_empty() {
         detail_col =
             detail_col.push(text(app.error.clone()).color(Color::from_rgb(0.9, 0.4, 0.35)));
@@ -306,7 +302,7 @@ pub fn view(app: &App) -> Element<Message> {
     detail_col = detail_col.push(
         row![
             container(note("Closing windows keeps CodexBar running.")).width(Length::Fill),
-            button(text("Save")).on_press(Message::SaveSettings),
+            crate::ui::style::button(text("Save")).on_press(Message::SaveSettings),
         ]
         .spacing(8),
     );
@@ -324,16 +320,18 @@ pub fn view(app: &App) -> Element<Message> {
 }
 
 fn sidebar(app: &App) -> Element<'_, Message> {
-    let mut col = column![text_input("Search settings", &app.settings_search)
-        .on_input(Message::SettingsSearchChanged),]
+    let mut col = column![
+        crate::ui::style::text_input("Search settings", &app.settings_search)
+            .on_input(Message::SettingsSearchChanged),
+    ]
     .spacing(6)
     .padding(10);
     for pane in filtered_panes(&app.settings_search) {
         let selected = pane == app.settings_pane && app.selected_provider.is_none();
         col = col.push(
-            button(text(pane_title(pane)))
+            crate::ui::style::button(text(pane_title(pane)))
                 .on_press(Message::OpenSettingsPane(pane))
-                .style(sidebar_style(selected))
+                .style(crate::ui::style::sidebar(selected))
                 .width(Length::Fill),
         );
     }
@@ -350,10 +348,12 @@ fn sidebar(app: &App) -> Element<'_, Message> {
     for (id, name) in providers {
         let selected = app.selected_provider.as_deref() == Some(id.as_str());
         list = list.push(
-            button(row![status_dot(dot_color(app, id)), text(name.clone())].spacing(6))
-                .on_press(Message::SelectProvider(id.clone()))
-                .style(sidebar_style(selected))
-                .width(Length::Fill),
+            crate::ui::style::button(
+                row![status_dot(dot_color(app, id)), text(name.clone())].spacing(6),
+            )
+            .on_press(Message::SelectProvider(id.clone()))
+            .style(crate::ui::style::sidebar(selected))
+            .width(Length::Fill),
         );
     }
     col = col.push(scrollable(list));
@@ -364,8 +364,10 @@ fn general_pane(app: &App) -> Element<'_, Message> {
     let s = &app.settings;
     let mut presets = row![].spacing(4);
     for p in PROVIDER_PRESETS {
-        presets = presets
-            .push(button(text(p)).on_press(changed(app, move |st| st.provider = p.to_string())));
+        presets = presets.push(
+            crate::ui::style::button(text(p))
+                .on_press(changed(app, move |st| st.provider = p.to_string())),
+        );
     }
     let refresh_slider = {
         let base = s.clone();
@@ -438,11 +440,13 @@ fn providers_pane(app: &App) -> Element<'_, Message> {
         .unwrap_or_else(|| s.provider.clone());
     let order_field = {
         let base = s.clone();
-        text_input("codex, claude", order_text(&s.provider_order)).on_input(move |v| {
-            let mut st = base.clone();
-            st.provider_order = parse_provider_order(&v);
-            Message::SettingsChanged(Box::new(st))
-        })
+        crate::ui::style::text_input("codex, claude", order_text(&s.provider_order)).on_input(
+            move |v| {
+                let mut st = base.clone();
+                st.provider_order = parse_provider_order(&v);
+                Message::SettingsChanged(Box::new(st))
+            },
+        )
     };
     let account_slider = {
         let base = s.clone();
@@ -538,28 +542,36 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
             };
             let mut actions = row![].spacing(8);
             if auth.api_key {
-                actions = actions.push(button(text("Save API key")).on_press_maybe(
-                    (!app.credential_draft.trim().is_empty()).then(|| Message::SaveCredential {
-                        provider: id.to_string(),
-                        cookie: false,
-                    }),
-                ));
+                actions = actions.push(
+                    crate::ui::style::button(text("Save API key")).on_press_maybe(
+                        (!app.credential_draft.trim().is_empty()).then(|| {
+                            Message::SaveCredential {
+                                provider: id.to_string(),
+                                cookie: false,
+                            }
+                        }),
+                    ),
+                );
             }
             if auth.cookie_header {
-                actions = actions.push(button(text("Save cookie header")).on_press_maybe(
-                    (!app.credential_draft.trim().is_empty()).then(|| Message::SaveCredential {
-                        provider: id.to_string(),
-                        cookie: true,
-                    }),
-                ));
+                actions = actions.push(
+                    crate::ui::style::button(text("Save cookie header")).on_press_maybe(
+                        (!app.credential_draft.trim().is_empty()).then(|| {
+                            Message::SaveCredential {
+                                provider: id.to_string(),
+                                cookie: true,
+                            }
+                        }),
+                    ),
+                );
             }
             actions = actions.push(
-                button(text("Clear stored credential"))
-                    .style(button::secondary)
+                crate::ui::style::button(text("Clear stored credential"))
+                    .style(crate::ui::style::push)
                     .on_press(Message::ClearCredential(id.to_string())),
             );
             body = body.push(
-                text_input(placeholder, &app.credential_draft)
+                crate::ui::style::text_input(placeholder, &app.credential_draft)
                     .secure(true)
                     .on_input(Message::CredentialDraftChanged),
             );
@@ -582,11 +594,11 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         let pid = id.to_string();
         body = body.push(
             row![
-                button(text("Sign in…")).on_press(Message::AccountAction {
+                crate::ui::style::button(text("Sign in…")).on_press(Message::AccountAction {
                     provider: pid.clone(),
                     login: true
                 }),
-                button(text("Sign out…")).on_press(Message::AccountAction {
+                crate::ui::style::button(text("Sign out…")).on_press(Message::AccountAction {
                     provider: pid,
                     login: false
                 }),
@@ -596,8 +608,10 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         body = body.push(note("Sign-in opens your provider CLI in a terminal. Account selection only changes displayed usage."));
     }
     if let Some(url) = dashboard_url(id) {
-        body = body
-            .push(button(text("Open usage dashboard")).on_press(Message::OpenUrl(url.to_string())));
+        body = body.push(
+            crate::ui::style::button(text("Open usage dashboard"))
+                .on_press(Message::OpenUrl(url.to_string())),
+        );
     }
     body = body.push(note(
         "Browser-cookie import works only on macOS; on Linux use the provider CLI sign-in or an API key in the CLI config.",
@@ -610,7 +624,7 @@ fn spend_pane(app: &App) -> Element<'_, Message> {
     column![
         check("Local spending (show costs)", s.show_costs, s.clone(), |st, v| st.show_costs = v),
         note("Spend figures are local list-price estimates from the CodexBar CLI cost scan — not a billing receipt. Unknown values show as —, never 0."),
-        button(text("Open Usage & Spend")).on_press(Message::ShowPage(Page::Usage)),
+        crate::ui::style::button(text("Open Usage & Spend")).on_press(Message::ShowPage(Page::Usage)),
     ]
     .spacing(10)
     .into()
@@ -645,6 +659,22 @@ fn menu_pane(app: &App) -> Element<'_, Message> {
             ),
             check("Show pace", s.show_pace, s.clone(), |st, v| st.show_pace =
                 v),
+        ]
+        .spacing(8)
+        .into(),
+    ),
+    section(
+        "System",
+        column![
+            extra_check(
+                crate::stay_awake::LABEL,
+                app.extras.stay_awake,
+                app.extras.clone(),
+                |e, v| e.stay_awake = v
+            ),
+            note(crate::stay_awake::SUBTITLE),
+            note(app.stay_awake.status()),
+            note("Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
         ]
         .spacing(8)
         .into(),
@@ -855,7 +885,7 @@ fn advanced_pane(app: &App) -> Element<'_, Message> {
             "HTTP server / dashboard",
             column![
                 note("The CLI provides the web surfaces: `codexbar serve` runs the dashboard server (Bearer token required off-loopback) and `codexbar dashboard` prints a one-shot JSON snapshot. This desktop app does not embed its own HTTP server."),
-                button(text("Copy usage summary")).on_press(Message::CopySummary),
+                crate::ui::style::button(text("Copy usage summary")).on_press(Message::CopySummary),
             ]
             .spacing(8)
             .into(),
@@ -916,7 +946,7 @@ fn debug_pane(app: &App) -> Element<'_, Message> {
             )),
             labeled(
                 "Settings file (copyable)",
-                text_input("", &settings_path).into()
+                crate::ui::style::text_input("", &settings_path).into()
             ),
             text(format!("Catalog providers: {}", app.catalog.len())),
             text(format!(
@@ -938,11 +968,11 @@ fn about_pane(_app: &App) -> Element<'_, Message> {
         text("CodexBar Extra").size(18),
         text(format!("Version {}", env!("CARGO_PKG_VERSION"))),
         note("Usage and spend for Codex, Claude, and other AI coding providers — Linux desktop build."),
-        button(text("GitHub — this fork (FisiFla/codexbar-extra)"))
+        crate::ui::style::button(text("GitHub — this fork (FisiFla/codexbar-extra)"))
             .on_press(Message::OpenUrl("https://github.com/FisiFla/codexbar-extra".to_string())),
-        button(text("GitHub — upstream (steipete/CodexBar)"))
+        crate::ui::style::button(text("GitHub — upstream (steipete/CodexBar)"))
             .on_press(Message::OpenUrl("https://github.com/steipete/CodexBar".to_string())),
-        button(text("Website — codexbar.app"))
+        crate::ui::style::button(text("Website — codexbar.app"))
             .on_press(Message::OpenUrl("https://codexbar.app".to_string())),
         text("Updates unavailable in this build."),
         note("Update through your package source or by rebuilding from the fork."),

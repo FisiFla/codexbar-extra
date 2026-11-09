@@ -126,6 +126,8 @@ pub struct App {
     pub alert: Option<crate::ui::overlay_view::AlertState>,
     pub confetti: Option<crate::ui::overlay_view::ConfettiState>,
     pub focus_status: String,
+    /// Idle inhibitor for the Stay Awake extra; dropped (released) with the app.
+    pub stay_awake: crate::stay_awake::StayAwake,
     /// OpenAI Live Usage window state.
     pub live: crate::openai_live::LiveState,
     /// Local session/tool scan (Usage & Spend): raw merged facts, their aggregate for the current

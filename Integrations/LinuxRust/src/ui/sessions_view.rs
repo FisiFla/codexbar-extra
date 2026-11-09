@@ -5,9 +5,7 @@ use crate::descriptors;
 use crate::sessions::{self, Session};
 use crate::state::{App, Message};
 use crate::ui::popover::accent_rgb;
-use iced::widget::{
-    button, column, container, horizontal_space, row, scrollable, text, Column, Space,
-};
+use iced::widget::{column, container, horizontal_space, row, scrollable, text, Column, Space};
 use iced::{Background, Border, Color, Element, Font, Length, Theme};
 
 fn muted() -> Color {
@@ -32,10 +30,10 @@ fn dot(color: Color) -> Element<'static, Message> {
 }
 
 fn small_button(label: &'static str, msg: Option<Message>) -> Element<'static, Message> {
-    button(text(label).size(12))
+    crate::ui::style::button(text(label).size(12))
         .on_press_maybe(msg)
         .padding([4, 10])
-        .style(button::secondary)
+        .style(crate::ui::style::push)
         .into()
 }
 

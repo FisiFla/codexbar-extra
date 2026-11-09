@@ -58,21 +58,17 @@ fn header(app: &App, names: &[String]) -> Element<'static, Message> {
     for w in live::WINDOWS {
         let active = st.window_minutes == w;
         ranges = ranges.push(
-            button(text(range_label(w)).size(13))
+            crate::ui::style::button(text(range_label(w)).size(13))
                 .on_press(Message::OpenAiLiveRange(w))
                 .padding([5, 12])
-                .style(if active {
-                    button::primary
-                } else {
-                    button::secondary
-                }),
+                .style(crate::ui::style::segment(active)),
         );
     }
     let updated = st
         .last_updated
         .map(|t| live::updated_text(t, now()))
         .unwrap_or_default();
-    let refresh = button(
+    let refresh = crate::ui::style::button(
         text(if st.loading {
             "Refreshing…"
         } else {
@@ -82,7 +78,7 @@ fn header(app: &App, names: &[String]) -> Element<'static, Message> {
     )
     .on_press_maybe((!st.loading).then_some(Message::OpenAiLiveRefresh))
     .padding([5, 12])
-    .style(button::secondary);
+    .style(crate::ui::style::push);
     row![
         picker,
         horizontal_space(),
@@ -115,10 +111,10 @@ fn error_row(app: &App) -> Option<Element<'static, Message>> {
     r = r.push(text(msg).size(13).color(muted()).width(Length::Fill));
     if *err == LiveError::MissingCredential {
         r = r.push(
-            button(text("Open OpenAI Settings").size(13))
+            crate::ui::style::button(text("Open OpenAI Settings").size(13))
                 .on_press(Message::OpenAiLiveOpenSettings)
                 .padding([5, 12])
-                .style(button::secondary),
+                .style(crate::ui::style::push),
         );
     }
     Some(
@@ -279,7 +275,7 @@ fn table(app: &App, s: &Snapshot, names: &[String]) -> Element<'static, Message>
         .spacing(8)
         .align_y(iced::Alignment::Center);
         col = col.push(
-            button(line)
+            crate::ui::style::button(line)
                 .on_press(Message::OpenAiLiveFilter(filter))
                 .width(Length::Fill)
                 .padding(8)

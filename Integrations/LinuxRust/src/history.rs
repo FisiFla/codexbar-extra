@@ -26,7 +26,9 @@ pub const MAX_TOTAL_SAMPLES: usize = 120_000;
 const MAX_SERIES_PER_PROVIDER: usize = 12;
 const MAX_PROVIDERS: usize = 200;
 const RESET_TOLERANCE_SECS: i64 = 2 * 60;
-const FILE_VERSION: u32 = 1;
+const FILE_VERSION: u32 = 2;
+/// Hourly credit-balance samples kept per provider (about 90 days).
+pub const MAX_CREDIT_SAMPLES: usize = 24 * 90;
 
 /// `[capturedAt (unix s), usedPercent, resetsAt (unix s) | null]`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -41,6 +43,10 @@ impl Sample {
             .then(self.2.unwrap_or(i64::MIN).cmp(&other.2.unwrap_or(i64::MIN)))
     }
 }
+
+/// `[capturedAt (unix s), credit balance]`. Version 2 addition; absent in older files.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CreditSample(pub i64, pub f64);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Series {
@@ -58,6 +64,9 @@ pub struct History {
     pub version: u32,
     #[serde(default)]
     pub providers: BTreeMap<String, Vec<Series>>,
+    /// Credit balance samples per provider id (one per UTC hour, latest wins).
+    #[serde(default)]
+    pub credits: BTreeMap<String, Vec<CreditSample>>,
 }
 
 /// One observed window to record.
@@ -108,6 +117,21 @@ pub fn observations(entries: &[Entry]) -> Vec<Observation> {
                 used: (100 - w.remaining) as f64,
                 reset: parse_unix(&w.resets_at),
             });
+        }
+    }
+    out
+}
+
+/// Credit balances from one successful refresh: `(provider, balance)`, first entry per provider.
+pub fn credit_observations(entries: &[Entry]) -> Vec<(String, f64)> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for e in entries {
+        if !e.error.is_empty() || !seen.insert(e.provider.clone()) {
+            continue;
+        }
+        if let Some(c) = e.credits.filter(|c| c.is_finite() && *c >= 0.0) {
+            out.push((e.provider.clone(), c));
         }
     }
     out
@@ -225,6 +249,52 @@ impl History {
         changed
     }
 
+    /// Record credit balances taken at `now`. Within one UTC hour the latest balance wins.
+    /// Returns whether anything changed.
+    pub fn record_credits(&mut self, obs: &[(String, f64)], now: i64) -> bool {
+        let mut changed = false;
+        for (provider, balance) in obs {
+            if !balance.is_finite() || *balance < 0.0 {
+                continue;
+            }
+            if !self.credits.contains_key(provider) && self.credits.len() >= MAX_PROVIDERS {
+                continue;
+            }
+            let list = self.credits.entry(provider.clone()).or_default();
+            let sample = CreditSample(now, *balance);
+            match list.last_mut() {
+                Some(last) if last.0 > now => continue,
+                Some(last) if hour_bucket(last.0) == hour_bucket(now) => {
+                    if last.1 != *balance {
+                        *last = sample;
+                        changed = true;
+                    }
+                }
+                _ => {
+                    list.push(sample);
+                    if list.len() > MAX_CREDIT_SAMPLES {
+                        list.remove(0);
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.version = FILE_VERSION;
+        }
+        changed
+    }
+
+    /// Credits-history bars for a provider, `None` when fewer than two samples exist.
+    pub fn credit_bars(
+        &self,
+        provider: &str,
+        tz_offset_secs: i64,
+    ) -> Option<Vec<crate::charts::ChartBar>> {
+        let bars = credits_used_bars(self.credits.get(provider)?, tz_offset_secs);
+        (!bars.is_empty()).then_some(bars)
+    }
+
     pub fn total_samples(&self) -> usize {
         self.providers
             .values()
@@ -265,6 +335,21 @@ impl History {
     /// Repair a loaded file: sorted entries, finite values, bounded sizes.
     fn sanitized(mut self) -> Self {
         self.providers.retain(|_, v| !v.is_empty());
+        self.credits.retain(|_, v| !v.is_empty());
+        while self.credits.len() > MAX_PROVIDERS {
+            let Some(k) = self.credits.keys().next_back().cloned() else {
+                break;
+            };
+            self.credits.remove(&k);
+        }
+        for v in self.credits.values_mut() {
+            v.retain(|c| c.1.is_finite() && c.1 >= 0.0);
+            v.sort_by_key(|c| c.0);
+            if v.len() > MAX_CREDIT_SAMPLES {
+                let extra = v.len() - MAX_CREDIT_SAMPLES;
+                v.drain(..extra);
+            }
+        }
         while self.providers.len() > MAX_PROVIDERS {
             let Some(k) = self.providers.keys().next_back().cloned() else {
                 break;
@@ -397,6 +482,28 @@ pub fn utilization_bars(series: &Series, tz_offset_secs: i64) -> Vec<crate::char
             });
         }
     }
+    if bars.len() > MAX_BARS {
+        bars.drain(..bars.len() - MAX_BARS);
+    }
+    bars
+}
+
+/// Daily credits used: per local day, the sum of balance drops between consecutive samples
+/// (a rise is a top-up and counts as zero), attributed to the day of the later sample. Days
+/// without any sample are unknown gaps. At most `MAX_BARS`, newest kept. Needs two samples.
+pub fn credits_used_bars(
+    samples: &[CreditSample],
+    tz_offset_secs: i64,
+) -> Vec<crate::charts::ChartBar> {
+    let mut by_day: BTreeMap<String, f64> = BTreeMap::new();
+    for w in samples.windows(2) {
+        let drop = (w[0].1 - w[1].1).max(0.0);
+        *by_day
+            .entry(local_date(w[1].0, tz_offset_secs))
+            .or_insert(0.0) += drop;
+    }
+    let rows: Vec<(String, f64)> = by_day.into_iter().collect();
+    let mut bars = crate::charts::calendar_bars(&rows, |v| Some(*v));
     if bars.len() > MAX_BARS {
         bars.drain(..bars.len() - MAX_BARS);
     }
@@ -766,5 +873,84 @@ mod tests {
         let b = Burndown::new(&s, 20.0, 1000, 500, 10).unwrap();
         assert_eq!(b.samples.len(), 1);
         assert_eq!(b.samples[0].remaining, 80.0);
+    }
+
+    #[test]
+    fn credits_record_latest_per_hour_and_new_hour_appends() {
+        let mut h = History::default();
+        let obs = |v: f64| vec![("codex".to_string(), v)];
+        assert!(h.record_credits(&obs(100.0), 100));
+        assert!(!h.record_credits(&obs(100.0), 200));
+        assert!(h.record_credits(&obs(90.0), 300));
+        assert!(h.record_credits(&obs(80.0), H + 5));
+        assert_eq!(
+            h.credits["codex"],
+            vec![CreditSample(300, 90.0), CreditSample(H + 5, 80.0)]
+        );
+        assert_eq!(h.version, FILE_VERSION);
+        assert!(!h.record_credits(&[("codex".into(), f64::NAN)], 5 * H));
+    }
+
+    #[test]
+    fn credit_bars_sum_drops_ignore_topups_and_need_two_samples() {
+        let d = 86_400;
+        assert!(credits_used_bars(&[CreditSample(0, 50.0)], 0).is_empty());
+        let s = [
+            CreditSample(0, 50.0),
+            CreditSample(H, 45.0),
+            CreditSample(2 * H, 44.0),
+            CreditSample(d + H, 100.0),
+            CreditSample(d + 2 * H, 97.5),
+        ];
+        let bars = credits_used_bars(&s, 0);
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].date, "1970-01-01");
+        assert_eq!(bars[0].value, Some(6.0));
+        assert_eq!(bars[1].value, Some(2.5));
+        let mut h = History::default();
+        h.credits.insert("codex".into(), s.to_vec());
+        assert!(h.credit_bars("codex", 0).is_some());
+        assert!(h.credit_bars("claude", 0).is_none());
+    }
+
+    #[test]
+    fn old_files_without_credits_load_and_credits_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("cbx-credits-{}", std::process::id()));
+        let path = dir.join("usage-history.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, br#"{"version":1,"providers":{}}"#).unwrap();
+        assert!(load(&path).credits.is_empty());
+        let mut h = History::default();
+        h.record_credits(&[("codex".into(), 12.5)], 1000);
+        save(&path, &h).unwrap();
+        assert_eq!(load(&path).credits["codex"], vec![CreditSample(1000, 12.5)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn credit_observations_skip_errors_unknown_and_duplicates() {
+        use crate::model::Entry;
+        let mk = |p: &str, c: Option<f64>, err: &str| Entry {
+            provider: p.into(),
+            account_label: String::new(),
+            plan: String::new(),
+            status: String::new(),
+            status_level: String::new(),
+            error: err.into(),
+            updated_at: String::new(),
+            credits: c,
+            windows: Vec::new(),
+            details: Vec::new(),
+            extra_usage_text: String::new(),
+            reset_credits_available: -1,
+            reset_credits_next_expiry: String::new(),
+        };
+        let e = [
+            mk("codex", Some(7.0), ""),
+            mk("codex", Some(9.0), ""),
+            mk("a", None, ""),
+            mk("b", Some(1.0), "boom"),
+        ];
+        assert_eq!(credit_observations(&e), vec![("codex".to_string(), 7.0)]);
     }
 }

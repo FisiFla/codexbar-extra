@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, latest `linux-v0.84.2`)
+## Status (2026-11-09, latest `linux-v0.84.3`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -25,8 +25,13 @@ quota warning overlay + reset confetti (always-on-top transparent windows, click
 stored in `~/.config/codexbar/linux-extras.json`), Agent Sessions "Focus" (KWin D-Bus on KDE Wayland, xdotool/wmctrl on
 X11; other Wayland compositors: explanatory no-op, never synthesized input).
 
-Open (honest gaps): credits history chart (no CLI data source), layer-shell overlays (plain always-on-top windows
-instead; some compositors ignore the hints), focus on non-KDE Wayland, stay-awake, per-pane pixel polish vs the mac app.
+`linux-v0.84.3` adds: Stay Awake (Settings › Menu; `systemd-inhibit --what=idle` held only while a local agent session
+is live, never blocks user suspend or lid), session Focus on Hyprland / Sway / niri, a Credits history section (balance
+drops per day, recorded locally because the mac source is the OpenAI web dashboard; shown only when the CLI reports a
+balance), and a mac-style theme pass (accent #0A84FF, segmented controls, rounded cards/source-list/fields, thin meters).
+
+Open (honest gaps): layer-shell overlays (plain always-on-top windows; some compositors ignore the hint), Focus on
+GNOME/COSMIC Wayland (no public API), checkbox/radio/slider/scrollbar still iced defaults with the accent colour.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 
 ## Why the Qt app feels so far behind

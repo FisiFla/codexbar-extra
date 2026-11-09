@@ -1,10 +1,12 @@
 //! Best-effort "focus this agent session's terminal" (mac `TerminalApp` / Warp focus).
 //!
 //! The session pid is walked up through `/proc/<pid>/stat` parents; each ancestor is tried as
-//! the owner of a window, nearest first. Backends: KWin scripting over D-Bus on KDE Wayland,
+//! the owner of a window, nearest first. Backends: Hyprland (`hyprctl`), Sway (`swaymsg`) and
+//! niri (`niri msg`), each detected by its env var; KWin scripting over D-Bus on KDE Wayland;
 //! `xdotool` / `wmctrl` on X11 (and XWayland). Other Wayland compositors expose no portable
 //! focus API, so that case is a no-op with an explanatory status. Never synthesizes input:
-//! activation is a window-manager request (`_NET_ACTIVE_WINDOW` / KWin `activeWindow`).
+//! activation is a window-manager request (`focuswindow` / `focus` / `focus-window` /
+//! `_NET_ACTIVE_WINDOW` / KWin `activeWindow`).
 
 use std::path::Path;
 use std::process::Command;
@@ -38,16 +40,34 @@ pub fn ancestor_chain(pid: i64, proc_root: &Path) -> Vec<i64> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    Hyprland,
+    Sway,
+    Niri,
     KWin,
     X11,
     Unsupported,
 }
 
-/// KDE on Wayland -> KWin scripting; any session with an X display -> xdotool/wmctrl;
-/// otherwise nothing portable exists.
-pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool) -> Backend {
+/// Which compositor-specific env vars are set (`HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`,
+/// `NIRI_SOCKET`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompositorEnv {
+    pub hyprland: bool,
+    pub sway: bool,
+    pub niri: bool,
+}
+
+/// A compositor-specific socket wins; KDE on Wayland -> KWin scripting; any session with an X
+/// display -> xdotool/wmctrl; otherwise nothing portable exists.
+pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool, comp: CompositorEnv) -> Backend {
     let kde = desktop.split(':').any(|d| d.eq_ignore_ascii_case("kde"));
-    if kde && wayland {
+    if comp.hyprland {
+        Backend::Hyprland
+    } else if comp.sway {
+        Backend::Sway
+    } else if comp.niri {
+        Backend::Niri
+    } else if kde && wayland {
         Backend::KWin
     } else if x_display {
         Backend::X11
@@ -115,6 +135,97 @@ pub fn wmctrl_window(listing: &str, pids: &[i64]) -> Option<String> {
             (pid == *p).then(|| id.to_string())
         })
     })
+}
+
+/// `address` of the first `hyprctl clients -j` entry owned by any of `pids`, in order.
+pub fn hypr_window(json: &str, pids: &[i64]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let clients = v.as_array()?;
+    pids.iter().find_map(|p| {
+        clients.iter().find_map(|c| {
+            let addr = c.get("address")?.as_str()?;
+            let ok = c.get("pid")?.as_i64()? == *p
+                && addr.starts_with("0x")
+                && addr[2..].bytes().all(|b| b.is_ascii_hexdigit());
+            ok.then(|| addr.to_string())
+        })
+    })
+}
+
+fn collect_sway_pids(node: &serde_json::Value, out: &mut Vec<i64>) {
+    if let Some(p) = node.get("pid").and_then(|p| p.as_i64()) {
+        out.push(p);
+    }
+    for key in ["nodes", "floating_nodes"] {
+        if let Some(kids) = node.get(key).and_then(|k| k.as_array()) {
+            for k in kids {
+                collect_sway_pids(k, out);
+            }
+        }
+    }
+}
+
+/// First of `pids` (nearest first) that owns a window in a `swaymsg -t get_tree` document.
+pub fn sway_pid(json: &str, pids: &[i64]) -> Option<i64> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut owners = Vec::new();
+    collect_sway_pids(&v, &mut owners);
+    pids.iter().copied().find(|p| owners.contains(p))
+}
+
+/// Id of the first `niri msg --json windows` entry owned by any of `pids`, in order.
+pub fn niri_window(json: &str, pids: &[i64]) -> Option<u64> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let windows = v.as_array()?;
+    pids.iter().find_map(|p| {
+        windows.iter().find_map(|w| {
+            (w.get("pid")?.as_i64()? == *p)
+                .then(|| w.get("id")?.as_u64())
+                .flatten()
+        })
+    })
+}
+
+fn focus_hyprland(pids: &[i64]) -> Result<String, String> {
+    if !have("hyprctl") {
+        return Err("hyprctl was not found; it is needed to focus terminals on Hyprland.".into());
+    }
+    let addr = run("hyprctl", &["clients", "-j"])
+        .and_then(|j| hypr_window(&j, pids))
+        .ok_or("No window found for this session's terminal.")?;
+    run(
+        "hyprctl",
+        &["dispatch", "focuswindow", &format!("address:{addr}")],
+    )
+    .map(|_| "Focused the terminal window.".to_string())
+    .ok_or_else(|| "hyprctl could not focus the window.".to_string())
+}
+
+fn focus_sway(pids: &[i64]) -> Result<String, String> {
+    if !have("swaymsg") {
+        return Err("swaymsg was not found; it is needed to focus terminals on Sway.".into());
+    }
+    let pid = run("swaymsg", &["-t", "get_tree"])
+        .and_then(|j| sway_pid(&j, pids))
+        .ok_or("No window found for this session's terminal.")?;
+    run("swaymsg", &[&format!("[pid={pid}]"), "focus"])
+        .map(|_| "Focused the terminal window.".to_string())
+        .ok_or_else(|| "swaymsg could not focus the window.".to_string())
+}
+
+fn focus_niri(pids: &[i64]) -> Result<String, String> {
+    if !have("niri") {
+        return Err("niri was not found; it is needed to focus terminals on niri.".into());
+    }
+    let id = run("niri", &["msg", "--json", "windows"])
+        .and_then(|j| niri_window(&j, pids))
+        .ok_or("No window found for this session's terminal.")?;
+    run(
+        "niri",
+        &["msg", "action", "focus-window", "--id", &id.to_string()],
+    )
+    .map(|_| "Focused the terminal window.".to_string())
+    .ok_or_else(|| "niri could not focus the window.".to_string())
 }
 
 fn focus_x11(pids: &[i64]) -> Result<String, String> {
@@ -219,12 +330,20 @@ pub fn focus_session(pid: i64) -> Result<String, String> {
         &desktop,
         env_nonempty("WAYLAND_DISPLAY"),
         env_nonempty("DISPLAY"),
+        CompositorEnv {
+            hyprland: env_nonempty("HYPRLAND_INSTANCE_SIGNATURE"),
+            sway: env_nonempty("SWAYSOCK"),
+            niri: env_nonempty("NIRI_SOCKET"),
+        },
     ) {
+        Backend::Hyprland => focus_hyprland(&chain),
+        Backend::Sway => focus_sway(&chain),
+        Backend::Niri => focus_niri(&chain),
         Backend::KWin => focus_kwin(&chain),
         Backend::X11 => focus_x11(&chain),
         Backend::Unsupported => Err(
-            "Focusing windows is not supported on this Wayland compositor (no portable API). \
-             Use Open folder, or switch to the terminal manually."
+            "Focusing windows is not supported on this compositor (supported: Hyprland, Sway, \
+             niri, KDE, X11). Use Open folder, or switch to the terminal manually."
                 .into(),
         ),
     }
@@ -293,11 +412,68 @@ mod tests {
 
     #[test]
     fn backend_selection() {
-        assert_eq!(pick_backend("KDE", true, true), Backend::KWin);
-        assert_eq!(pick_backend("ubuntu:GNOME", true, true), Backend::X11);
-        assert_eq!(pick_backend("X-Cinnamon", false, true), Backend::X11);
-        assert_eq!(pick_backend("COSMIC", true, false), Backend::Unsupported);
-        assert_eq!(pick_backend("KDE", false, false), Backend::Unsupported);
+        let none = CompositorEnv::default();
+        assert_eq!(pick_backend("KDE", true, true, none), Backend::KWin);
+        assert_eq!(pick_backend("ubuntu:GNOME", true, true, none), Backend::X11);
+        assert_eq!(pick_backend("X-Cinnamon", false, true, none), Backend::X11);
+        assert_eq!(
+            pick_backend("COSMIC", true, false, none),
+            Backend::Unsupported
+        );
+        assert_eq!(
+            pick_backend("KDE", false, false, none),
+            Backend::Unsupported
+        );
+        let c = |hyprland, sway, niri| CompositorEnv {
+            hyprland,
+            sway,
+            niri,
+        };
+        assert_eq!(
+            pick_backend("Hyprland", true, true, c(true, false, false)),
+            Backend::Hyprland
+        );
+        assert_eq!(
+            pick_backend("sway", true, true, c(false, true, false)),
+            Backend::Sway
+        );
+        assert_eq!(
+            pick_backend("niri", true, false, c(false, false, true)),
+            Backend::Niri
+        );
+    }
+
+    #[test]
+    fn hyprland_clients_match_nearest_ancestor_and_reject_odd_addresses() {
+        let j = r#"[{"address":"0xaaa1","pid":100,"class":"foot"},
+                    {"address":"0xbbb2","pid":4242,"class":"x"},
+                    {"address":"zz; rm","pid":7}]"#;
+        assert_eq!(hypr_window(j, &[300, 100, 4242]), Some("0xaaa1".into()));
+        assert_eq!(hypr_window(j, &[4242]), Some("0xbbb2".into()));
+        assert_eq!(hypr_window(j, &[7]), None, "non-hex address is refused");
+        assert_eq!(hypr_window(j, &[9]), None);
+        assert_eq!(hypr_window("nope", &[100]), None);
+    }
+
+    #[test]
+    fn sway_tree_walks_nodes_and_floating_nodes() {
+        let j = r#"{"id":1,"type":"root","nodes":[{"id":2,"nodes":[
+            {"id":3,"pid":100,"nodes":[]}],
+            "floating_nodes":[{"id":4,"pid":200}]}]}"#;
+        assert_eq!(sway_pid(j, &[300, 200, 100]), Some(200));
+        assert_eq!(sway_pid(j, &[100]), Some(100));
+        assert_eq!(sway_pid(j, &[9]), None);
+        assert_eq!(sway_pid("[", &[100]), None);
+    }
+
+    #[test]
+    fn niri_windows_yield_the_id_of_the_nearest_ancestor() {
+        let j = r#"[{"id":12,"pid":100,"title":"a"},{"id":15,"pid":200,"title":"b"},
+                    {"id":16,"pid":null}]"#;
+        assert_eq!(niri_window(j, &[300, 200, 100]), Some(15));
+        assert_eq!(niri_window(j, &[100]), Some(12));
+        assert_eq!(niri_window(j, &[9]), None);
+        assert_eq!(niri_window("{}", &[100]), None);
     }
 
     #[test]
