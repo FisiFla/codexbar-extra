@@ -21,6 +21,8 @@ pub enum Glyph {
     Status,
     Copy,
     External,
+    Shield,
+    Warning,
 }
 
 impl Glyph {
@@ -58,6 +60,12 @@ impl Glyph {
             ),
             Glyph::External => s!(
                 r#"<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>"#
+            ),
+            Glyph::Shield => s!(
+                r#"<path d="M12 22s8-3.6 8-10V5l-8-3-8 3v7c0 6.4 8 10 8 10z"/><path d="M9.2 11.6l2 2 3.6-4.2"/>"#
+            ),
+            Glyph::Warning => s!(
+                r#"<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>"#
             ),
         }
     }

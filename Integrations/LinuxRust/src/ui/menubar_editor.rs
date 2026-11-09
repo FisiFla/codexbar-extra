@@ -10,9 +10,9 @@ use crate::menubar_layout::{
 };
 use crate::state::{App, Message};
 use crate::tray::{self, TrayIcon, TrayParams};
-use crate::ui::style::pick_list;
-use iced::widget::{column, container, image, row, text};
-use iced::{Element, Length};
+use crate::ui::style::{self, pick_list};
+use iced::widget::{column, container, image, progress_bar, row, text, Space};
+use iced::{Background, Border, Color, Element, Length};
 use std::fmt;
 
 /// pick_list item: compared by value, shown by label.
@@ -47,7 +47,9 @@ fn small_button(label: &'static str, msg: Option<Message>) -> Element<'static, M
 pub fn view(app: &App) -> Element<'_, Message> {
     let layout = &app.menubar_layout;
     let mut col = column![
-        text("Menu bar layout").size(16),
+        text("Menu bar layout")
+            .size(style::TEXT_TITLE3)
+            .font(style::font_semibold()),
         preview(app),
         presets(),
         title_modes(layout),
@@ -100,19 +102,27 @@ fn preview(app: &App) -> Element<'_, Message> {
         .into(),
         TrayIcon::Named => text("[themed icon]").size(12).into(),
     };
+    // Render the pieces themselves (brand icon, mini meter) instead of
+    // "[icon]" / "[bar N%]" placeholder text.
     let mut lines = column![].spacing(2);
     for line in &rendered.lines {
-        let t: Vec<String> = line
-            .iter()
-            .map(|p| match p {
-                Piece::Text(t) => t.clone(),
-                Piece::Icon => "[icon]".into(),
-                Piece::Bar(Some(v)) => format!("[bar {v}%]"),
-                Piece::Bar(None) => "[bar \u{2014}]".into(),
-                Piece::Space => " ".into(),
-            })
-            .collect();
-        lines = lines.push(text(t.join(" ")).size(13));
+        let mut r = row![].spacing(4).align_y(iced::Alignment::Center);
+        for p in line {
+            r = r.push(match p {
+                Piece::Text(t) => text(t.clone()).size(13).into(),
+                Piece::Icon => match entry {
+                    Some(e) => crate::icons::brand(&e.provider, 14.0, Color::WHITE),
+                    None => text("").into(),
+                },
+                Piece::Bar(v) => progress_bar(0.0..=100.0, v.unwrap_or(0) as f32)
+                    .width(Length::Fixed(44.0))
+                    .height(5.0)
+                    .style(style::meter(style::ACCENT, 5.0))
+                    .into(),
+                Piece::Space => Space::with_width(6).into(),
+            });
+        }
+        lines = lines.push(r);
     }
     let tray_box = container(
         row![icon, lines]
@@ -120,10 +130,10 @@ fn preview(app: &App) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center),
     )
     .padding(10)
-    .style(container::rounded_box);
+    .style(style::card);
     column![
         row![
-            text("Preview").width(Length::Fixed(220.0)),
+            text("Preview").size(13).width(Length::Fixed(220.0)),
             tray_box
         ]
         .spacing(8)
@@ -149,7 +159,7 @@ fn presets() -> Element<'static, Message> {
         })
         .collect();
     column![
-        text("Presets"),
+        text("Presets").size(13),
         iced::widget::Row::from_vec(buttons).spacing(6).wrap()
     ]
     .spacing(6)
@@ -185,12 +195,20 @@ fn title_modes(layout: &MenuBarLayout) -> Element<'_, Message> {
         |c: Choice<DisplayMode>| edit(LayoutEdit::SetDisplayMode(c.0)),
     );
     column![
-        row![text("Tray title").width(Length::Fixed(220.0)), title]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        row![text("Display mode text").width(Length::Fixed(220.0)), mode]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
+        row![
+            text("Tray title").size(13).width(Length::Fixed(220.0)),
+            title
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        row![
+            text("Display mode text")
+                .size(13)
+                .width(Length::Fixed(220.0)),
+            mode
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
     ]
     .spacing(6)
     .into()
@@ -221,16 +239,28 @@ fn line_editor(layout: &MenuBarLayout, line: usize) -> Element<'_, Message> {
         chips = chips.push(
             container(
                 row![
-                    small_button("<", move_msg(-1)),
+                    small_button("\u{2039}", move_msg(-1)),
                     text(layout.token_label(token)).size(13),
-                    small_button(">", move_msg(1)),
-                    small_button("x", Some(edit(LayoutEdit::RemoveToken { line, index }))),
+                    small_button("\u{203a}", move_msg(1)),
+                    small_button(
+                        "\u{d7}",
+                        Some(edit(LayoutEdit::RemoveToken { line, index }))
+                    ),
                 ]
                 .spacing(4)
                 .align_y(iced::Alignment::Center),
             )
             .padding([3, 6])
-            .style(container::rounded_box),
+            // Mac editor chips are capsules.
+            .style(|_| container::Style {
+                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.06))),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+                    width: 1.0,
+                    radius: 999.0.into(),
+                },
+                ..Default::default()
+            }),
         );
     }
     if tokens.is_empty() {
@@ -249,6 +279,7 @@ fn line_editor(layout: &MenuBarLayout, line: usize) -> Element<'_, Message> {
             } else {
                 "Line 2 (stacked)"
             })
+            .size(13)
             .width(Length::Fixed(220.0)),
             add
         ]
@@ -263,7 +294,9 @@ fn line_editor(layout: &MenuBarLayout, line: usize) -> Element<'_, Message> {
 fn conditionals(layout: &MenuBarLayout) -> Element<'_, Message> {
     let mut col = column![
         row![
-            text("Conditionals").size(16),
+            text("Conditionals")
+                .size(style::TEXT_TITLE3)
+                .font(style::font_semibold()),
             small_button("+ New conditional", Some(edit(LayoutEdit::AddConditional))),
         ]
         .spacing(10)
@@ -385,7 +418,7 @@ fn conditional_editor<'a>(layout: &'a MenuBarLayout, c: &'a Conditional) -> Elem
             ));
         if c.clauses.len() > 1 {
             r = r.push(small_button(
-                "x",
+                "\u{d7}",
                 Some(edit(LayoutEdit::RemoveClause(id.clone(), i))),
             ));
         }
@@ -422,7 +455,7 @@ fn conditional_editor<'a>(layout: &'a MenuBarLayout, c: &'a Conditional) -> Elem
     container(col)
         .padding(10)
         .width(Length::Fill)
-        .style(container::rounded_box)
+        .style(style::card)
         .into()
 }
 

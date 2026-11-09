@@ -20,12 +20,13 @@ pub const PIXMAP_SIZE: u32 = 64;
 pub const TRACK_X: f32 = 5.0;
 pub const TRACK_WIDTH: f32 = 54.0;
 pub const TRACK_HEIGHT: f32 = 15.0;
-pub const TRACK_RADIUS: f32 = 4.0;
+/// Capsule ends like the macOS meters (Qt used 4.0).
+pub const TRACK_RADIUS: f32 = 7.5;
 pub const TRACK_YS: [f32; 2] = [12.0, 37.0];
 
 pub const TRACK_RGB: (u8, u8, u8) = (0x77, 0x77, 0x77); // #777777
-/// Fallback for Qt `palette().highlight()` (system accent blue).
-pub const HIGHLIGHT_RGB: (u8, u8, u8) = (0x35, 0x84, 0xe4); // #3584e4
+/// macOS system blue (`style::ACCENT`); Qt used `palette().highlight()`.
+pub const HIGHLIGHT_RGB: (u8, u8, u8) = (0x0a, 0x84, 0xff); // #0a84ff
 pub const WARNING_RGB: (u8, u8, u8) = (0xe5, 0x96, 0x42); // #e59642
 pub const STALE_RGB: (u8, u8, u8) = (0xaa, 0xaa, 0xaa); // #aaaaaa
 
@@ -646,11 +647,11 @@ mod tests {
 
     #[test]
     fn warning_color_choice() {
-        assert_eq!(fill_color_rgb(80, false, true, 10), (0x35, 0x84, 0xe4));
+        assert_eq!(fill_color_rgb(80, false, true, 10), HIGHLIGHT_RGB);
         assert_eq!(fill_color_rgb(10, false, true, 10), (0xe5, 0x96, 0x42));
         assert_eq!(fill_color_rgb(5, false, true, 10), (0xe5, 0x96, 0x42));
-        assert_eq!(fill_color_rgb(5, false, false, 10), (0x35, 0x84, 0xe4));
-        assert_eq!(fill_color_rgb(11, false, true, 10), (0x35, 0x84, 0xe4));
+        assert_eq!(fill_color_rgb(5, false, false, 10), HIGHLIGHT_RGB);
+        assert_eq!(fill_color_rgb(11, false, true, 10), HIGHLIGHT_RGB);
         assert_eq!(fill_color_rgb(5, true, true, 10), (0xaa, 0xaa, 0xaa));
         assert_eq!(fill_color_rgb(80, true, true, 10), (0xaa, 0xaa, 0xaa));
         assert!(is_warning(10, true, 10));
@@ -697,7 +698,10 @@ mod tests {
         let rgba = meters_pixmap(&[window(100), window(0)], false, false);
         assert_eq!(rgba.len(), 64 * 64 * 4);
         assert_eq!(px(&rgba, 0, 0), [0, 0, 0, 0]);
-        assert_eq!(px(&rgba, 55, 19), [0x35, 0x84, 0xe4, 0xff]);
+        assert_eq!(
+            px(&rgba, 55, 19),
+            [HIGHLIGHT_RGB.0, HIGHLIGHT_RGB.1, HIGHLIGHT_RGB.2, 0xff]
+        );
         assert_eq!(px(&rgba, 55, 44), [0x77, 0x77, 0x77, 0xff]);
     }
 

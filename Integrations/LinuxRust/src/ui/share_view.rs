@@ -46,9 +46,10 @@ impl Palette {
 }
 
 fn font(weight: Weight) -> Font {
+    // Bundled Inter, like the rest of the app (mac uses SF Rounded here).
     Font {
         weight,
-        ..Font::DEFAULT
+        ..Font::with_name("Inter")
     }
 }
 
@@ -367,6 +368,12 @@ fn rankings<'a>(p: &SharePayload, pal: Palette) -> Element<'a, Message> {
 
 fn footer<'a>(p: &SharePayload, pal: Palette) -> Element<'a, Message> {
     row![
+        // Mac: Label("LOCAL · AGGREGATE ONLY", systemImage: "lock.shield").
+        crate::ui::popover_charts::glyph(
+            crate::ui::popover_charts::Glyph::Shield,
+            15.0,
+            pal.secondary(),
+        ),
         t(
             "LOCAL · AGGREGATE ONLY",
             14.0,
@@ -384,6 +391,8 @@ fn footer<'a>(p: &SharePayload, pal: Palette) -> Element<'a, Message> {
             pal.secondary()
         ),
     ]
+    .spacing(6)
+    .align_y(Alignment::Center)
     .into()
 }
 

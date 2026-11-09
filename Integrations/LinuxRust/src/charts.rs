@@ -460,6 +460,8 @@ impl canvas::Program<Message> for BarChart {
             return vec![frame.into_geometry()];
         }
         let dim = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
+        // Axis labels are caption2 tertiary on macOS.
+        let axis_dim = Color::from_rgba(1.0, 1.0, 1.0, 0.40);
         let plot = plot_rect(size);
         let frames = bar_frames(plot, self.bars.len(), BAR_WIDTH_RATIO);
         let max = self.y_max.unwrap_or_else(|| max_value(&self.bars));
@@ -474,7 +476,7 @@ impl canvas::Program<Message> for BarChart {
             frame.fill_text(text(
                 (self.axis)(tick),
                 Point::new(Y_AXIS_WIDTH - 6.0, y),
-                dim,
+                axis_dim,
                 alignment::Horizontal::Right,
             ));
         }
@@ -537,7 +539,7 @@ impl canvas::Program<Message> for BarChart {
             frame.fill_text(text(
                 l.text,
                 Point::new(l.x, size.height - X_AXIS_HEIGHT / 2.0),
-                dim,
+                axis_dim,
                 alignment::Horizontal::Left,
             ));
         }
@@ -547,13 +549,13 @@ impl canvas::Program<Message> for BarChart {
             let h = lines.len() as f32 * 14.0 + 8.0;
             let r = tooltip_rect(frames[i], size, w, h);
             frame.fill(
-                &Path::rounded_rectangle(r.position(), r.size(), 5.0.into()),
+                &Path::rounded_rectangle(r.position(), r.size(), 8.0.into()),
                 Color::from_rgba(0.08, 0.08, 0.1, 0.96),
             );
             frame.stroke(
-                &Path::rounded_rectangle(r.position(), r.size(), 5.0.into()),
+                &Path::rounded_rectangle(r.position(), r.size(), 8.0.into()),
                 canvas::Stroke::default()
-                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.25))
+                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))
                     .with_width(1.0),
             );
             for (n, line) in lines.into_iter().enumerate() {
@@ -610,7 +612,6 @@ impl canvas::Program<Message> for BurndownChart {
         if size.width < 60.0 || size.height < 40.0 {
             return vec![frame.into_geometry()];
         }
-        let dim = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
         let plot = plot_rect(size);
         let baseline = plot.y + plot.height;
         for tick in [0.0, 50.0, 100.0] {
@@ -623,7 +624,7 @@ impl canvas::Program<Message> for BurndownChart {
             frame.fill_text(text(
                 format!("{tick:.0}%"),
                 Point::new(Y_AXIS_WIDTH - 6.0, y),
-                dim,
+                Color::from_rgba(1.0, 1.0, 1.0, 0.40),
                 alignment::Horizontal::Right,
             ));
         }

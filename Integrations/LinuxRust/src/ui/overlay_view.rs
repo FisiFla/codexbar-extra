@@ -5,10 +5,13 @@
 use crate::overlay::{self, Alert};
 use crate::state::{App, Message};
 use crate::ui::popover::accent_rgb;
+use crate::ui::popover_charts::{glyph, Glyph};
+use crate::ui::style;
 use iced::widget::canvas::{self, Frame, Geometry};
-use iced::widget::{column, container, mouse_area, text};
+use iced::widget::{column, container, mouse_area, row, text};
 use iced::{
-    mouse, Background, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    mouse, Background, Border, Color, Element, Length, Point, Rectangle, Renderer, Shadow, Size,
+    Theme, Vector,
 };
 use std::time::Instant;
 
@@ -28,23 +31,36 @@ pub fn alert_view(app: &App) -> Element<'_, Message> {
         return container(text("")).into();
     };
     let Alert { title, message } = &state.alert;
+    // Mac QuotaWarningAlertOverlayView: warning triangle left, headline +
+    // subheadline stacked, material card capped at 420 wide.
     let card = container(
-        column![
-            row_title(title),
-            text(message.clone())
-                .size(14)
-                .color(Color::from_rgba(1.0, 1.0, 1.0, 0.75))
+        row![
+            glyph(Glyph::Warning, 20.0, Color::from_rgb8(0xff, 0x9f, 0x0a)),
+            column![
+                text(title.clone())
+                    .size(style::TEXT_HEADLINE)
+                    .font(style::font_semibold()),
+                text(message.clone())
+                    .size(style::TEXT_SUBHEADLINE)
+                    .color(style::SECONDARY),
+            ]
+            .spacing(4),
         ]
-        .spacing(6),
+        .spacing(12),
     )
     .padding([16, 20])
-    .width(Length::Fill)
+    .max_width(420.0)
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgba(0.11, 0.11, 0.13, 0.94))),
+        background: Some(Background::Color(Color::from_rgba(0.16, 0.16, 0.18, 0.94))),
         border: Border {
-            color: Color::from_rgba(1.0, 1.0, 1.0, 0.10),
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
             width: 1.0,
             radius: 16.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
         },
         ..Default::default()
     });
@@ -52,22 +68,10 @@ pub fn alert_view(app: &App) -> Element<'_, Message> {
         container(card)
             .padding(8)
             .center_y(Length::Fill)
+            .center_x(Length::Fill)
             .width(Length::Fill),
     )
     .on_press(Message::DismissOverlays)
-    .into()
-}
-
-fn row_title(title: &str) -> Element<'static, Message> {
-    iced::widget::row![
-        text("!").size(20).color(Color::from_rgb8(0xff, 0x9f, 0x0a)),
-        text(title.to_string()).size(17).font(iced::Font {
-            weight: iced::font::Weight::Semibold,
-            ..iced::Font::DEFAULT
-        }),
-    ]
-    .spacing(10)
-    .align_y(iced::Alignment::Center)
     .into()
 }
 

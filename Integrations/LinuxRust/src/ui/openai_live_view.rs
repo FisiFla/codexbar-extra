@@ -65,16 +65,14 @@ fn header(app: &App, names: &[String]) -> Element<'static, Message> {
         .last_updated
         .map(|t| live::updated_text(t, now()))
         .unwrap_or_default();
-    let refresh = crate::ui::style::button(
-        text(if st.loading {
-            "Refreshing…"
-        } else {
-            "Refresh"
-        })
-        .size(13),
-    )
+    // Mac header uses an icon-only refresh button.
+    let refresh = crate::ui::style::button(crate::ui::popover_charts::glyph(
+        crate::ui::popover_charts::Glyph::Refresh,
+        14.0,
+        muted(),
+    ))
     .on_press_maybe((!st.loading).then_some(Message::OpenAiLiveRefresh))
-    .padding([5, 12])
+    .padding(6)
     .style(crate::ui::style::push);
     row![
         picker,
@@ -114,29 +112,26 @@ fn error_row(app: &App) -> Option<Element<'static, Message>> {
                 .style(crate::ui::style::push),
         );
     }
-    Some(
-        container(r)
-            .padding(10)
-            .width(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.81, 0.45, 0.26, 0.12))),
-                border: Border::default().rounded(8.0),
-                ..Default::default()
-            })
-            .into(),
-    )
+    // Mac shows errors as flat callout text, not a tinted box.
+    Some(r.into())
 }
 
 fn tile(title: String, value: String, detail: String) -> Element<'static, Message> {
-    let mut c = column![
-        text(title).size(12).color(muted()),
-        text(value).size(22),
-        text(detail).size(11).color(muted()),
+    // Mac tile: caption label, title2 value, caption2 detail.
+    column![
+        text(title)
+            .size(crate::ui::style::TEXT_CAPTION)
+            .color(muted()),
+        text(value)
+            .size(crate::ui::style::TEXT_TITLE2)
+            .font(crate::ui::style::font_numeric()),
+        text(detail)
+            .size(crate::ui::style::TEXT_CAPTION2)
+            .color(muted()),
     ]
     .spacing(3)
-    .width(Length::FillPortion(1));
-    c = c.spacing(3);
-    c.into()
+    .width(Length::FillPortion(1))
+    .into()
 }
 
 fn metrics(s: &Snapshot, filter: Option<&str>) -> Element<'static, Message> {
@@ -221,7 +216,9 @@ fn chart(app: &App, s: &Snapshot) -> Element<'static, Message> {
         );
     }
     column![
-        text("Tokens per minute").size(14).font(semibold()),
+        text("Tokens per minute")
+            .size(crate::ui::style::TEXT_HEADLINE)
+            .font(semibold()),
         canvas,
         key,
         text("Gray ticks are minutes OpenAI is still reporting (unknown, not zero).")
@@ -233,7 +230,12 @@ fn chart(app: &App, s: &Snapshot) -> Element<'static, Message> {
 }
 
 fn cell(t: String) -> Element<'static, Message> {
-    text(t).size(13).width(Length::Fixed(90.0)).into()
+    // Mac numeric columns are trailing-aligned, 85 wide.
+    text(t)
+        .size(13)
+        .width(Length::Fixed(85.0))
+        .align_x(iced::alignment::Horizontal::Right)
+        .into()
 }
 
 fn table(app: &App, s: &Snapshot, names: &[String]) -> Element<'static, Message> {
@@ -241,7 +243,8 @@ fn table(app: &App, s: &Snapshot, names: &[String]) -> Element<'static, Message>
         text(t)
             .size(12)
             .color(muted())
-            .width(Length::Fixed(90.0))
+            .width(Length::Fixed(85.0))
+            .align_x(iced::alignment::Horizontal::Right)
             .into()
     };
     let mut col = Column::new().spacing(2);
@@ -279,8 +282,12 @@ fn table(app: &App, s: &Snapshot, names: &[String]) -> Element<'static, Message>
                 .style(move |theme: &Theme, status| {
                     let base = button::text(theme, status);
                     button::Style {
-                        background: selected
-                            .then(|| Background::Color(Color::from_rgba(0.35, 0.55, 0.94, 0.18))),
+                        background: selected.then(|| {
+                            Background::Color(Color {
+                                a: 0.15,
+                                ..crate::ui::style::ACCENT
+                            })
+                        }),
                         border: Border::default().rounded(6.0),
                         ..base
                     }
@@ -343,7 +350,7 @@ pub fn view(app: &App) -> Element<Message> {
             };
             if let Some(m) = msg {
                 body = body.push(
-                    container(text(m).size(15))
+                    container(text(m).size(13).color(muted()))
                         .width(Length::Fill)
                         .center_x(Length::Fill)
                         .padding(40),

@@ -210,7 +210,10 @@ fn provider_color(p: Provider) -> Color {
 // ---------------------------------------------------------------------------
 
 fn heading(s: &str) -> Element<'static, Message> {
-    text(s.to_string()).size(16).into()
+    text(s.to_string())
+        .size(crate::ui::style::TEXT_TITLE3)
+        .font(crate::ui::style::font_semibold())
+        .into()
 }
 
 fn note(s: impl Into<String>) -> Element<'static, Message> {
@@ -221,7 +224,9 @@ fn stat(label: &str, value: String) -> Element<'static, Message> {
     container(
         column![
             text(label.to_string()).size(12).color(MUTED),
-            text(value).size(17)
+            text(value)
+                .size(crate::ui::style::TEXT_TITLE2)
+                .font(crate::ui::style::font_numeric())
         ]
         .spacing(2),
     )
@@ -543,44 +548,61 @@ pub fn sections(app: &App) -> Element<'static, Message> {
 
 fn session_button(app: &App, s: &SessionRow) -> Element<'static, Message> {
     let selected = app.selected_session.as_ref() == Some(&(s.provider, s.id.clone()));
+    // Mac SessionUsageBrowser row: medium name, caption metrics line,
+    // tertiary date trailing, tinted list selection (no accent bar).
     let line = row![
-        container(Space::new(Length::Fixed(4.0), Length::Fixed(16.0))).style({
+        container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0))).style({
             let c = provider_color(s.provider);
             move |_: &Theme| container::Style {
                 background: Some(c.into()),
+                border: iced::Border::default().rounded(4.0),
                 ..Default::default()
             }
         }),
-        text(s.provider.label()).size(12).width(Length::Fixed(52.0)),
-        text(s.project.clone().unwrap_or_else(|| EM_DASH.into()))
-            .size(13)
-            .width(Length::FillPortion(2)),
-        text(s.primary_model().to_string())
-            .size(13)
-            .width(Length::FillPortion(3)),
+        column![
+            text(s.project.clone().unwrap_or_else(|| EM_DASH.into()))
+                .size(13)
+                .font(crate::ui::style::font_medium()),
+            text(format!(
+                "{} · {} · {} tokens · {}",
+                s.provider.label(),
+                s.primary_model(),
+                fmt_compact(s.tokens.total()),
+                fmt_cost(&s.cost)
+            ))
+            .size(crate::ui::style::TEXT_CAPTION)
+            .color(MUTED),
+        ]
+        .spacing(2)
+        .width(Length::Fill),
         text(fmt_ts(s.start_ms, app.scan_zone))
-            .size(12)
-            .width(Length::Fixed(84.0)),
-        text(fmt_compact(s.tokens.total()))
-            .size(13)
-            .width(Length::Fixed(56.0)),
-        text(fmt_cost(&s.cost)).size(13).width(Length::Fixed(96.0)),
+            .size(crate::ui::style::TEXT_CAPTION)
+            .color(Color::from_rgb(0.45, 0.45, 0.48)),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
-    let b = crate::ui::style::button(line)
+    crate::ui::style::button(line)
         .width(Length::Fill)
-        .padding([4, 8])
+        .padding([6, 8])
         .on_press(Message::SelectSession(if selected {
             None
         } else {
             Some((s.provider, s.id.clone()))
-        }));
-    if selected {
-        b.style(crate::ui::style::segment(true)).into()
-    } else {
-        b.style(crate::ui::style::segment(false)).into()
-    }
+        }))
+        .style(move |theme: &Theme, status| {
+            let base = iced::widget::button::text(theme, status);
+            iced::widget::button::Style {
+                background: selected.then(|| {
+                    iced::Background::Color(Color {
+                        a: 0.15,
+                        ..crate::ui::style::ACCENT
+                    })
+                }),
+                border: iced::Border::default().rounded(6.0),
+                ..base
+            }
+        })
+        .into()
 }
 
 fn sort_button(label: &str, sort: SessionSort, current: SessionSort) -> Element<'static, Message> {

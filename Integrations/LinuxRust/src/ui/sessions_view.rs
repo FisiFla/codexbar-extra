@@ -49,19 +49,29 @@ fn session_card(s: &Session, now: chrono::DateTime<chrono::Utc>) -> Element<'sta
     }
     let mut body = column![row![
         dot(accent),
-        text(s.title()).size(14).font(semibold()),
+        text(s.title())
+            .size(crate::ui::style::TEXT_HEADLINE)
+            .font(semibold()),
         horizontal_space(),
         text(sessions::relative_time(s.last_activity(), now))
-            .size(12)
+            .size(crate::ui::style::TEXT_CAPTION)
             .color(muted()),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center)]
     .spacing(3);
     if let Some(c) = &cwd {
-        body = body.push(text(c.clone()).size(12).color(muted()));
+        body = body.push(
+            text(c.clone())
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(muted()),
+        );
     }
-    body = body.push(text(meta.join(" \u{00b7} ")).size(12).color(muted()));
+    body = body.push(
+        text(meta.join(" \u{00b7} "))
+            .size(crate::ui::style::TEXT_CAPTION)
+            .color(muted()),
+    );
     let open = cwd.clone().map(Message::OpenFolder);
     let copy = s
         .transcript_path
@@ -87,13 +97,9 @@ fn session_card(s: &Session, now: chrono::DateTime<chrono::Utc>) -> Element<'sta
         ]
         .spacing(6),
     );
-    container(body.padding(10))
+    container(body.padding(12))
         .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.05))),
-            border: Border::default().rounded(8.0),
-            ..Default::default()
-        })
+        .style(crate::ui::style::card)
         .into()
 }
 
@@ -104,7 +110,7 @@ fn groups_view(app: &App) -> Element<'static, Message> {
         let total: usize = sg.providers.iter().map(|p| p.sessions.len()).sum();
         col = col.push(
             text(format!("{} ({total})", sg.state.label()))
-                .size(15)
+                .size(crate::ui::style::TEXT_HEADLINE)
                 .font(semibold()),
         );
         for pg in &sg.providers {
@@ -142,7 +148,9 @@ pub fn view(app: &App) -> Element<Message> {
         }
     };
     let header = row![
-        text("Agent Sessions").size(20).font(semibold()),
+        text("Agent Sessions")
+            .size(crate::ui::style::TEXT_TITLE2)
+            .font(semibold()),
         text(status).size(12).color(muted()),
         horizontal_space(),
         small_button(
@@ -161,16 +169,12 @@ pub fn view(app: &App) -> Element<Message> {
 
     let mut body = Column::new().spacing(10);
     if !app.sessions_error.is_empty() {
+        // Flat error text, like the Mac callouts (no tinted box).
         let err = format!("Could not load sessions: {}", app.sessions_error);
         body = body.push(
-            container(text(err).size(13).color(Color::from_rgb8(0xcf, 0x74, 0x43)))
-                .padding(10)
-                .width(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(Color::from_rgba(0.81, 0.45, 0.26, 0.12))),
-                    border: Border::default().rounded(8.0),
-                    ..Default::default()
-                }),
+            text(err)
+                .size(crate::ui::style::TEXT_CALLOUT)
+                .color(Color::from_rgb8(0xff, 0x6b, 0x5e)),
         );
     }
     if app.sessions.is_empty() {
@@ -182,7 +186,7 @@ pub fn view(app: &App) -> Element<Message> {
             };
             body = body.push(
                 column![
-                    text(msg).size(15),
+                    text(msg).size(13),
                     text("Codex, Claude and Pi sessions appear here while they run.")
                         .size(12)
                         .color(muted()),
