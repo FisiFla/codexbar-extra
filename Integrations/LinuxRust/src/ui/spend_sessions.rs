@@ -5,7 +5,7 @@
 //! total is "~$x" (lower bound), a family-fallback price is "est. $x" (estimate), and a percentile
 //! needs enough samples before it is claimed.
 
-use super::spend_view::{bar_fraction, count, money_lb, share_bar, swatch, ACCENT, EM_DASH};
+use super::spend_view::{bar_fraction, count, money_lb, share_bar, swatch, CHART_ACCENT as ACCENT, EM_DASH};
 use crate::charts::{self, ChartBar};
 use crate::scan::aggregate::{
     Money, Perf, SessionRow, ToolRow, View, Zone, P95_MIN_SAMPLES, SLOW_TOOL_MS,
@@ -19,7 +19,7 @@ use iced::{Color, Element, Length, Theme};
 
 const TOOL_ROWS_COLLAPSED: usize = 8;
 const SESSION_ROWS: usize = 40;
-const MUTED: Color = Color::from_rgb(0.62, 0.64, 0.68);
+const MUTED: Color = crate::ui::style::SECONDARY;
 
 // ---------------------------------------------------------------------------
 // Pure formatting / filtering helpers (unit-tested below)
@@ -51,12 +51,20 @@ pub fn fmt_compact(n: i64) -> String {
         return n.to_string();
     };
     let sign = if n < 0 { "-" } else { "" };
+    // Trim trailing zeros like the Mac compact formatter ("1.5K", not "1.50K").
+    let trimmed = |s: String| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
+    };
     if v >= 100.0 {
         format!("{sign}{v:.0}{s}")
     } else if v >= 10.0 {
-        format!("{sign}{v:.1}{s}")
+        format!("{sign}{}{s}", trimmed(format!("{v:.1}")))
     } else {
-        format!("{sign}{v:.2}{s}")
+        format!("{sign}{}{s}", trimmed(format!("{v:.2}")))
     }
 }
 
@@ -796,7 +804,7 @@ mod tests {
         assert_eq!(fmt_compact(999), "999");
         assert_eq!(fmt_compact(1_234), "1.23K");
         assert_eq!(fmt_compact(12_345_678), "12.3M");
-        assert_eq!(fmt_compact(2_500_000_000), "2.50B");
+        assert_eq!(fmt_compact(2_500_000_000), "2.5B");
         assert_eq!(fmt_duration_ms(850.0), "850 ms");
         assert_eq!(fmt_duration_ms(6500.0), "6.5 s");
         assert_eq!(fmt_duration_ms(123_000.0), "2m 03s");

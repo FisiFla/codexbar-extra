@@ -75,6 +75,19 @@ fn main() -> iced::Result {
         .map(|w| w[1].clone());
 
     iced::daemon("CodexBar", update, view)
+        .font(std::borrow::Cow::Borrowed(
+            &include_bytes!("../assets/fonts/Inter-400.ttf")[..],
+        ))
+        .font(std::borrow::Cow::Borrowed(
+            &include_bytes!("../assets/fonts/Inter-500.ttf")[..],
+        ))
+        .font(std::borrow::Cow::Borrowed(
+            &include_bytes!("../assets/fonts/Inter-600.ttf")[..],
+        ))
+        .font(std::borrow::Cow::Borrowed(
+            &include_bytes!("../assets/fonts/Inter-700.ttf")[..],
+        ))
+        .default_font(iced::Font::with_name("Inter"))
         .subscription(subscription)
         .theme(|app, id| match app.windows.get(&id) {
             Some(Page::QuotaAlert | Page::Confetti) => ui::overlay_view::clear_theme(),
@@ -135,7 +148,7 @@ fn main() -> iced::Result {
                 sessions_busy: false,
                 sessions_loaded: false,
                 cost_payloads: vec![],
-                expanded_charts: Default::default(),
+                collapsed_charts: Default::default(),
                 chart_hover: None,
                 chart_series: Default::default(),
                 history,
@@ -392,7 +405,9 @@ fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
         return iced::window::gain_focus(id);
     }
     let (size, title) = match page {
-        Page::QuickView => ((420.0, 680.0), "CodexBar"),
+        // macOS menu base width is 310, grown by measured content; 340 keeps
+        // the Linux switcher labels readable without stretching the cards.
+        Page::QuickView => ((340.0, 680.0), "CodexBar"),
         Page::Usage => ((880.0, 620.0), "CodexBar — Usage & Spend"),
         Page::Settings => ((880.0, 620.0), "CodexBar Settings"),
         Page::Sessions => ((560.0, 680.0), "CodexBar — Agent Sessions"),
@@ -402,6 +417,8 @@ fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
     };
     let (id, task) = iced::window::open(iced::window::Settings {
         size: iced::Size::new(size.0, size.1),
+        // macOS Settings minimum is 800x540.
+        min_size: (page == Page::Settings).then_some(iced::Size::new(800.0, 540.0)),
         resizable: page != Page::ShareStats,
         ..Default::default()
     });
@@ -636,8 +653,8 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             iced::Task::none()
         }
         Message::ToggleChart(key) => {
-            if !app.expanded_charts.remove(&key) {
-                app.expanded_charts.insert(key);
+            if !app.collapsed_charts.remove(&key) {
+                app.collapsed_charts.insert(key);
             }
             app.chart_hover = None;
             iced::Task::none()

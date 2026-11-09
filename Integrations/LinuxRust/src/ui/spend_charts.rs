@@ -13,7 +13,7 @@ use crate::state::Message;
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Timelike, Utc};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::widget::{container, svg};
-use iced::{alignment, border, mouse, Background, Border, Color, Element, Length};
+use iced::{alignment, border, mouse, Color, Element, Length};
 use iced::{Pixels, Point, Rectangle, Renderer, Size, Theme};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -824,15 +824,7 @@ pub fn panel<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content)
         .padding(16)
         .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.045))),
-            border: Border {
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.09),
-                width: 1.0,
-                radius: 12.0.into(),
-            },
-            ..Default::default()
-        })
+        .style(crate::ui::style::panel)
         .into()
 }
 

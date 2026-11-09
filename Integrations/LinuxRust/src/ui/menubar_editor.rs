@@ -12,7 +12,7 @@ use crate::state::{App, Message};
 use crate::tray::{self, TrayIcon, TrayParams};
 use crate::ui::style::pick_list;
 use iced::widget::{column, container, image, row, text};
-use iced::{Color, Element, Length};
+use iced::{Element, Length};
 use std::fmt;
 
 /// pick_list item: compared by value, shown by label.
@@ -28,7 +28,7 @@ impl<T> fmt::Display for Choice<T> {
 fn dim(s: String) -> Element<'static, Message> {
     text(s)
         .size(12)
-        .color(Color::from_rgb(0.65, 0.65, 0.65))
+        .color(crate::ui::style::SECONDARY)
         .into()
 }
 

@@ -11,7 +11,7 @@ use crate::state::{App, Message, SettingsPane};
 use crate::ui::style::{radio, scrollable};
 use iced::widget::slider;
 use iced::widget::{column, container, row, text};
-use iced::{Color, Element, Length};
+use iced::{Background, Border, Color, Element, Length};
 use std::path::PathBuf;
 
 pub(crate) const ALL_PANES: [SettingsPane; 11] = crate::ui::settings_sidebar::PANE_ORDER;
@@ -172,7 +172,9 @@ fn switch_row<'a>(
     on_toggle: impl Fn(bool) -> Message + 'a,
 ) -> Element<'a, Message> {
     row![
-        text(label.to_string()).width(Length::Fill),
+        text(label.to_string())
+            .size(crate::ui::style::TEXT_BODY)
+            .width(Length::Fill),
         iced::widget::toggler(cur)
             .on_toggle(on_toggle)
             .size(22.0)
@@ -250,10 +252,9 @@ fn radio_group<'a>(
 /// Mac grouped section: semibold header, then a rounded group box holding the rows.
 fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
     column![
-        text(title.to_string()).size(14).font(iced::Font {
-            weight: iced::font::Weight::Semibold,
-            ..iced::Font::DEFAULT
-        }),
+        text(title.to_string())
+            .size(crate::ui::style::TEXT_HEADLINE)
+            .font(crate::ui::style::font_semibold()),
         group_box(body),
     ]
     .spacing(8)
@@ -265,18 +266,13 @@ fn group_box<'a>(body: Element<'a, Message>) -> Element<'a, Message> {
     container(body)
         .padding([12, 16])
         .width(Length::Fill)
-        .style(|theme| {
-            let mut st = crate::ui::style::card(theme);
-            st.background = Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into());
-            st.border.radius = 12.0.into();
-            st
-        })
+        .style(crate::ui::style::panel)
         .into()
 }
 
 fn note(s: &str) -> Element<'_, Message> {
     text(s.to_string())
-        .size(12)
+        .size(crate::ui::style::TEXT_FOOTNOTE)
         .color(crate::ui::style::SECONDARY)
         .into()
 }
@@ -284,7 +280,9 @@ fn note(s: &str) -> Element<'_, Message> {
 /// Label left, control right (Mac grouped-form row).
 fn labeled<'a>(label: &str, control: Element<'a, Message>) -> Element<'a, Message> {
     row![
-        text(label.to_string()).width(Length::Fill),
+        text(label.to_string())
+            .size(crate::ui::style::TEXT_BODY)
+            .width(Length::Fill),
         container(control).width(Length::Fixed(340.0)),
     ]
     .spacing(12)
@@ -462,6 +460,21 @@ fn providers_pane(app: &App) -> Element<'_, Message> {
     col.into()
 }
 
+fn detail_row<'a>(label: &str, value: String) -> Element<'a, Message> {
+    row![
+        text(label.to_string())
+            .size(crate::ui::style::TEXT_BODY)
+            .color(crate::ui::style::SECONDARY)
+            .width(Length::Fill),
+        text(value)
+            .size(crate::ui::style::TEXT_BODY)
+            .font(crate::ui::style::font_medium()),
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     let name = app
         .catalog
@@ -470,40 +483,95 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| crate::model::provider_name(id));
     let entry = app.entries.iter().find(|e| e.provider == id);
-    let mut body =
-        column![row![status_dot(dot_color(app, id)), text(name).size(16)].spacing(6),].spacing(6);
+    // Mac detail header: circular glyph badge, title2 name, caption subline.
+    let badge = container(crate::icons::brand::<Message>(id, 24.0, Color::WHITE))
+        .center_x(Length::Fixed(28.0))
+        .center_y(Length::Fixed(28.0))
+        .style(|_: &iced::Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08))),
+            border: Border::default().rounded(14.0),
+            ..Default::default()
+        });
+    let mut body = column![
+        row![
+            badge,
+            column![
+                text(name.clone())
+                    .size(crate::ui::style::TEXT_TITLE2)
+                    .font(crate::ui::style::font_semibold()),
+                row![
+                    status_dot(dot_color(app, id)),
+                    text(entry.map(|e| or_dash(&e.status).to_string()).unwrap_or_else(|| "No usage data yet".to_string()))
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .color(crate::ui::style::SECONDARY),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(2),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
+    ]
+    .spacing(8);
     match entry {
         Some(e) => {
-            body = body.push(text(format!("Account: {}", or_dash(&e.account_label))));
-            body = body.push(text(format!("Plan: {}", or_dash(&e.plan))));
-            body = body.push(text(format!("Status: {}", or_dash(&e.status))));
             if !e.error.trim().is_empty() {
                 body = body.push(
-                    text(format!("Error: {}", e.error)).color(Color::from_rgb(0.9, 0.4, 0.35)),
+                    container(
+                        text(e.error.clone())
+                            .size(crate::ui::style::TEXT_CALLOUT)
+                            .color(crate::ui::style::ERROR),
+                    )
+                    .padding([8, 10])
+                    .width(Length::Fill)
+                    .style(|_: &iced::Theme| container::Style {
+                        background: Some(Background::Color(Color::from_rgba(1.0, 0.27, 0.23, 0.12))),
+                        border: Border::default().rounded(crate::ui::style::R_MD),
+                        ..Default::default()
+                    }),
                 );
             }
-            body = body.push(text(format!("Updated: {}", or_dash(&e.updated_at))));
+            body = body.push(detail_row("Account", or_dash(&e.account_label).to_string()));
+            body = body.push(detail_row("Plan", or_dash(&e.plan).to_string()));
+            body = body.push(detail_row("Updated", or_dash(&e.updated_at).to_string()));
             let credits = e
                 .credits
                 .map(|c| format!("{c}"))
                 .unwrap_or_else(|| "—".to_string());
-            body = body.push(text(format!("Credits: {credits}")));
+            body = body.push(detail_row("Credits", credits));
             if e.windows.is_empty() {
-                body = body.push(text("Usage windows: —"));
+                body = body.push(detail_row("Usage", "—".to_string()));
             }
             for w in &e.windows {
-                let reset = or_dash(&w.reset_text);
-                body = body.push(text(format!(
-                    "{}: {}% left · {reset}",
-                    w.label, w.remaining
-                )));
+                let accent = crate::ui::popover::accent_rgb(id);
+                let fill = Color::from_rgb8(accent.0, accent.1, accent.2);
+                body = body.push(
+                    column![
+                        row![
+                            text(w.label.clone())
+                                .size(crate::ui::style::TEXT_BODY)
+                                .font(crate::ui::style::font_medium())
+                                .width(Length::Fill),
+                            text(format!("{}% left", w.remaining))
+                                .size(crate::ui::style::TEXT_BODY)
+                                .font(crate::ui::style::font_numeric()),
+                        ],
+                        iced::widget::progress_bar(0.0..=100.0, w.remaining.clamp(0, 100) as f32)
+                            .height(6.0)
+                            .style(crate::ui::style::meter(fill, 6.0)),
+                        text(or_dash(&w.reset_text).to_string())
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(crate::ui::style::SECONDARY),
+                    ]
+                    .spacing(4),
+                );
             }
         }
         None => {
             body = body.push(note("No usage data for this provider yet — values show as — until a refresh returns data."));
-            body = body.push(text("Plan: —"));
-            body = body.push(text("Status: —"));
-            body = body.push(text("Usage windows: —"));
+            body = body.push(detail_row("Plan", "—".to_string()));
+            body = body.push(detail_row("Usage", "—".to_string()));
         }
     }
     if let Some(meta) = app.provider_meta.iter().find(|p| p.provider == id) {
@@ -949,8 +1017,12 @@ fn debug_pane(app: &App) -> Element<'_, Message> {
 
 fn about_pane(_app: &App) -> Element<'_, Message> {
     column![
-        text("CodexBar Extra").size(18),
-        text(format!("Version {}", env!("CARGO_PKG_VERSION"))),
+        text("CodexBar Extra")
+            .size(crate::ui::style::TEXT_TITLE2)
+            .font(crate::ui::style::font_semibold()),
+        text(format!("Version {}", env!("CARGO_PKG_VERSION")))
+            .size(crate::ui::style::TEXT_CALLOUT)
+            .color(crate::ui::style::SECONDARY),
         note("Usage and spend for Codex, Claude, and other AI coding providers — Linux desktop build."),
         crate::ui::style::button(text("GitHub — this fork (FisiFla/codexbar-extra)"))
             .on_press(Message::OpenUrl("https://github.com/FisiFla/codexbar-extra".to_string())),

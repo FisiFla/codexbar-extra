@@ -7,12 +7,11 @@ use crate::state::{App, Message, Page, SettingsPane};
 use crate::ui::popover_charts::{self, glyph, Glyph};
 use iced::widget::{
     button, column, container, horizontal_rule, progress_bar, row, scrollable, text, Column, Row,
-    Space, Stack,
+    Space,
 };
 use iced::{Alignment, Background, Border, Color, Element, Font, Length, Theme};
 
 const EM_DASH: &str = "—";
-const WARNING_RGB: (u8, u8, u8) = (0xd9, 0x87, 0x4a);
 const ERROR_RGB: (u8, u8, u8) = (0xcf, 0x74, 0x43);
 const DEFAULT_METER_RGB: (u8, u8, u8) = (0xc9, 0x87, 0x57);
 
@@ -20,16 +19,17 @@ fn rgb(c: (u8, u8, u8)) -> Color {
     Color::from_rgb8(c.0, c.1, c.2)
 }
 
-/// Secondary text on the app's forced dark theme (Qt: primary at 0.65 alpha).
+/// Secondary text: the single shared token (see `style::SECONDARY`).
 fn muted() -> Color {
-    Color::from_rgba(1.0, 1.0, 1.0, 0.65)
+    crate::ui::style::SECONDARY
 }
 
 fn semibold() -> Font {
-    Font {
-        weight: iced::font::Weight::Semibold,
-        ..Font::DEFAULT
-    }
+    crate::ui::style::font_semibold()
+}
+
+fn medium() -> Font {
+    crate::ui::style::font_medium()
 }
 
 pub(crate) fn quota_display_value(remaining: i64, quota_display: &str) -> i64 {
@@ -91,6 +91,49 @@ pub(crate) fn accent_rgb(provider: &str) -> (u8, u8, u8) {
         .unwrap_or(DEFAULT_METER_RGB)
 }
 
+/// Status-page URL from the Swift provider descriptors (`statusPageURL`).
+pub(crate) fn status_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "codex" | "openai" => Some("https://status.openai.com/"),
+        "claude" => Some("https://status.claude.com/"),
+        "copilot" => Some("https://www.githubstatus.com/"),
+        "cursor" => Some("https://status.cursor.com"),
+        _ => None,
+    }
+}
+
+/// Weekly remaining for the switcher quota strip: the longest window wins.
+pub(crate) fn weekly_remaining(entry: &Entry) -> i64 {
+    entry
+        .windows
+        .iter()
+        .max_by_key(|w| w.minutes)
+        .map(|w| w.remaining.clamp(0, 100))
+        .unwrap_or(0)
+}
+
+/// Pace stripe colour: `delta = actual - expected` used % (Swift `UsagePace`).
+/// At or under pace is green, over pace is red, unknown stays white.
+pub(crate) fn pace_stripe_color(delta: f64) -> Color {
+    if !delta.is_finite() {
+        Color::WHITE
+    } else if delta <= 0.0 {
+        Color::from_rgb(0.19, 0.82, 0.35)
+    } else {
+        Color::from_rgb(1.0, 0.42, 0.38)
+    }
+}
+
+/// Quota-warning marker position in display terms (fraction along the bar).
+pub(crate) fn warning_fraction(notify_threshold: u32, quota_display: &str) -> f32 {
+    let t = (notify_threshold as f32 / 100.0).clamp(0.0, 1.0);
+    if quota_display == "used" {
+        1.0 - t
+    } else {
+        t
+    }
+}
+
 /// Reset line per `Usage.js resetText()/resetLabel()`: countdown | absolute | both.
 pub(crate) fn reset_display_text(
     resets_at: &str,
@@ -132,7 +175,16 @@ pub(crate) fn reset_display_text(
 }
 
 pub(crate) fn format_money(v: f64) -> String {
-    format!("${v:.2}")
+    if !v.is_finite() {
+        return EM_DASH.to_string();
+    }
+    let sign = if v < 0.0 { "-" } else { "" };
+    let a = v.abs();
+    if a >= 1000.0 {
+        format!("{sign}${}", format_count(a.round() as i64))
+    } else {
+        format!("{sign}${a:.2}")
+    }
 }
 
 pub(crate) fn format_count(v: i64) -> String {
@@ -193,77 +245,138 @@ pub fn view(app: &App) -> Element<Message> {
             .width(Length::Fill)
             .height(Length::Fill),
         horizontal_rule(1),
-        footer(),
+        footer(app),
     ]
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
 }
 
-/// Hairline divider between card sections (inset like the Mac menu separators).
+/// Hairline divider between card sections (inset by the card padding).
 fn rule<'a>() -> Element<'a, Message> {
-    container(horizontal_rule(1)).padding([4.0, 0.0]).into()
+    horizontal_rule(1).into()
 }
 
-/// Capsule meter: iced progress bar with optional pace-expected tick overlay.
+/// Canvas usage meter (mac `UsageProgressBar`): capsule track/fill with a
+/// punched pace stripe and quota-warning marker drawn over the fill.
+#[derive(Debug, Clone, Copy)]
+struct UsageMeter {
+    fraction: f32,
+    fill: Color,
+    pace: Option<(f32, Color)>,
+    warning: Option<f32>,
+}
+
+impl iced::widget::canvas::Program<Message> for UsageMeter {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry<iced::Renderer>> {
+        let mut frame = iced::widget::canvas::Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        let r = h / 2.0;
+        let track = Color::from_rgba(1.0, 1.0, 1.0, 0.22);
+        frame.fill(
+            &iced::widget::canvas::Path::rounded_rectangle(
+                iced::Point::ORIGIN,
+                iced::Size::new(w, h),
+                r.into(),
+            ),
+            track,
+        );
+        let fill_w = (w * self.fraction.clamp(0.0, 1.0)).max(if self.fraction > 0.0 {
+            h
+        } else {
+            0.0
+        });
+        if fill_w > 0.0 {
+            frame.fill(
+                &iced::widget::canvas::Path::rounded_rectangle(
+                    iced::Point::ORIGIN,
+                    iced::Size::new(fill_w, h),
+                    r.into(),
+                ),
+                self.fill,
+            );
+        }
+        // Punched markers: repaint the track across the slot, then the stripe.
+        let punch = |frame: &mut iced::widget::canvas::Frame<iced::Renderer>,
+                     at: f32,
+                     slot: f32,
+                     stripe: f32,
+                     color: Color| {
+            let x = (w * at.clamp(0.0, 1.0) - slot / 2.0).clamp(0.0, (w - slot).max(0.0));
+            frame.fill_rectangle(iced::Point::new(x, 0.0), iced::Size::new(slot, h), track);
+            let sx = (w * at.clamp(0.0, 1.0) - stripe / 2.0).clamp(0.0, (w - stripe).max(0.0));
+            frame.fill_rectangle(iced::Point::new(sx, 0.0), iced::Size::new(stripe, h), color);
+        };
+        if let Some(at) = self.warning {
+            punch(&mut frame, at, 5.0, 1.0, Color::from_rgba(1.0, 1.0, 1.0, 0.85));
+        }
+        if let Some((at, color)) = self.pace {
+            punch(&mut frame, at, 6.0, 2.0, color);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+fn usage_meter(
+    display_value: i64,
+    fill: Color,
+    pace: Option<(f32, Color)>,
+    warning: Option<f32>,
+) -> Element<'static, Message> {
+    iced::widget::Canvas::new(UsageMeter {
+        fraction: meter_fraction(display_value),
+        fill,
+        pace,
+        warning,
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(6.0))
+    .into()
+}
+
+/// Slim capsule meter for switcher/overview strips (no markers).
 fn meter_bar(
     display_value: i64,
     fill: Color,
     tick: Option<f32>,
     height: f32,
 ) -> Element<'static, Message> {
-    let bar = progress_bar(0.0..=100.0, meter_fraction(display_value) * 100.0)
+    let _ = tick;
+    progress_bar(0.0..=100.0, meter_fraction(display_value) * 100.0)
         .height(height)
         .width(Length::Fill)
-        .style(crate::ui::style::meter(fill, height));
-    match tick {
-        None => bar.into(),
-        Some(f) => {
-            let left = (f.clamp(0.0, 1.0) * 1000.0).round() as u16;
-            let mut tick_row = Row::new().height(Length::Fixed(height));
-            if left > 0 {
-                tick_row = tick_row.push(Space::with_width(Length::FillPortion(left)));
-            }
-            tick_row = tick_row.push(
-                container(Space::with_width(Length::Fixed(2.0)))
-                    .width(Length::Fixed(2.0))
-                    .height(Length::Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(Background::Color(Color::WHITE)),
-                        ..Default::default()
-                    }),
-            );
-            if left < 1000 {
-                tick_row = tick_row.push(Space::with_width(Length::FillPortion(1000 - left)));
-            }
-            Stack::with_children(vec![Element::from(bar), tick_row.into()])
-                .width(Length::Fill)
-                .height(Length::Fixed(height))
-                .into()
-        }
-    }
+        .style(crate::ui::style::meter(fill, height))
+        .into()
 }
 
 fn tab_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme: &Theme, status: button::Status| {
-        let palette = theme.extended_palette();
         let (background, text_color) = if selected {
             (
-                Some(Background::Color(palette.primary.strong.color)),
+                Some(Background::Color(crate::ui::style::ACCENT)),
                 Color::WHITE,
             )
         } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
             (
-                Some(Background::Color(palette.background.weak.color)),
-                palette.background.base.text,
+                Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.06))),
+                theme.palette().text,
             )
         } else {
-            (None, palette.background.base.text)
+            (None, crate::ui::style::SECONDARY)
         };
         button::Style {
             background,
             text_color,
-            border: Border::default().rounded(8.0),
+            border: Border::default().rounded(crate::ui::style::R_SM),
             ..Default::default()
         }
     }
@@ -287,20 +400,33 @@ fn overview_glyph<'a>(c: Color) -> Element<'a, Message> {
         ]
         .spacing(2),
     )
-    .center(Length::Fixed(18.0))
+    .center(Length::Fixed(16.0))
     .into()
 }
 
-/// One switcher tab: icon, name, mini usage bar (mac `ProviderSwitcherButtons`).
+/// One switcher tab (mac `ProviderSwitcherButtons`): stacked icon+name with a
+/// 2px weekly-remaining strip; inline icon+name when few segments are shown.
 fn tab<'a>(
     selected: bool,
     icon: Element<'a, Message>,
     label: String,
     mini: Element<'a, Message>,
     index: i32,
+    inline: bool,
 ) -> Element<'a, Message> {
     let fg = if selected { Color::WHITE } else { muted() };
-    crate::ui::style::button(
+    let content: Element<'a, Message> = if inline {
+        row![
+            icon,
+            text(label)
+                .size(11)
+                .color(fg)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
         column![
             icon,
             text(label)
@@ -310,20 +436,23 @@ fn tab<'a>(
             container(mini).width(Length::Fixed(46.0)),
         ]
         .align_x(Alignment::Center)
-        .spacing(3),
-    )
-    .on_press(Message::SelectEntry(index))
-    .style(tab_style(selected))
-    .padding([6, 9])
-    .into()
+        .spacing(2)
+        .into()
+    };
+    crate::ui::style::button(content)
+        .on_press(Message::SelectEntry(index))
+        .style(tab_style(selected))
+        .padding(if inline { [4, 7] } else { [4, 6] })
+        .into()
 }
 
 fn switcher(app: &App) -> Element<'_, Message> {
+    let inline = app.entries.len() + 1 <= 3;
     let mut tabs = Row::new().spacing(2).padding(iced::Padding {
-        top: 6.0,
-        right: 12.0,
-        bottom: 8.0,
-        left: 12.0,
+        top: 10.0,
+        right: 16.0,
+        bottom: 6.0,
+        left: 16.0,
     });
     let overview_selected = app.selected == -1;
     let overview_color = if overview_selected {
@@ -335,28 +464,23 @@ fn switcher(app: &App) -> Element<'_, Message> {
         overview_selected,
         overview_glyph(overview_color),
         "Overview".to_string(),
-        meter_bar(0, Color::TRANSPARENT, None, 3.0),
+        meter_bar(0, Color::TRANSPARENT, None, 2.0),
         -1,
+        inline,
     ));
     for (i, entry) in app.entries.iter().enumerate() {
         let selected = app.selected == i as i32;
         let fg = if selected { Color::WHITE } else { muted() };
-        let value = entry
-            .windows
-            .first()
-            .map(|w| quota_display_value(w.remaining, &app.settings.quota_display))
-            .unwrap_or(0);
-        let fill = if selected {
-            Color::WHITE
-        } else {
-            rgb(accent_rgb(&entry.provider))
-        };
+        // Mac quota strip: weekly remaining, always in the provider accent.
+        let value = weekly_remaining(entry);
+        let fill = rgb(accent_rgb(&entry.provider));
         tabs = tabs.push(tab(
             selected,
-            crate::icons::icon(&entry.provider, 18.0, fg),
+            crate::icons::icon(&entry.provider, 16.0, fg),
             crate::model::provider_name(&entry.provider),
-            meter_bar(value, fill, None, 3.0),
+            meter_bar(value, fill, None, 2.0),
             i as i32,
+            inline,
         ));
     }
     scrollable(tabs)
@@ -401,87 +525,121 @@ fn body(app: &App) -> Element<'_, Message> {
 }
 
 fn overview_body(app: &App) -> Element<'_, Message> {
-    let mut col = Column::new().spacing(10);
-    col = col.push(text("Overview").size(18).font(semibold()));
-    col = col.push(text(updated_line(app)).size(12).color(muted()));
+    // Mac overview: spend summary header, then flat full provider rows (no
+    // title, no card chrome); compact metrics hide reset/meta lines.
+    let mut col = Column::new().spacing(12);
     if !app.spending.is_empty() {
         let today: f64 = app.spending.iter().map(|c| c.today).sum();
         let month: f64 = app.spending.iter().map(|c| c.month).sum();
         let tokens: i64 = app.spending.iter().map(|c| c.tokens).sum();
         col = col.push(
-            text(format!(
-                "Today {}  ·  Last 30 days {}  ·  {} tokens",
-                format_money(today),
-                format_money(month),
-                format_count(tokens)
-            ))
-            .size(12)
-            .color(muted()),
+            Column::new()
+                .spacing(2)
+                .push(
+                    text("Last 30 days")
+                        .size(crate::ui::style::TEXT_HEADLINE)
+                        .font(semibold())
+                        .color(muted()),
+                )
+                .push(
+                    text(format_money(month))
+                        .size(crate::ui::style::TEXT_TITLE2)
+                        .font(crate::ui::style::font_bold()),
+                )
+                .push(
+                    text(format!(
+                        "Today {} · {} tokens · {}",
+                        format_money(today),
+                        format_count(tokens),
+                        updated_line(app)
+                    ))
+                    .size(crate::ui::style::TEXT_CAPTION)
+                    .color(muted()),
+                ),
         );
-    } else if app.cost_busy {
-        col = col.push(text("Reading local history…").size(12).color(muted()));
+    } else {
+        col = col.push(
+            text(updated_line(app))
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(muted()),
+        );
+        if app.cost_busy {
+            col = col.push(text("Reading local history…").size(12).color(muted()));
+        }
     }
-    col = col.push(rule());
     for (i, entry) in app.entries.iter().enumerate() {
+        col = col.push(rule());
         let name = crate::model::provider_name(&entry.provider);
-        let mut lines = Column::new().spacing(5).width(Length::Fill);
+        let mut lines = Column::new().spacing(6).width(Length::Fill);
         let mut head = Row::new().spacing(8).align_y(Alignment::Center);
         head = head.push(crate::icons::brand(&entry.provider, 16.0, Color::WHITE));
-        head = head.push(text(name).size(14).font(semibold()).width(Length::Fill));
+        head = head.push(
+            text(name)
+                .size(crate::ui::style::TEXT_HEADLINE)
+                .font(semibold())
+                .width(Length::Fill),
+        );
         if !entry.plan.is_empty() {
-            head = head.push(text(entry.plan.clone()).size(12).color(muted()));
+            head = head.push(
+                text(entry.plan.clone())
+                    .size(crate::ui::style::TEXT_FOOTNOTE)
+                    .font(medium())
+                    .color(muted()),
+            );
         }
         lines = lines.push(head);
-        if let Some(w) = entry.windows.first() {
-            let value = quota_display_value(w.remaining, &app.settings.quota_display);
-            let fill = if is_warning(
-                app.settings.warning_colors,
-                w.remaining,
-                app.settings.notify_threshold,
-            ) {
-                rgb(WARNING_RGB)
-            } else {
-                rgb(accent_rgb(&entry.provider))
-            };
-            lines = lines.push(meter_bar(value, fill, None, 6.0));
-            lines = lines.push(
-                row![
-                    text(format!(
-                        "{value}% {}",
-                        quota_display_suffix(&app.settings.quota_display)
-                    ))
-                    .size(12)
-                    .color(muted())
-                    .width(Length::Fill),
-                    text(reset_display_text(
-                        &w.resets_at,
-                        &w.reset_text,
-                        &app.settings.reset_display,
-                        chrono::Utc::now(),
-                    ))
-                    .size(12)
-                    .color(muted()),
-                ]
-                .align_y(Alignment::Center),
-            );
-        } else {
+        if entry.windows.is_empty() {
             lines = lines.push(text(EM_DASH).size(12).color(muted()));
+        } else {
+            for w in &entry.windows {
+                lines = lines.push(compact_metric(w, &app.settings, &entry.provider, app.stale));
+            }
         }
         col = col.push(
-            crate::ui::style::button(container(lines).padding([8, 10]).width(Length::Fill))
+            crate::ui::style::button(container(lines).width(Length::Fill))
                 .on_press(Message::SelectEntry(i as i32))
-                .style(|theme: &Theme, status: button::Status| {
-                    let hovered =
-                        matches!(status, button::Status::Hovered | button::Status::Pressed);
-                    let mut s = crate::ui::style::card_button(theme, hovered);
-                    s.text_color = theme.palette().text;
-                    s
-                })
-                .padding(0)
+                .style(crate::ui::style::plain)
+                .padding([4, 0])
                 .width(Length::Fill),
         );
     }
-    container(col).padding([14, 20]).width(Length::Fill).into()
+    container(col).padding([6, 20]).width(Length::Fill).into()
+}
+
+/// Compact overview metric: title + percent, then the bar (no reset/meta).
+fn compact_metric(
+    window: &QuotaWindow,
+    s: &Settings,
+    provider: &str,
+    stale: bool,
+) -> Element<'static, Message> {
+    let amount = quota_display_value(window.remaining, &s.quota_display);
+    let fill = if stale {
+        muted()
+    } else {
+        rgb(accent_rgb(provider))
+    };
+    let label = if window.label.is_empty() {
+        EM_DASH.to_string()
+    } else {
+        window.label.clone()
+    };
+    Column::new()
+        .spacing(4)
+        .push(
+            row![
+                text(label)
+                    .size(crate::ui::style::TEXT_BODY)
+                    .font(medium())
+                    .width(Length::Fill),
+                text(format!("{amount}%"))
+                    .size(crate::ui::style::TEXT_BODY)
+                    .font(crate::ui::style::font_numeric()),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .push(meter_bar(amount, fill, None, 6.0))
+        .into()
 }
 
 /// Hover-highlighted, borderless menu row (mac `MenuHighlightStyle`).
@@ -511,7 +669,7 @@ fn menu_row<'a>(
     let mut r = Row::new()
         .spacing(10)
         .align_y(Alignment::Center)
-        .push(glyph(icon, 15.0, tint))
+        .push(glyph(icon, 16.0, tint))
         .push(text(label).size(13).width(Length::Fill));
     if let Some(t) = trailing {
         r = r.push(glyph(t, 11.0, muted()));
@@ -524,8 +682,87 @@ fn menu_row<'a>(
         .into()
 }
 
+fn selected_entry(app: &App) -> Option<&Entry> {
+    if app.selected >= 0 {
+        app.entries.get(app.selected as usize)
+    } else {
+        None
+    }
+}
+
 /// Scrolling action rows (mac "Add Account / Usage Dashboard / Status Page" group).
 fn actions(app: &App) -> Element<'_, Message> {
+    let mut col = Column::new().spacing(1);
+    col = col.push(container(rule()).padding([0.0, 8.0]));
+    if let Some(entry) = selected_entry(app) {
+        let provider = entry.provider.clone();
+        // Add Account: CLI sign-in where supported, else the Providers pane.
+        let add_msg = if matches!(provider.as_str(), "codex" | "claude") {
+            Message::AccountAction {
+                provider: provider.clone(),
+                login: true,
+            }
+        } else {
+            Message::OpenSettingsPane(SettingsPane::Providers)
+        };
+        col = col.push(menu_row(
+            Glyph::Plus,
+            "Add Account…".to_string(),
+            Some(add_msg),
+            None,
+        ));
+        if let Some(url) = crate::ui::settings_view::dashboard_url(&provider) {
+            col = col.push(menu_row(
+                Glyph::External,
+                "Usage Dashboard".to_string(),
+                Some(Message::OpenUrl(url.to_string())),
+                None,
+            ));
+        }
+        if let Some(url) = status_url(&provider) {
+            col = col.push(menu_row(
+                Glyph::Status,
+                "Status Page".to_string(),
+                Some(Message::OpenUrl(url.to_string())),
+                None,
+            ));
+        }
+        if !entry.status.is_empty() {
+            col = col.push(
+                container(
+                    text(entry.status.clone())
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .color(muted()),
+                )
+                .padding([2, 8]),
+            );
+        }
+    }
+    col = col.push(menu_row(
+        Glyph::Dashboard,
+        "Usage & Spend…".to_string(),
+        Some(Message::ShowPage(Page::Usage)),
+        None,
+    ));
+    col = col.push(menu_row(
+        Glyph::Sessions,
+        "Agent Sessions…".to_string(),
+        Some(Message::ShowPage(Page::Sessions)),
+        None,
+    ));
+    container(col)
+        .padding(iced::Padding {
+            top: 0.0,
+            right: 12.0,
+            bottom: 6.0,
+            left: 12.0,
+        })
+        .width(Length::Fill)
+        .into()
+}
+
+/// Fixed bottom rows (mac order): Refresh / Settings… / About / Changelog / Quit.
+fn footer(app: &App) -> Element<'_, Message> {
     let refresh = if app.busy {
         menu_row(Glyph::Refresh, "Refreshing…".to_string(), None, None)
     } else {
@@ -538,37 +775,7 @@ fn actions(app: &App) -> Element<'_, Message> {
     };
     container(
         column![
-            container(rule()).padding([0.0, 8.0]),
             refresh,
-            menu_row(
-                Glyph::Dashboard,
-                "Usage & Spend…".to_string(),
-                Some(Message::ShowPage(Page::Usage)),
-                None,
-            ),
-            menu_row(
-                Glyph::Sessions,
-                "Agent Sessions…".to_string(),
-                Some(Message::ShowPage(Page::Sessions)),
-                None,
-            ),
-        ]
-        .spacing(1),
-    )
-    .padding(iced::Padding {
-        top: 0.0,
-        right: 12.0,
-        bottom: 6.0,
-        left: 12.0,
-    })
-    .width(Length::Fill)
-    .into()
-}
-
-/// Fixed bottom rows: Settings… / About CodexBar / Quit.
-fn footer() -> Element<'static, Message> {
-    container(
-        column![
             menu_row(
                 Glyph::Settings,
                 "Settings…".to_string(),
@@ -579,6 +786,14 @@ fn footer() -> Element<'static, Message> {
                 Glyph::Info,
                 format!("About CodexBar (v{})", env!("CARGO_PKG_VERSION")),
                 Some(Message::OpenSettingsPane(SettingsPane::About)),
+                None,
+            ),
+            menu_row(
+                Glyph::External,
+                "Changelog…".to_string(),
+                Some(Message::OpenUrl(
+                    "https://github.com/FisiFla/codexbar-extra/releases".to_string()
+                )),
                 None,
             ),
             menu_row(Glyph::Quit, "Quit".to_string(), Some(Message::Quit), None),
@@ -595,8 +810,21 @@ fn footer() -> Element<'static, Message> {
     .into()
 }
 
+/// Card section heading (mac body medium, e.g. Credits/Cost/Extra usage).
 fn section_title(label: &str) -> Element<'static, Message> {
-    text(label.to_string()).size(14).font(semibold()).into()
+    text(label.to_string())
+        .size(crate::ui::style::TEXT_BODY)
+        .font(medium())
+        .into()
+}
+
+/// Detail-group heading (mac caption semibold, uppercased, secondary).
+fn detail_title(label: &str) -> Element<'static, Message> {
+    text(label.to_uppercase())
+        .size(crate::ui::style::TEXT_CAPTION)
+        .font(semibold())
+        .color(muted())
+        .into()
 }
 
 fn provider_body<'a>(
@@ -605,43 +833,65 @@ fn provider_body<'a>(
     cost: Option<&'a CostEntry>,
 ) -> Element<'a, Message> {
     let s = &app.settings;
-    let mut col = Column::new().spacing(10).width(Length::Fill);
-    // Card header (mac `UsageMenuCardHeaderView`): name + account, updated + plan.
+    let mut col = Column::new().spacing(12).width(Length::Fill);
+    // Card header (mac `UsageMenuCardHeaderView`): headline name + subheadline
+    // account; the subtitle row carries updated, or the error when present.
+    let mut header = Column::new().spacing(2).width(Length::Fill);
     let mut head1 = Row::new().align_y(Alignment::Center);
     head1 = head1.push(
         text(crate::model::provider_name(&entry.provider))
-            .size(18)
+            .size(crate::ui::style::TEXT_HEADLINE)
             .font(semibold())
             .width(Length::Fill),
     );
     if !entry.account_label.is_empty() {
-        head1 = head1.push(text(entry.account_label.clone()).size(12).color(muted()));
+        head1 = head1.push(
+            text(entry.account_label.clone())
+                .size(crate::ui::style::TEXT_SUBHEADLINE)
+                .color(muted()),
+        );
     }
-    col = col.push(head1);
-    let mut head2 = Row::new().align_y(Alignment::Center);
-    head2 = head2.push(
-        text(updated_line(app))
-            .size(12)
-            .color(muted())
-            .width(Length::Fill),
-    );
-    if !entry.plan.is_empty() {
-        head2 = head2.push(text(entry.plan.clone()).size(12).color(muted()));
-    }
-    col = col.push(head2);
+    header = header.push(head1);
+    let mut head2 = Row::new().spacing(6).align_y(Alignment::Center);
     if !entry.error.is_empty() {
-        col = col.push(text(entry.error.clone()).size(12).color(rgb(ERROR_RGB)));
-    } else if !entry.status.is_empty() {
-        col = col.push(text(entry.status.clone()).size(12).color(muted()));
+        head2 = head2.push(
+            text(entry.error.clone())
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(rgb(ERROR_RGB))
+                .width(Length::Fill),
+        );
+        head2 = head2.push(
+            crate::ui::style::button(glyph(Glyph::Copy, 13.0, muted()))
+                .on_press(Message::CopyText(entry.error.clone()))
+                .style(crate::ui::style::plain)
+                .padding([3, 5]),
+        );
+    } else {
+        head2 = head2.push(
+            text(updated_line(app))
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(muted())
+                .width(Length::Fill),
+        );
     }
+    if !entry.plan.is_empty() {
+        head2 = head2.push(
+            text(entry.plan.clone())
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .font(medium())
+                .color(muted()),
+        );
+    }
+    header = header.push(head2);
+    col = col.push(header);
     col = col.push(rule());
     // Metrics in order
     if entry.windows.is_empty() {
         col = col.push(text(EM_DASH).size(13).color(muted()));
     } else {
-        let mut metrics = Column::new().spacing(14).width(Length::Fill);
+        let mut metrics = Column::new().spacing(12).width(Length::Fill);
         for window in &entry.windows {
-            metrics = metrics.push(metric_view(window, s, &entry.provider));
+            metrics = metrics.push(metric_view(window, s, &entry.provider, app.stale));
         }
         col = col.push(metrics);
     }
@@ -658,34 +908,50 @@ fn provider_body<'a>(
             None,
         ));
     }
-    // Credits
+    // Credits. The CLI carries only `remaining` (no limit), so no bar can be
+    // drawn yet; the value stays text until the contract grows a limit.
     if let Some(credits) = entry.credits {
         col = col.push(rule());
         col = col.push(section_title("Credits"));
         col = col.push(
             text(format!("{} remaining", format_credits(credits)))
-                .size(12)
+                .size(crate::ui::style::TEXT_FOOTNOTE)
                 .color(muted()),
         );
     }
     // Reset credits (hide at 0: model cannot distinguish unknown from none)
     if entry.reset_credits_available > 0 {
         col = col.push(rule());
-        col = col.push(section_title("Reset credits"));
-        let mut line = format!("{} available", entry.reset_credits_available);
+        col = col.push(section_title("Limit Reset Credits"));
+        let mut line = Row::new().align_y(Alignment::Center);
+        line = line.push(
+            text(format!("{} available", entry.reset_credits_available))
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .font(semibold())
+                .width(Length::Fill),
+        );
         if !entry.reset_credits_next_expiry.is_empty() {
-            line.push_str(&format!(
-                " · Next expires {}",
-                entry.reset_credits_next_expiry
-            ));
+            line = line.push(
+                text(format!(
+                    "Next expires {}",
+                    entry.reset_credits_next_expiry
+                ))
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(muted()),
+            );
         }
-        col = col.push(text(line).size(12).color(muted()));
+        col = col.push(line);
     }
-    // Extra usage / provider cost
+    // Extra usage / provider cost. Blocked on the CLI `providerCost` field:
+    // `extra_usage_text` is still always empty, so this never renders yet.
     if !entry.extra_usage_text.is_empty() {
         col = col.push(rule());
         col = col.push(section_title("Extra usage"));
-        col = col.push(text(entry.extra_usage_text.clone()).size(12));
+        col = col.push(
+            text(entry.extra_usage_text.clone())
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .color(muted()),
+        );
     }
     // Cost (local history), with the cost-history chart inline.
     if s.show_costs
@@ -698,12 +964,13 @@ fn provider_body<'a>(
         col = col.push(cost_section(app, &entry.provider, cost));
     }
     col = col.push(chart_sections(app, &entry.provider));
-    // Provider detail sections
+    // Provider detail sections: label left (secondary), value right (medium),
+    // secondary caption under the value (mac `DetailFieldRow`).
     for section in &entry.details {
-        let mut sec = Column::new().spacing(5).width(Length::Fill);
+        let mut sec = Column::new().spacing(6).width(Length::Fill);
         sec = sec.push(rule());
         if !section.title.is_empty() {
-            sec = sec.push(section_title(&section.title));
+            sec = sec.push(detail_title(&section.title));
         }
         for (label, value, secondary) in &section.rows {
             let shown_value = if value.is_empty() {
@@ -711,31 +978,64 @@ fn provider_body<'a>(
             } else {
                 value.as_str()
             };
-            let mut line = if label.is_empty() {
-                shown_value.to_string()
+            if label.is_empty() {
+                sec = sec.push(
+                    text(shown_value.to_string())
+                        .size(crate::ui::style::TEXT_CAPTION)
+                        .font(medium()),
+                );
             } else {
-                format!("{label}: {shown_value}")
-            };
-            if !secondary.is_empty() {
-                line.push_str(&format!(" · {secondary}"));
+                let mut val = Column::new()
+                    .spacing(0)
+                    .align_x(Alignment::End)
+                    .push(
+                        text(shown_value.to_string())
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .font(medium()),
+                    );
+                if !secondary.is_empty() {
+                    val = val.push(
+                        text(secondary.clone())
+                            .size(crate::ui::style::TEXT_CAPTION2)
+                            .color(muted()),
+                    );
+                }
+                sec = sec.push(
+                    row![
+                        text(label.clone())
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(muted())
+                            .width(Length::Fill),
+                        val,
+                    ]
+                    .spacing(12),
+                );
             }
-            sec = sec.push(text(line).size(12).color(muted()));
         }
         col = col.push(sec);
     }
-    container(col).padding([14, 20]).width(Length::Fill).into()
+    container(col).padding([6, 20]).width(Length::Fill).into()
 }
 
-/// Metric row (mac `MenuCardMetricRow`): title, capsule bar, `N% used` left + reset right, pace.
-fn metric_view(window: &QuotaWindow, s: &Settings, provider: &str) -> Element<'static, Message> {
+/// Metric row (mac `MenuCardMetricRow`): header `Title N% used | reset`, then
+/// the canvas bar (tint kept; warning is a marker, pace a punched stripe),
+/// then the pace meta line. Stale data greys the fill instead of recolouring.
+fn metric_view(
+    window: &QuotaWindow,
+    s: &Settings,
+    provider: &str,
+    stale: bool,
+) -> Element<'static, Message> {
     let amount = quota_display_value(window.remaining, &s.quota_display);
-    let warning = is_warning(s.warning_colors, window.remaining, s.notify_threshold);
-    let fill = if warning {
-        rgb(WARNING_RGB)
+    let fill = if stale {
+        muted()
     } else {
         rgb(accent_rgb(provider))
     };
     let tick = pace_tick_fraction(s.show_pace, window.pace_expected, &s.quota_display);
+    let pace = tick.map(|f| (f, pace_stripe_color(window.pace_delta)));
+    let warning = is_warning(s.warning_colors, window.remaining, s.notify_threshold)
+        .then(|| warning_fraction(s.notify_threshold, &s.quota_display));
     let label = if window.label.is_empty() {
         EM_DASH.to_string()
     } else {
@@ -747,24 +1047,34 @@ fn metric_view(window: &QuotaWindow, s: &Settings, provider: &str) -> Element<'s
         &s.reset_display,
         chrono::Utc::now(),
     );
-    let mut col = Column::new().spacing(5).width(Length::Fill);
-    col = col.push(text(label).size(14).font(semibold()));
-    col = col.push(meter_bar(amount, fill, tick, 6.0));
+    let mut col = Column::new().spacing(6).width(Length::Fill);
     col = col.push(
         row![
+            text(label)
+                .size(crate::ui::style::TEXT_BODY)
+                .font(medium()),
             text(format!(
                 "{amount}% {}",
                 quota_display_suffix(&s.quota_display)
             ))
-            .size(12)
-            .color(muted())
+            .size(crate::ui::style::TEXT_BODY)
+            .font(crate::ui::style::font_numeric())
             .width(Length::Fill),
-            text(reset).size(12).color(muted()),
+            text(reset)
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .font(crate::ui::style::font_numeric())
+                .color(muted()),
         ]
+        .spacing(6)
         .align_y(Alignment::Center),
     );
+    col = col.push(usage_meter(amount, fill, pace, warning));
     if s.show_pace && !window.pace.is_empty() {
-        col = col.push(text(window.pace.clone()).size(12).color(muted()));
+        col = col.push(
+            text(window.pace.clone())
+                .size(crate::ui::style::TEXT_CAPTION)
+                .color(muted()),
+        );
     }
     col.into()
 }
@@ -776,30 +1086,42 @@ fn deepseek_section() -> Element<'static, Message> {
     } else {
         Color::from_rgb(0.22, 0.74, 0.48)
     };
-    let mut sec = Column::new().spacing(6).width(Length::Fill);
-    sec = sec.push(horizontal_rule(1));
-    sec = sec.push(section_title("Peak Price Clock"));
-    sec = sec.push(
-        text(if clock.badge.is_empty() {
-            EM_DASH.to_string()
-        } else {
-            clock.badge.clone()
-        })
-        .size(10)
-        .font(semibold())
-        .color(badge_color),
+    // Boxed like the Mac card: padded tint surface with a hairline border.
+    let mut inner = Column::new().spacing(6).width(Length::Fill);
+    inner = inner.push(section_title("Peak Price Clock"));
+    let badge = if clock.badge.is_empty() {
+        EM_DASH.to_string()
+    } else {
+        clock.badge.to_uppercase()
+    };
+    inner = inner.push(
+        row![
+            container(Space::new(Length::Fixed(7.0), Length::Fixed(7.0))).style(
+                move |_: &Theme| container::Style {
+                    background: Some(Background::Color(badge_color)),
+                    border: Border::default().rounded(3.5),
+                    ..Default::default()
+                }
+            ),
+            text(badge)
+                .size(crate::ui::style::TEXT_CAPTION2)
+                .font(crate::ui::style::font_bold())
+                .color(badge_color),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
     );
-    sec = sec.push(
+    inner = inner.push(
         text(if clock.countdown.is_empty() {
             EM_DASH.to_string()
         } else {
             clock.countdown.clone()
         })
         .size(24)
-        .font(semibold()),
+        .font(crate::ui::style::font_bold()),
     );
     if !clock.next_transition.is_empty() {
-        sec = sec.push(text(clock.next_transition.clone()).size(12).color(muted()));
+        inner = inner.push(text(clock.next_transition.clone()).size(12).color(muted()));
     }
     for (tag, range, is_peak) in &clock.windows {
         let tag_color = if *is_peak {
@@ -807,24 +1129,36 @@ fn deepseek_section() -> Element<'static, Message> {
         } else {
             Color::from_rgb(0.22, 0.74, 0.48)
         };
-        sec = sec.push(
+        inner = inner.push(
             row![
                 text(tag.clone())
                     .size(12)
                     .font(semibold())
                     .color(tag_color)
-                    .width(Length::Fixed(64.0)),
+                    .width(Length::Fixed(54.0)),
                 text(range.clone()).size(11),
             ]
             .align_y(Alignment::Center),
         );
     }
-    sec = sec.push(
+    inner = inner.push(
         text("Excludes Chinese public holidays")
-            .size(9)
+            .size(crate::ui::style::TEXT_MICRO)
             .color(muted()),
     );
-    sec.into()
+    container(inner)
+        .padding(10)
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.04))),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                width: 1.0,
+                radius: crate::ui::style::R_MD.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn cost_payload<'a>(app: &'a App, provider: &str) -> Option<&'a crate::cli::CostPayload> {
@@ -864,10 +1198,11 @@ fn row_header(
     if let Some(g) = icon {
         r = r.push(glyph(g, 15.0, Color::WHITE));
     }
-    let label = text(title).size(if bold { 14 } else { 13 });
-    r = r.push(
-        if bold { label.font(semibold()) } else { label }.width(Length::Fill),
-    );
+    let _ = bold;
+    let label = text(title)
+        .size(crate::ui::style::TEXT_BODY)
+        .font(medium());
+    r = r.push(label.width(Length::Fill));
     r = r.push(glyph(
         if open {
             Glyph::ChevronDown
@@ -886,16 +1221,22 @@ fn row_header(
 }
 
 fn detail_text(s: String) -> Element<'static, Message> {
-    text(s).size(12).color(muted()).into()
+    container(
+        text(s)
+            .size(crate::ui::style::TEXT_FOOTNOTE)
+            .color(muted()),
+    )
+    .height(Length::Fixed(16.0))
+    .into()
 }
 
 /// Cost block (mac "Cost ›"): Today / Last 30 days lines and the cost-history chart, open by
-/// default. Collapsing it stores `<provider>:cost-collapsed` in `expanded_charts`.
+/// default. Collapsing it stores `<provider>:cost` in `collapsed_charts`.
 fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<'static, Message> {
     let mut sec = Column::new().spacing(5).width(Length::Fill);
     let payload = cost_payload(app, provider);
-    let key = format!("{provider}:cost-collapsed");
-    let open = payload.is_some() && !app.expanded_charts.contains(&key);
+    let key = format!("{provider}:cost");
+    let open = payload.is_some() && !app.collapsed_charts.contains(&key);
     sec = if payload.is_some() {
         sec.push(row_header(key, "Cost", open, None, true))
     } else {
@@ -908,8 +1249,14 @@ fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<
     }
     if let Some(cost) = cost {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        sec = sec.push(text(cost_line("Today", cost.today, tokens_on(cost, &today))).size(13));
-        sec = sec.push(text(cost_line("Last 30 days", cost.month, Some(cost.tokens))).size(13));
+        sec = sec.push(
+            text(cost_line("Today", cost.today, tokens_on(cost, &today)))
+                .size(crate::ui::style::TEXT_FOOTNOTE),
+        );
+        sec = sec.push(
+            text(cost_line("Last 30 days", cost.month, Some(cost.tokens)))
+                .size(crate::ui::style::TEXT_FOOTNOTE),
+        );
         sec = sec.push(
             text(provenance_label(&cost.provenance).to_string())
                 .size(11)
@@ -940,7 +1287,7 @@ fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<
             hover,
             key: format!("{provider}:cost"),
             bars,
-            color: rgb(accent_rgb(provider)),
+            color: Color::from_rgb(0.81, 0.56, 0.24),
             peak_cap: true,
             fmt: crate::charts::money,
             axis: crate::charts::axis_money,
@@ -1014,7 +1361,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         col
     };
     let section = |key: String, title: &'static str| {
-        let open = app.expanded_charts.contains(&key);
+        let open = !app.collapsed_charts.contains(&key);
         (row_header(key, title, open, Some(Glyph::Chart), false), open)
     };
 
@@ -1033,11 +1380,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
             col = sep(col).push(head);
             if open {
                 let hover = hover_for(&key);
-                col = col.push(detail_text(popover_charts::detail_line(
-                    &bars,
-                    hover,
-                    crate::charts::money,
-                )));
+                let detail = popover_charts::detail_line(&bars, hover, crate::charts::money);
                 let rows =
                     popover_charts::detail_rows(&bars, hover, crate::charts::money, 4);
                 col = col.push(chart_canvas(crate::charts::BarChart {
@@ -1050,14 +1393,16 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
                     axis: crate::charts::axis_money,
                     y_max: None,
                 }));
+                // Mac order: chart, then the fixed-height detail, then the legend.
+                col = col.push(detail_text(detail));
                 for (color_index, name, value) in rows {
                     let swatch = crate::charts::segment_color(color_index);
                     col = col.push(
                         row![
-                            container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0)))
+                            container(Space::new(Length::Fixed(7.0), Length::Fixed(7.0)))
                                 .style(move |_: &Theme| container::Style {
                                     background: Some(Background::Color(swatch)),
-                                    border: Border::default().rounded(2.0),
+                                    border: Border::default().rounded(3.5),
                                     ..Default::default()
                                 }),
                             text(name).size(12).width(Length::Fill),
@@ -1082,7 +1427,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
             col = col.push(chart_canvas(crate::charts::BarChart {
                 hover,
                 key,
-                color: accent,
+                color: Color::from_rgb(0.29, 0.64, 0.69),
                 peak_cap: true,
                 fmt: credits_label,
                 axis: credits_label,
@@ -1175,7 +1520,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
                         color: accent,
                     })
                     .width(Length::Fill)
-                    .height(Length::Fixed(150.0)),
+                    .height(Length::Fixed(130.0)),
                 );
                 col = col.push(
                     row![
@@ -1250,25 +1595,45 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
                 crate::storage::bytes_label(fp.total_bytes)
             )));
             let rows = crate::storage::rows(fp);
-            let max = rows.iter().map(|r| r.1).max().unwrap_or(1).max(1) as f32;
-            for (name, bytes) in rows {
+            // One segmented share bar + dot legend (mac storage layout).
+            let total = fp.total_bytes.max(1) as f64;
+            let mut share = Row::new().spacing(1).height(Length::Fixed(5.0));
+            for (i, (_, bytes)) in rows.iter().enumerate() {
+                let portion = ((*bytes as f64 / total) * 1000.0).round().max(1.0) as u16;
+                let seg = crate::charts::segment_color(i);
+                share = share.push(
+                    container(Space::new(Length::Fill, Length::Fixed(5.0)))
+                        .width(Length::FillPortion(portion.max(1)))
+                        .style(move |_: &Theme| container::Style {
+                            background: Some(Background::Color(seg)),
+                            border: Border::default().rounded(2.5),
+                            ..Default::default()
+                        }),
+                );
+            }
+            col = col.push(share);
+            for (i, (name, bytes)) in rows.into_iter().enumerate() {
+                let dot = crate::charts::segment_color(i);
+                let pct = bytes as f64 / total * 100.0;
                 col = col.push(
-                    column![
-                        row![
-                            text(name).size(12).width(Length::Fill),
-                            text(crate::storage::bytes_label(bytes))
-                                .size(12)
-                                .color(muted()),
-                        ],
-                        progress_bar(0.0..=1.0, bytes as f32 / max).height(4).style(
-                            move |_: &Theme| progress_bar::Style {
-                                background: Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.1)),
-                                bar: Background::Color(accent),
-                                border: Border::default().rounded(2.0),
+                    row![
+                        container(Space::new(Length::Fixed(7.0), Length::Fixed(7.0))).style(
+                            move |_: &Theme| container::Style {
+                                background: Some(Background::Color(dot)),
+                                border: Border::default().rounded(3.5),
+                                ..Default::default()
                             }
                         ),
+                        text(name).size(12).width(Length::Fill),
+                        text(format!(
+                            "{} · {pct:.0}%",
+                            crate::storage::bytes_label(bytes)
+                        ))
+                        .size(12)
+                        .color(muted()),
                     ]
-                    .spacing(3),
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 );
             }
             if fp.unreadable > 0 {
@@ -1294,13 +1659,82 @@ fn credits_label(v: f64) -> String {
 fn chart_canvas(chart: crate::charts::BarChart) -> Element<'static, Message> {
     iced::widget::Canvas::new(chart)
         .width(Length::Fill)
-        .height(Length::Fixed(150.0))
+        .height(Length::Fixed(130.0))
         .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pace_stripe_color_green_under_pace_red_over_white_unknown() {
+        assert_eq!(pace_stripe_color(-48.0), Color::from_rgb(0.19, 0.82, 0.35));
+        assert_eq!(pace_stripe_color(0.0), Color::from_rgb(0.19, 0.82, 0.35));
+        assert_eq!(pace_stripe_color(12.0), Color::from_rgb(1.0, 0.42, 0.38));
+        assert_eq!(pace_stripe_color(f64::NAN), Color::WHITE);
+    }
+
+    #[test]
+    fn warning_fraction_mirrors_display_mode() {
+        assert!((warning_fraction(10, "remaining") - 0.10).abs() < 1e-6);
+        assert!((warning_fraction(10, "used") - 0.90).abs() < 1e-6);
+        assert!((warning_fraction(25, "bogus") - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn weekly_remaining_picks_longest_window() {
+        let mut e = Entry {
+            provider: "codex".into(),
+            plan: String::new(),
+            account_label: String::new(),
+            error: String::new(),
+            updated_at: String::new(),
+            windows: vec![],
+            credits: None,
+            reset_credits_available: 0,
+            reset_credits_next_expiry: String::new(),
+            extra_usage_text: String::new(),
+            details: vec![],
+            status: String::new(),
+            status_level: String::new(),
+        };
+        assert_eq!(weekly_remaining(&e), 0);
+        e.windows = vec![
+            QuotaWindow {
+                key: "session".into(),
+                scoped: false,
+                label: "Session".into(),
+                remaining: 80,
+                minutes: 300,
+                resets_at: String::new(),
+                reset_text: String::new(),
+                pace: String::new(),
+                pace_expected: f64::NAN,
+                pace_delta: f64::NAN,
+            },
+            QuotaWindow {
+                key: "weekly".into(),
+                scoped: false,
+                label: "Weekly".into(),
+                remaining: 42,
+                minutes: 10080,
+                resets_at: String::new(),
+                reset_text: String::new(),
+                pace: String::new(),
+                pace_expected: f64::NAN,
+                pace_delta: f64::NAN,
+            },
+        ];
+        assert_eq!(weekly_remaining(&e), 42);
+    }
+
+    #[test]
+    fn status_url_only_known_providers() {
+        assert_eq!(status_url("codex"), Some("https://status.openai.com/"));
+        assert_eq!(status_url("claude"), Some("https://status.claude.com/"));
+        assert_eq!(status_url("nope"), None);
+    }
 
     #[test]
     fn quota_display_value_remaining_and_used() {

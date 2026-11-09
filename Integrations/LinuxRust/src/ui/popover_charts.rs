@@ -17,6 +17,10 @@ pub enum Glyph {
     Chart,
     ChevronRight,
     ChevronDown,
+    Plus,
+    Status,
+    Copy,
+    External,
 }
 
 impl Glyph {
@@ -38,7 +42,7 @@ impl Glyph {
                 r#"<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>"#
             ),
             Glyph::Settings => s!(
-                r#"<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/>"#
+                r#"<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>"#
             ),
             Glyph::Info => s!(r#"<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>"#),
             Glyph::Quit => s!(
@@ -47,6 +51,14 @@ impl Glyph {
             Glyph::Chart => s!(r#"<path d="M5 20V11M12 20V4M19 20v-6"/>"#),
             Glyph::ChevronRight => s!(r#"<path d="M9 5l7 7-7 7"/>"#),
             Glyph::ChevronDown => s!(r#"<path d="M5 9l7 7 7-7"/>"#),
+            Glyph::Plus => s!(r#"<path d="M12 5v14M5 12h14"/>"#),
+            Glyph::Status => s!(r#"<path d="M2 12h4l3-8 4 16 3-8h6"/>"#),
+            Glyph::Copy => s!(
+                r#"<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>"#
+            ),
+            Glyph::External => s!(
+                r#"<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>"#
+            ),
         }
     }
 }
@@ -159,6 +171,7 @@ mod tests {
         for g in [
             Glyph::Refresh, Glyph::Dashboard, Glyph::Sessions, Glyph::Settings, Glyph::Info,
             Glyph::Quit, Glyph::Chart, Glyph::ChevronRight, Glyph::ChevronDown,
+            Glyph::Plus, Glyph::Status, Glyph::Copy, Glyph::External,
         ] {
             let s = g.svg();
             assert!(s.starts_with("<svg") && s.ends_with("</svg>"), "{g:?}");

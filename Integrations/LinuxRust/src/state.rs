@@ -108,8 +108,8 @@ pub struct App {
     pub sessions_loaded: bool,
     /// Per-day model breakdowns from the same `cost` call (chart sections).
     pub cost_payloads: Vec<crate::cli::CostPayload>,
-    /// Expanded chart sections in the popover (`<provider>:<chart>`).
-    pub expanded_charts: BTreeSet<String>,
+    /// Collapsed chart sections in the popover (`<provider>:<chart>`); charts default open.
+    pub collapsed_charts: BTreeSet<String>,
     /// Hovered bar: (chart key, bar index).
     pub chart_hover: Option<(String, usize)>,
     /// Selected series per chart key (utilization / burndown pickers).

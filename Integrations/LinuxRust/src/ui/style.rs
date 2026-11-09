@@ -16,13 +16,89 @@ use iced::widget::{
     text_input::{self, TextInput},
     toggler::{self},
 };
-use iced::{Background, Border, Color, Element, Theme};
+use iced::{Background, Border, Color, Element, Font, Theme};
 
 /// macOS system accent blue (dark appearance).
 pub const ACCENT: Color = Color::from_rgb(0.039, 0.518, 1.0);
 
 /// Secondary label colour (macOS `secondaryLabelColor`, dark).
 pub const SECONDARY: Color = Color::from_rgb(0.62, 0.62, 0.65);
+
+/// Tertiary label colour (macOS `tertiaryLabelColor`, dark).
+#[allow(dead_code)]
+pub const TERTIARY: Color = Color::from_rgb(0.44, 0.44, 0.47);
+
+/// Hairline separator (macOS `separatorColor` on dark).
+pub const SEPARATOR: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.10);
+
+/// System red (dark) for errors.
+pub const ERROR: Color = Color::from_rgb(1.0, 0.42, 0.38);
+
+/// System orange (dark) for warnings.
+#[allow(dead_code)]
+pub const WARNING: Color = Color::from_rgb(1.0, 0.62, 0.04);
+
+// Type scale (macOS semantic ladder, px). Exact SwiftUI pts are OS-resolved;
+// these follow the documented macOS defaults: body/headline 13, callout 12,
+// caption 11, caption2 10, title3 15, title2 17, title 22.
+#[allow(dead_code)]
+pub const TEXT_TITLE: u16 = 22;
+pub const TEXT_TITLE2: u16 = 17;
+#[allow(dead_code)]
+pub const TEXT_TITLE3: u16 = 15;
+pub const TEXT_HEADLINE: u16 = 13;
+pub const TEXT_BODY: u16 = 13;
+pub const TEXT_CALLOUT: u16 = 12;
+pub const TEXT_SUBHEADLINE: u16 = 12;
+pub const TEXT_FOOTNOTE: u16 = 11;
+pub const TEXT_CAPTION: u16 = 11;
+pub const TEXT_CAPTION2: u16 = 10;
+pub const TEXT_MICRO: u16 = 9;
+
+// Corner radii per surface (macOS uses continuous corners; iced is circular).
+#[allow(dead_code)]
+pub const R_COPY: f32 = 4.0;
+#[allow(dead_code)]
+pub const R_CHIP: f32 = 5.0;
+pub const R_SM: f32 = 6.0;
+pub const R_MD: f32 = 8.0;
+pub const R_LG: f32 = 10.0;
+pub const R_PANEL: f32 = 12.0;
+#[allow(dead_code)]
+pub const R_OVERLAY: f32 = 16.0;
+
+/// Bundled Inter (SF-metric-like). Loaded in `main.rs` via `.font(..)`.
+#[allow(dead_code)]
+pub fn font_regular() -> Font {
+    Font::with_name("Inter")
+}
+
+pub fn font_medium() -> Font {
+    Font {
+        weight: iced::font::Weight::Medium,
+        ..Font::with_name("Inter")
+    }
+}
+
+pub fn font_semibold() -> Font {
+    Font {
+        weight: iced::font::Weight::Semibold,
+        ..Font::with_name("Inter")
+    }
+}
+
+pub fn font_bold() -> Font {
+    Font {
+        weight: iced::font::Weight::Bold,
+        ..Font::with_name("Inter")
+    }
+}
+
+/// Numeric text: medium Inter. iced 0.13 exposes no OpenType `tnum` toggle,
+/// so callers pair this with fixed-width slots where digits must not jitter.
+pub fn font_numeric() -> Font {
+    font_medium()
+}
 
 /// Dark theme tuned toward macOS: neutral graphite surfaces, system accent colours.
 pub fn mac_theme() -> Theme {
@@ -96,36 +172,76 @@ pub fn push(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Segmented-picker segment: accent only on the selected one, flat subtle fill otherwise.
+/// Prominent button (mac `.borderedProminent`): accent fill, white text.
+#[allow(dead_code)]
+pub fn prominent(_theme: &Theme, status: button::Status) -> button::Style {
+    let fill = match status {
+        button::Status::Hovered => Color::from_rgb(0.2, 0.58, 1.0),
+        button::Status::Pressed => Color::from_rgb(0.0, 0.45, 0.9),
+        button::Status::Disabled => Color::from_rgba(0.039, 0.518, 1.0, 0.4),
+        button::Status::Active => ACCENT,
+    };
+    button::Style {
+        background: Some(Background::Color(fill)),
+        text_color: Color::WHITE,
+        border: Border::default().rounded(R_SM),
+        ..Default::default()
+    }
+}
+
+/// Plain/link button (mac `.plain`/`.link`): no plate, subtle hover wash.
+pub fn plain(theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: hovered.then(|| Background::Color(white(0.07))),
+        text_color: theme.palette().text,
+        border: Border::default().rounded(R_SM),
+        ..Default::default()
+    }
+}
+
+/// Segmented-picker segment (mac native segmented): gray track, light selected
+/// segment with a hairline. Blue is reserved for prominence, not segments.
 pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |theme, status| {
+    move |_theme, status| {
         if selected {
             let fill = match status {
-                button::Status::Hovered => Color::from_rgb(0.2, 0.58, 1.0),
-                button::Status::Pressed => Color::from_rgb(0.0, 0.45, 0.9),
-                _ => ACCENT,
+                button::Status::Hovered => white(0.24),
+                button::Status::Pressed => white(0.16),
+                _ => white(0.20),
             };
             button::Style {
                 background: Some(Background::Color(fill)),
                 text_color: Color::WHITE,
-                border: Border::default().rounded(6.0),
+                border: Border {
+                    color: white(0.08),
+                    width: 1.0,
+                    radius: R_SM.into(),
+                },
                 ..Default::default()
             }
         } else {
-            let mut s = push(theme, status);
-            s.border.color = Color::TRANSPARENT;
-            s
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: hovered.then(|| Background::Color(white(0.07))),
+                text_color: SECONDARY,
+                border: Border::default().rounded(R_SM),
+                ..Default::default()
+            }
         }
     }
 }
 
-/// Source-list row: plain text, rounded accent highlight when selected.
+/// Source-list row: translucent accent-tinted selection (not a solid block).
 pub fn sidebar(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let text = theme.palette().text;
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let (background, text_color) = if selected {
-            (Some(Background::Color(ACCENT)), Color::WHITE)
+            (
+                Some(Background::Color(Color::from_rgba(0.039, 0.518, 1.0, 0.32))),
+                Color::WHITE,
+            )
         } else if hovered {
             (Some(Background::Color(white(0.07))), text)
         } else {
@@ -134,7 +250,7 @@ pub fn sidebar(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
         button::Style {
             background,
             text_color,
-            border: Border::default().rounded(6.0),
+            border: Border::default().rounded(R_SM),
             ..Default::default()
         }
     }
@@ -143,20 +259,34 @@ pub fn sidebar(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
 /// Rounded card with a subtle fill and hairline border.
 pub fn card(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(white(0.045))),
+        background: Some(Background::Color(white(0.05))),
         border: Border {
-            color: white(0.08),
+            color: SEPARATOR,
             width: 1.0,
-            radius: 10.0.into(),
+            radius: R_LG.into(),
         },
         ..Default::default()
     }
 }
 
-/// Thin capsule meter: translucent track, solid `fill`.
+/// Spend dashboard panel (mac `SpendDashboardPanel`, radius 12).
+pub fn panel(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(white(0.05))),
+        border: Border {
+            color: SEPARATOR,
+            width: 1.0,
+            radius: R_PANEL.into(),
+        },
+        ..Default::default()
+    }
+}
+
+
+/// Thin capsule meter: mac track is `tertiaryLabelColor` at 0.22.
 pub fn meter(fill: Color, height: f32) -> impl Fn(&Theme) -> progress_bar::Style {
     move |_| progress_bar::Style {
-        background: Background::Color(white(0.14)),
+        background: Background::Color(white(0.22)),
         bar: Background::Color(fill),
         border: Border::default().rounded(height / 2.0),
     }
@@ -339,6 +469,7 @@ pub fn scrollable<'a, M>(content: impl Into<Element<'a, M>>) -> iced::widget::Sc
 }
 
 /// Clickable card (overview rows): the card look with a brighter fill on hover.
+#[allow(dead_code)]
 pub fn card_button(_theme: &Theme, hovered: bool) -> button::Style {
     button::Style {
         background: Some(Background::Color(white(if hovered { 0.09 } else { 0.05 }))),

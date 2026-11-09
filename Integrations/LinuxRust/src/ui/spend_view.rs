@@ -23,7 +23,8 @@ pub fn scroll_id() -> scrollable::Id {
 }
 
 pub const EM_DASH: &str = "—";
-pub(crate) const ACCENT: Color = Color::from_rgb(0.18, 0.65, 0.35);
+/// Activity/chart green (not the app accent; see `style::ACCENT`).
+pub(crate) const CHART_ACCENT: Color = Color::from_rgb(0.18, 0.65, 0.35);
 const CELL: f32 = 11.0;
 
 // ---------------------------------------------------------------------------
@@ -34,11 +35,32 @@ fn finite(v: f64) -> Option<f64> {
     v.is_finite().then_some(v)
 }
 
-/// "$12.30" for a measured cost, "—" when unknown (never "$0.00").
+fn grouped(digits: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Grouped currency (mac `currencyGrouping`): "$12.30" under $1,000,
+/// "$1,235" (0 decimals) at or above; "—" when unknown (never "$0.00").
 pub fn money(v: Option<f64>) -> String {
     match v.and_then(finite) {
-        Some(x) if x < 0.0 => format!("-${:.2}", -x),
-        Some(x) => format!("${x:.2}"),
+        Some(x) => {
+            let sign = if x < 0.0 { "-" } else { "" };
+            let a = x.abs();
+            if a >= 1000.0 {
+                format!("{sign}${}", grouped(&format!("{:.0}", a)))
+            } else {
+                let s = format!("{a:.2}");
+                let (int, frac) = s.split_once('.').unwrap_or((s.as_str(), "00"));
+                format!("{sign}${}.{frac}", grouped(int))
+            }
+        }
         None => EM_DASH.to_string(),
     }
 }
@@ -86,8 +108,17 @@ pub fn heat_level(tokens: Option<i64>, max: i64) -> Option<usize> {
     if t <= 0 || max <= 0 {
         return Some(0);
     }
+    // Mac palette thresholds: <=30% / <=65% / <=90% / above.
     let ratio = t as f64 / max as f64;
-    Some((ratio * 4.0).ceil().clamp(1.0, 4.0) as usize)
+    Some(if ratio <= 0.30 {
+        1
+    } else if ratio <= 0.65 {
+        2
+    } else if ratio <= 0.90 {
+        3
+    } else {
+        4
+    })
 }
 
 /// Mac `SpendActivityPalette` (dark): levels 0-4; unavailable days use the slash fill.
@@ -444,10 +475,7 @@ fn white(a: f32) -> Color {
 }
 
 fn semibold() -> iced::Font {
-    iced::Font {
-        weight: iced::font::Weight::Semibold,
-        ..iced::Font::DEFAULT
-    }
+    crate::ui::style::font_semibold()
 }
 
 fn title(s: impl Into<String>, size: u16) -> Element<'static, Message> {
@@ -455,7 +483,10 @@ fn title(s: impl Into<String>, size: u16) -> Element<'static, Message> {
 }
 
 fn caption(s: impl Into<String>) -> Element<'static, Message> {
-    text(s.into()).size(12).color(SECONDARY).into()
+    text(s.into())
+        .size(crate::ui::style::TEXT_FOOTNOTE)
+        .color(SECONDARY)
+        .into()
 }
 
 fn rule() -> Element<'static, Message> {
@@ -734,12 +765,6 @@ fn summary_panel(
     ]
     .spacing(12)]
     .spacing(12);
-    if app.scan_loaded && app.scan_view.token_mix.total() > 0 {
-        col = col
-            .push(rule())
-            .push(caption("Token mix · local session logs"))
-            .push(super::spend_sessions::token_mix(&app.scan_view.token_mix));
-    }
     let mut provenance: Vec<String> = app
         .spending
         .iter()
@@ -1210,7 +1235,10 @@ fn trend_panel(app: &App, today: NaiveDate, lb: bool) -> Option<Element<'static,
         row![
             column![
                 caption(if hour_mode { "Recorded hourly spend" } else { "Recorded spend" }),
-                title(money_lb(Some(total).filter(|_| peak.is_some()), lb_total), 20),
+                text(money_lb(Some(total).filter(|_| peak.is_some()), lb_total))
+                    .size(20)
+                    .font(semibold())
+                    .wrapping(iced::widget::text::Wrapping::None),
             ]
             .spacing(2),
             horizontal_space(),
@@ -1219,10 +1247,10 @@ fn trend_panel(app: &App, today: NaiveDate, lb: bool) -> Option<Element<'static,
                     Some(i) => format!("Highest recorded spend {}", sc::bucket_range(&buckets[i], unit)),
                     None => "Highest recorded spend".to_string(),
                 }),
-                title(
-                    money_lb(peak.map(|i| buckets[i].total), lb_total),
-                    16
-                ),
+                text(money_lb(peak.map(|i| buckets[i].total), lb_total))
+                    .size(16)
+                    .font(semibold())
+                    .wrapping(iced::widget::text::Wrapping::None),
             ]
             .spacing(2)
             .align_x(iced::Alignment::End),
@@ -1296,8 +1324,21 @@ fn trend_panel(app: &App, today: NaiveDate, lb: bool) -> Option<Element<'static,
         ));
     }
 
-    // Legend (click to isolate a source).
+    // Legend (click to isolate a source; "All" clears the isolation).
     let mut legend = Vec::new();
+    {
+        let clear = isolate.map(|cur| spend(SpendMsg::Isolate(cur.to_string())));
+        let a = if isolate.is_some() { 0.6 } else { 1.0 };
+        legend.push(flat(
+            row![
+                dot(Color { a, ..Color::WHITE }, 8.0),
+                text("All").size(12).color(Color { a, ..Color::WHITE }),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+            clear,
+        ));
+    }
     for id in &providers {
         let dimmed = isolate.is_some_and(|i| i != id);
         let a = if dimmed { 0.6 } else { 1.0 };
@@ -1534,15 +1575,7 @@ pub fn dashboard(app: &App) -> Element<'_, Message> {
         return page.push(data_controls(app)).into();
     }
 
-    // Currency header and the coverage caption.
-    page = page.push(
-        row![
-            caption("USD"),
-            horizontal_space(),
-            title(money_lb(total_cost, lb), 22),
-        ]
-        .align_y(iced::Alignment::Center),
-    );
+    // Coverage caption; the total itself lives in the summary stats below.
     let coverage = if range.is_empty() {
         EM_DASH.to_string()
     } else {
@@ -1587,6 +1620,24 @@ mod tests {
     }
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn spend_money_groups_and_drops_decimals_at_thousand() {
+        assert_eq!(money(Some(999.99)), "$999.99");
+        assert_eq!(money(Some(1000.0)), "$1,000");
+        assert_eq!(money(Some(1234.56)), "$1,235");
+        assert_eq!(money(Some(-1_234_567.0)), "-$1,234,567");
+    }
+
+    #[test]
+    fn spend_heat_level_threshold_boundaries() {
+        assert_eq!(heat_level(Some(30), 100), Some(1));
+        assert_eq!(heat_level(Some(31), 100), Some(2));
+        assert_eq!(heat_level(Some(65), 100), Some(2));
+        assert_eq!(heat_level(Some(66), 100), Some(3));
+        assert_eq!(heat_level(Some(90), 100), Some(3));
+        assert_eq!(heat_level(Some(91), 100), Some(4));
     }
 
     #[test]

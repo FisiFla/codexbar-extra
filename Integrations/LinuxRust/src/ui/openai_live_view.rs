@@ -15,14 +15,11 @@ use iced::{Background, Border, Color, Element, Font, Length, Theme};
 const CHART_KEY: &str = "openai-live";
 
 fn muted() -> Color {
-    Color::from_rgba(1.0, 1.0, 1.0, 0.65)
+    crate::ui::style::SECONDARY
 }
 
 fn semibold() -> Font {
-    Font {
-        weight: iced::font::Weight::Semibold,
-        ..Font::DEFAULT
-    }
+    crate::ui::style::font_semibold()
 }
 
 fn now() -> i64 {

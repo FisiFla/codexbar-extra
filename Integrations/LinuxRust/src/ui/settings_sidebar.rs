@@ -57,10 +57,7 @@ pub fn ordered_providers<'a>(
 }
 
 fn semibold() -> iced::Font {
-    iced::Font {
-        weight: iced::font::Weight::Semibold,
-        ..iced::Font::DEFAULT
-    }
+    crate::ui::style::font_semibold()
 }
 
 // ---------- pane icon tiles ----------
@@ -121,12 +118,9 @@ fn pane_glyph(p: SettingsPane) -> &'static str {
     }
 }
 
-/// 20pt rounded-square tile with a top-to-bottom gradient and a white glyph.
+/// 20pt rounded-square tile (flat Mac glyph plate) with a white glyph.
 pub fn icon_tile<'a>(pane: SettingsPane) -> Element<'a, Message> {
     let base = pane_color(pane);
-    let grad = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-        .add_stop(0.0, Color { a: 0.85, ..base })
-        .add_stop(1.0, base);
     let glyph = svg(svg::Handle::from_memory(pane_glyph(pane).as_bytes()))
         .width(Length::Fixed(13.0))
         .height(Length::Fixed(13.0));
@@ -134,7 +128,7 @@ pub fn icon_tile<'a>(pane: SettingsPane) -> Element<'a, Message> {
         .center_x(Length::Fixed(20.0))
         .center_y(Length::Fixed(20.0))
         .style(move |_| container::Style {
-            background: Some(Background::Gradient(grad.into())),
+            background: Some(Background::Color(base)),
             border: Border::default().rounded(5.0),
             ..Default::default()
         })
@@ -185,11 +179,11 @@ fn search_field(app: &App) -> Element<'_, Message> {
     .padding([5, 8])
     .width(Length::Fill)
     .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+        background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08))),
         border: Border {
             color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
             width: 1.0,
-            radius: 7.0.into(),
+            radius: 8.0.into(),
         },
         ..Default::default()
     })
@@ -216,7 +210,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             style::button(
                 row![
                     icon_tile(pane),
-                    text(crate::ui::settings_view::pane_title(pane)).size(14)
+                    text(crate::ui::settings_view::pane_title(pane)).size(13)
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
@@ -229,7 +223,10 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
 
     let on = enabled_count(&app.catalog, |id| provider_enabled(app, id));
-    list = list.push(Space::with_height(Length::Fixed(10.0)));
+    list = list.push(Space::with_height(Length::Fixed(6.0)));
+    list = list.push(
+        container(iced::widget::horizontal_rule(1)).padding([4.0, 8.0]),
+    );
     list = list.push(
         container(
             row![
@@ -261,7 +258,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         };
         let mut r = row![
             crate::icons::icon::<Message>(id, 16.0, tint),
-            text(name.clone()).size(14).color(tint),
+            text(name.clone()).size(13).color(tint),
             Space::with_width(Length::Fill),
         ]
         .spacing(8)
