@@ -72,8 +72,10 @@ fn session_card(s: &Session, now: chrono::DateTime<chrono::Utc>) -> Element<'sta
         .clone()
         .filter(|p| !p.is_empty())
         .map(Message::CopyText);
+    let focus = s.pid.map(Message::FocusSession);
     body = body.push(
         row![
+            small_button("Focus", focus),
             small_button("Open folder", open),
             small_button("Copy transcript path", copy),
         ]
@@ -144,6 +146,12 @@ pub fn view(app: &App) -> Element<Message> {
     ]
     .spacing(12)
     .align_y(iced::Alignment::Center);
+    let header = column![header]
+        .push_maybe(
+            (!app.focus_status.is_empty())
+                .then(|| text(app.focus_status.clone()).size(12).color(muted())),
+        )
+        .spacing(4);
 
     let mut body = Column::new().spacing(10);
     if !app.sessions_error.is_empty() {

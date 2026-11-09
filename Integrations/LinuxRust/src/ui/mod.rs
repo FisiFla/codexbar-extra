@@ -1,6 +1,9 @@
 pub mod menubar_editor;
+pub mod openai_live_view;
+pub mod overlay_view;
 pub mod popover;
 pub mod sessions_view;
 pub mod settings_view;
 pub mod share_view;
+pub mod spend_sessions;
 pub mod spend_view;

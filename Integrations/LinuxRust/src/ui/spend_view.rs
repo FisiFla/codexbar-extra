@@ -23,7 +23,7 @@ pub fn scroll_id() -> scrollable::Id {
 }
 
 pub const EM_DASH: &str = "—";
-const ACCENT: Color = Color::from_rgb(0.18, 0.65, 0.35);
+pub(crate) const ACCENT: Color = Color::from_rgb(0.18, 0.65, 0.35);
 const UNKNOWN_GRAY: Color = Color::from_rgb(0.45, 0.45, 0.45);
 
 // ---------------------------------------------------------------------------
@@ -428,7 +428,7 @@ fn period_button(label: &str, days: i64, current: i64) -> Element<'static, Messa
     }
 }
 
-fn tab_button(label: &str, tab: &str, current: &str) -> Element<'static, Message> {
+pub(crate) fn tab_button(label: &str, tab: &str, current: &str) -> Element<'static, Message> {
     let b = button(text(label.to_string())).on_press(Message::SetSpendTab(tab.to_string()));
     if tab == current {
         b.style(button::primary).into()
@@ -445,7 +445,7 @@ fn summary_card(label: &str, value: String) -> Element<'static, Message> {
 }
 
 /// Inline share/quota bar: filled track sized by `fraction` (0..=1).
-fn share_bar(fraction: f32, color: Color) -> Element<'static, Message> {
+pub(crate) fn share_bar(fraction: f32, color: Color) -> Element<'static, Message> {
     let filled = (fraction.clamp(0.0, 1.0) * 160.0).max(if fraction > 0.0 { 2.0 } else { 0.0 });
     row![
         container(text(""))
@@ -466,7 +466,7 @@ fn share_bar(fraction: f32, color: Color) -> Element<'static, Message> {
     .into()
 }
 
-fn swatch(color: Color) -> Element<'static, Message> {
+pub(crate) fn swatch(color: Color) -> Element<'static, Message> {
     container(text(""))
         .width(Length::Fixed(CELL))
         .height(Length::Fixed(CELL))
@@ -740,6 +740,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .filter(|(k, _)| k == "spend-trend")
                 .map(|(_, i)| *i),
             fmt: crate::charts::money,
+            axis: crate::charts::axis_money,
+            y_max: None,
         })
         .width(Length::Fill)
         .height(Length::Fixed(140.0))
@@ -789,16 +791,16 @@ pub fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    // Detail tabs.
-    page = page.push(
-        row![
-            tab_button("Providers", "providers", &app.spend_tab),
-            tab_button("Models", "models", &app.spend_tab),
-            tab_button("Ledger", "ledger", &app.spend_tab),
-        ]
-        .spacing(6),
-    );
+    // Session / tool insight sections (local scan), then the detail tabs.
+    page = page.push(super::spend_sessions::insights(app));
+    page = page.push(super::spend_sessions::tab_buttons(&app.spend_tab));
     match app.spend_tab.as_str() {
+        "projects" => {
+            page = page.push(super::spend_sessions::projects_tab(app));
+        }
+        "sessions" => {
+            page = page.push(super::spend_sessions::sessions_tab(app));
+        }
         "models" => {
             let rows_in: Vec<(String, String, f64, i64)> = app
                 .spend

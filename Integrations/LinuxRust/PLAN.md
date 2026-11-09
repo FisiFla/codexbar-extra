@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, first release `linux-v0.84.0`)
+## Status (2026-11-09, latest `linux-v0.84.2`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -15,8 +15,18 @@ Qt-compatible argv/IPC/`linux.json`/tarball, Omarchy adapter. Verified live agai
 live preview; stored in `~/.config/codexbar/menubar-layout.json`, linux.json untouched), popover Cost history / Model
 breakdown chart sections and hover tooltips on all bar charts, model ranking in Spend/Share from per-day breakdowns.
 
-Open: OpenAI Live window (Admin API key), credits/utilization/burndown/storage/throughput charts (no Linux data source
-in the CLI yet), local session/tool spend scanners, quota overlay/confetti, session window focus, per-pane visual polish.
+`linux-v0.84.2` adds: OpenAI Live Usage window (Admin API `/v1/organization/usage/completions`, 1-minute buckets,
+15m/1h/6h, per-model filter; key from shared `config.json` `providers[openai].apiKey` or `OPENAI_ADMIN_KEY`, sent only in
+the Authorization header), popover Plan utilization / Quota burndown / Tokens-per-minute / Storage chart sections (local
+history in `$XDG_STATE_HOME/codexbar-linux/usage-history.json`, storage scan of provider data dirs), Rust session/tool
+spend scanners (Claude transcripts, Codex rollouts, OpenCode SQLite, Pi) feeding Insights, Token mix, Hourly activity,
+Tool activity, Projects and a searchable Sessions browser with detail pane (cache `$XDG_CACHE_HOME/codexbar-linux/`),
+quota warning overlay + reset confetti (always-on-top transparent windows, click/auto dismiss; toggles in Notifications,
+stored in `~/.config/codexbar/linux-extras.json`), Agent Sessions "Focus" (KWin D-Bus on KDE Wayland, xdotool/wmctrl on
+X11; other Wayland compositors: explanatory no-op, never synthesized input).
+
+Open (honest gaps): credits history chart (no CLI data source), layer-shell overlays (plain always-on-top windows
+instead; some compositors ignore the hints), focus on non-KDE Wayland, stay-awake, per-pane pixel polish vs the mac app.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 
 ## Why the Qt app feels so far behind

@@ -732,8 +732,24 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+fn extra_check<'a>(
+    label: &str,
+    cur: bool,
+    base: crate::extras::Extras,
+    set: impl Fn(&mut crate::extras::Extras, bool) + 'a,
+) -> Element<'a, Message> {
+    checkbox(label.to_string(), cur)
+        .on_toggle(move |v| {
+            let mut e = base.clone();
+            set(&mut e, v);
+            Message::ExtrasChanged(Box::new(e))
+        })
+        .into()
+}
+
 fn notifications_pane(app: &App) -> Element<'_, Message> {
     let s = &app.settings;
+    let x = &app.extras;
     let threshold_slider = {
         let base = s.clone();
         slider(1..=99, s.notify_threshold, move |v| {
@@ -758,6 +774,33 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
                     .into(),
                 ),
                 note("Delivered through the desktop notification service (org.freedesktop.Notifications)."),
+            ]
+            .spacing(8)
+            .into(),
+        ),
+        section(
+            "On-screen effects",
+            column![
+                extra_check(
+                    "Show an on-screen alert when a quota warning fires",
+                    x.quota_warning_overlay,
+                    x.clone(),
+                    |e, v| e.quota_warning_overlay = v
+                ),
+                extra_check(
+                    "Confetti when the session limit resets",
+                    x.confetti_on_session_reset,
+                    x.clone(),
+                    |e, v| e.confetti_on_session_reset = v
+                ),
+                extra_check(
+                    "Confetti when the weekly limit resets",
+                    x.confetti_on_weekly_reset,
+                    x.clone(),
+                    |e, v| e.confetti_on_weekly_reset = v
+                ),
+                note("Click an effect to dismiss it; it also closes by itself after a few seconds. The alert needs the notifications option above. Compositors that ignore always-on-top or transparency show a plain window instead."),
+                note("Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
             ]
             .spacing(8)
             .into(),

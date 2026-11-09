@@ -11,6 +11,7 @@ pub enum TrayCommand {
     Settings,
     Sessions,
     ShareStats,
+    OpenAiLive,
     Refresh,
     Quit,
 }
@@ -48,6 +49,10 @@ pub enum Page {
     Settings,
     Sessions,
     ShareStats,
+    OpenAiLive,
+    /// Transient always-on-top overlays (no chrome).
+    QuotaAlert,
+    Confetti,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -105,9 +110,44 @@ pub struct App {
     pub expanded_charts: BTreeSet<String>,
     /// Hovered bar: (chart key, bar index).
     pub chart_hover: Option<(String, usize)>,
+    /// Selected series per chart key (utilization / burndown pickers).
+    pub chart_series: BTreeMap<String, usize>,
+    /// Local plan-utilization history (`usage-history.json`) and where it is persisted.
+    pub history: crate::history::History,
+    pub history_path: Option<std::path::PathBuf>,
+    /// Cached provider storage footprints; refreshed rarely off the UI thread.
+    pub storage: BTreeMap<String, crate::storage::Footprint>,
+    pub storage_loaded: bool,
     /// Share Stats window: dark card toggle (session only, not persisted) and last status line.
     pub share_dark: bool,
     pub share_status: String,
+    /// `linux-extras.json` toggles, the live overlays and the last "Focus" status line.
+    pub extras: crate::extras::Extras,
+    pub alert: Option<crate::ui::overlay_view::AlertState>,
+    pub confetti: Option<crate::ui::overlay_view::ConfettiState>,
+    pub focus_status: String,
+    /// OpenAI Live Usage window state.
+    pub live: crate::openai_live::LiveState,
+    /// Local session/tool scan (Usage & Spend): raw merged facts, their aggregate for the current
+    /// period/time zone, and the browser state. Nothing here is persisted except the cache file.
+    pub scan: Option<std::sync::Arc<crate::scan::ScanSnapshot>>,
+    pub scan_view: crate::scan::aggregate::View,
+    pub scan_busy: bool,
+    pub scan_loaded: bool,
+    pub scan_zone: crate::scan::aggregate::Zone,
+    pub session_query: String,
+    pub session_sort: SessionSort,
+    pub selected_session: Option<(crate::scan::Provider, String)>,
+    pub tool_filter: String,
+    pub tools_expanded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSort {
+    Recent,
+    Cost,
+    Tokens,
+    Tools,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,11 +163,24 @@ pub enum Message {
     UsageLoaded(Result<Vec<Entry>, String>),
     CostLoaded(Result<(Vec<CostEntry>, Vec<crate::cli::CostPayload>), String>),
     ToggleChart(String),
-    ChartHover { key: String, index: Option<usize> },
+    ChartHover {
+        key: String,
+        index: Option<usize>,
+    },
+    ChartSeries {
+        key: String,
+        index: usize,
+    },
+    HistorySaved(Result<(), String>),
+    ScanStorage,
+    StorageScanned(BTreeMap<String, crate::storage::Footprint>),
     CatalogLoaded(Vec<crate::cli::ProviderCatalogEntry>),
     SetProviderEnabled(String, bool),
     CredentialDraftChanged(String),
-    SaveCredential { provider: String, cookie: bool },
+    SaveCredential {
+        provider: String,
+        cookie: bool,
+    },
     ClearCredential(String),
     ConfigDone(Result<String, String>),
     Tick,
@@ -147,10 +200,27 @@ pub enum Message {
     AutostartResult(Result<bool, String>),
     SetSpendPeriod(i64),
     SetSpendTab(String),
-    AccountAction { provider: String, login: bool },
+    ScanLoaded(std::sync::Arc<crate::scan::ScanSnapshot>),
+    SetScanZone(crate::scan::aggregate::Zone),
+    SessionQuery(String),
+    SessionSort(SessionSort),
+    SelectSession(Option<(crate::scan::Provider, String)>),
+    ToolFilter(String),
+    ToggleToolsExpanded,
+    AccountAction {
+        provider: String,
+        login: bool,
+    },
     OpenUrl(String),
     CopySummary,
     RefreshSessions,
+    FocusSession(i64),
+    FocusDone(Result<String, String>),
+    ExtrasChanged(Box<crate::extras::Extras>),
+    DismissOverlays,
+    OverlayFrame,
+    Redrawn(window::Id),
+    ForceOverlays,
     SessionsLoaded(Result<Vec<crate::sessions::Session>, String>),
     OpenFolder(String),
     CopyText(String),
@@ -161,6 +231,14 @@ pub enum Message {
     ShareCopyText,
     ShareCaptured(ShareAction, Result<Vec<u8>, String>),
     ShareDone(Result<String, String>),
+    OpenAiLiveRefresh,
+    OpenAiLiveRange(i64),
+    OpenAiLiveFilter(Option<String>),
+    OpenAiLiveOpenSettings,
+    OpenAiLiveLoaded(
+        u64,
+        Result<crate::openai_live::Snapshot, crate::openai_live::LiveError>,
+    ),
     Quit,
     None,
 }

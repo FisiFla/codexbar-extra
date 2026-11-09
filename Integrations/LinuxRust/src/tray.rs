@@ -496,6 +496,12 @@ impl ksni::Tray for CodexTray {
             }
             .into(),
             StandardItem {
+                label: "OpenAI Live Usage\u{2026}".into(),
+                activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::OpenAiLive)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: "Share Stats\u{2026}".into(),
                 activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::ShareStats)),
                 ..Default::default()

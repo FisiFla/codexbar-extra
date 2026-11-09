@@ -609,6 +609,15 @@ fn provider_body<'a>(
     if entry.provider == "deepseek" {
         col = col.push(deepseek_section());
     }
+    // OpenAI-only: Admin API live usage window (mac "Live Usage" card action).
+    if entry.provider == "openai" {
+        col = col.push(
+            button(text("Live usage…").size(13))
+                .on_press(Message::ShowPage(Page::OpenAiLive))
+                .padding([4, 10])
+                .style(button::secondary),
+        );
+    }
     // Credits
     if let Some(credits) = entry.credits {
         let mut sec = Column::new().spacing(6).width(Length::Fill);
@@ -647,8 +656,8 @@ fn provider_body<'a>(
     // Cost (local history)
     if s.show_costs && (cost.is_some() || app.cost_busy || !app.cost_error.is_empty()) {
         col = col.push(cost_section(app, cost));
-        col = col.push(chart_sections(app, &entry.provider));
     }
+    col = col.push(chart_sections(app, &entry.provider));
     // Provider detail sections
     for section in &entry.details {
         let mut sec = Column::new().spacing(6).width(Length::Fill);
@@ -812,17 +821,69 @@ fn cost_section(app: &App, cost: Option<&CostEntry>) -> Element<'static, Message
     sec.into()
 }
 
-/// Expandable chart sections (mac hover submenus): cost history and model breakdown, built
-/// only from the per-day `cost` payload. Hidden when the provider has no daily data.
+fn section_header(key: String, title: &'static str, open: bool) -> Element<'static, Message> {
+    button(
+        row![
+            text(title).size(14).font(semibold()).width(Length::Fill),
+            text(if open { "Hide" } else { "Show" })
+                .size(12)
+                .color(muted()),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::ToggleChart(key))
+    .style(|theme: &Theme, status: button::Status| {
+        let base = button::text(theme, status);
+        button::Style {
+            border: Border::default().rounded(6.0),
+            ..base
+        }
+    })
+    .padding([4, 0])
+    .width(Length::Fill)
+    .into()
+}
+
+/// Segmented series picker (mac `Picker(.segmented)`); the selected index lives in
+/// `App::chart_series` under `key`.
+fn series_picker(key: &str, titles: &[String], selected: usize) -> Element<'static, Message> {
+    let mut r = Row::new().spacing(6);
+    for (i, t) in titles.iter().enumerate() {
+        let key = key.to_string();
+        r = r.push(
+            button(text(t.clone()).size(12))
+                .on_press(Message::ChartSeries { key, index: i })
+                .padding([2, 8])
+                .style(move |theme: &Theme, status: button::Status| {
+                    if i == selected {
+                        button::primary(theme, status)
+                    } else {
+                        button::secondary(theme, status)
+                    }
+                }),
+        );
+    }
+    r.into()
+}
+
+fn local_clock(unix: i64) -> String {
+    chrono::DateTime::from_timestamp(unix, 0)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%a, %b %-d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn percent_label(v: f64) -> String {
+    format!("{v:.0}%")
+}
+
+/// Expandable chart sections (mac hover submenus): plan utilization, quota burndown, tokens/min,
+/// cost history, model breakdown and storage. Each is hidden when it has no data.
 fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
     let mut col = Column::new().spacing(6).width(Length::Fill);
-    let Some(payload) = app
-        .cost_payloads
-        .iter()
-        .find(|p| p.provider == provider && p.error.is_none() && !p.daily.is_empty())
-    else {
-        return col.into();
-    };
     let accent = rgb(accent_rgb(provider));
     let hover_for = |key: &str| {
         app.chart_hover
@@ -830,91 +891,271 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
             .filter(|(k, _)| k == key)
             .map(|(_, i)| *i)
     };
-    let header = |key: String, title: &'static str, open: bool| {
-        button(
-            row![
-                text(title).size(14).font(semibold()).width(Length::Fill),
-                text(if open { "Hide" } else { "Show" })
-                    .size(12)
-                    .color(muted()),
-            ]
-            .align_y(Alignment::Center),
-        )
-        .on_press(Message::ToggleChart(key))
-        .style(|theme: &Theme, status: button::Status| {
-            let base = button::text(theme, status);
-            button::Style {
-                border: Border::default().rounded(6.0),
-                ..base
-            }
-        })
-        .padding([4, 0])
-        .width(Length::Fill)
+    let selected_series = |key: &str, len: usize| {
+        app.chart_series
+            .get(key)
+            .copied()
+            .unwrap_or(0)
+            .min(len.saturating_sub(1))
     };
+    let tz = chrono::Local::now().offset().local_minus_utc() as i64;
+    let now = chrono::Utc::now().timestamp();
 
-    let cost_key = format!("{provider}:cost");
-    let cost_open = app.expanded_charts.contains(&cost_key);
-    col = col.push(horizontal_rule(1));
-    col = col.push(header(cost_key.clone(), "Cost history", cost_open));
-    if cost_open {
-        let bars = crate::charts::cost_bars(&payload.daily);
-        let total: f64 = payload.daily.iter().map(|d| d.total_cost).sum();
-        col = col.push(chart_canvas(crate::charts::BarChart {
-            hover: hover_for(&cost_key),
-            key: cost_key,
-            bars,
-            color: accent,
-            peak_cap: true,
-            fmt: crate::charts::money,
-        }));
-        col = col.push(
-            text(format!(
-                "Est. total (30 days): {}",
-                crate::charts::money(total)
-            ))
-            .size(12)
-            .color(muted()),
-        );
-        col = col.push(
-            text(provenance_label(
-                payload.provenance.as_deref().unwrap_or("unknown"),
-            ))
-            .size(11)
-            .color(muted()),
-        );
-    }
-
-    let (bars, legend) = crate::charts::model_bars(&payload.daily, 5);
-    if !bars.is_empty() {
-        let key = format!("{provider}:models");
+    // Plan utilization history + quota burndown (local usage history).
+    let series = app.history.series_for(provider);
+    if !series.is_empty() {
+        let titles: Vec<String> = series.iter().map(|s| s.label.clone()).collect();
+        let key = format!("{provider}:util");
         let open = app.expanded_charts.contains(&key);
         col = col.push(horizontal_rule(1));
-        col = col.push(header(key.clone(), "Model breakdown", open));
+        col = col.push(section_header(key.clone(), "Plan utilization", open));
         if open {
+            let idx = selected_series(&key, series.len());
+            if series.len() > 1 {
+                col = col.push(series_picker(&key, &titles, idx));
+            }
+            let s = series[idx];
+            let bars = crate::history::utilization_bars(s, tz);
             col = col.push(chart_canvas(crate::charts::BarChart {
                 hover: hover_for(&key),
                 key,
                 bars,
                 color: accent,
                 peak_cap: false,
-                fmt: crate::charts::money,
+                fmt: percent_label,
+                axis: percent_label,
+                y_max: Some(100.0),
             }));
-            for m in legend {
-                let swatch = crate::charts::segment_color(m.color_index);
+            let cadence = if s.window_minutes < 1440 {
+                "Peak used per day"
+            } else {
+                "Peak used per reset period"
+            };
+            col = col.push(
+                text(format!(
+                    "{cadence} · {} samples recorded locally",
+                    s.entries.len()
+                ))
+                .size(11)
+                .color(muted()),
+            );
+        }
+
+        let burns: Vec<(&crate::history::Series, crate::history::Burndown)> = series
+            .iter()
+            .filter_map(|s| crate::history::Burndown::from_series(s, now).map(|b| (*s, b)))
+            .collect();
+        if !burns.is_empty() {
+            let key = format!("{provider}:burn");
+            let open = app.expanded_charts.contains(&key);
+            col = col.push(horizontal_rule(1));
+            col = col.push(section_header(key.clone(), "Quota burndown", open));
+            if open {
+                let idx = selected_series(&key, burns.len());
+                if burns.len() > 1 {
+                    let titles: Vec<String> = burns.iter().map(|b| b.0.label.clone()).collect();
+                    col = col.push(series_picker(&key, &titles, idx));
+                }
+                let burn = burns[idx].1.clone();
+                let (start, reset) = (burn.start, burn.reset);
+                let last_at = burn.samples.last().map(|s| s.at);
+                let remaining = burn.latest_remaining();
+                col = col.push(
+                    iced::widget::Canvas::new(crate::charts::BurndownChart {
+                        burn,
+                        color: accent,
+                    })
+                    .width(Length::Fill)
+                    .height(Length::Fixed(150.0)),
+                );
                 col = col.push(
                     row![
-                        container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0))).style(
-                            move |_: &Theme| container::Style {
-                                background: Some(Background::Color(swatch)),
+                        text(local_clock(start)).size(11).color(muted()),
+                        Space::with_width(Length::Fill),
+                        text(local_clock(reset)).size(11).color(muted()),
+                    ]
+                    .width(Length::Fill),
+                );
+                if let Some(r) = remaining {
+                    col = col.push(
+                        text(format!("{r:.0}% usage remaining"))
+                            .size(12)
+                            .color(muted()),
+                    );
+                }
+                if let Some(t) = last_at {
+                    col = col.push(
+                        text(format!("Last known usage: {}", local_clock(t)))
+                            .size(11)
+                            .color(muted()),
+                    );
+                }
+            }
+        }
+    }
+
+    // Tokens/min and cost sections come from the per-day `cost` payload.
+    if app.settings.show_costs {
+        if let Some(payload) = app
+            .cost_payloads
+            .iter()
+            .find(|p| p.provider == provider && p.error.is_none() && !p.daily.is_empty())
+        {
+            let tpm_bars = crate::throughput::daily_bars(&payload.daily);
+            if let Some(sum) = crate::throughput::summary(&tpm_bars) {
+                let key = format!("{provider}:tpm");
+                let open = app.expanded_charts.contains(&key);
+                col = col.push(horizontal_rule(1));
+                col = col.push(section_header(
+                    key.clone(),
+                    "Tokens / min · daily average",
+                    open,
+                ));
+                if open {
+                    col = col.push(chart_canvas(crate::charts::BarChart {
+                        hover: hover_for(&key),
+                        key,
+                        bars: tpm_bars,
+                        color: accent,
+                        peak_cap: true,
+                        fmt: crate::throughput::per_min,
+                        axis: crate::throughput::count,
+                        y_max: None,
+                    }));
+                    col = col.push(
+                        text(format!(
+                            "Latest {} · Peak {} on {} · Avg {}",
+                            crate::throughput::count(sum.latest),
+                            crate::throughput::count(sum.peak),
+                            crate::charts::short_date(&sum.peak_date),
+                            crate::throughput::count(sum.average),
+                        ))
+                        .size(12)
+                        .color(muted()),
+                    );
+                    col = col.push(
+                        text("Approximation: each day's tokens ÷ 1,440 min, not a measured per-minute rate.")
+                            .size(11)
+                            .color(muted()),
+                    );
+                }
+            }
+
+            let cost_key = format!("{provider}:cost");
+            let cost_open = app.expanded_charts.contains(&cost_key);
+            col = col.push(horizontal_rule(1));
+            col = col.push(section_header(cost_key.clone(), "Cost history", cost_open));
+            if cost_open {
+                let bars = crate::charts::cost_bars(&payload.daily);
+                let total: f64 = payload.daily.iter().map(|d| d.total_cost).sum();
+                col = col.push(chart_canvas(crate::charts::BarChart {
+                    hover: hover_for(&cost_key),
+                    key: cost_key,
+                    bars,
+                    color: accent,
+                    peak_cap: true,
+                    fmt: crate::charts::money,
+                    axis: crate::charts::axis_money,
+                    y_max: None,
+                }));
+                col = col.push(
+                    text(format!(
+                        "Est. total (30 days): {}",
+                        crate::charts::money(total)
+                    ))
+                    .size(12)
+                    .color(muted()),
+                );
+                col = col.push(
+                    text(provenance_label(
+                        payload.provenance.as_deref().unwrap_or("unknown"),
+                    ))
+                    .size(11)
+                    .color(muted()),
+                );
+            }
+
+            let (bars, legend) = crate::charts::model_bars(&payload.daily, 5);
+            if !bars.is_empty() {
+                let key = format!("{provider}:models");
+                let open = app.expanded_charts.contains(&key);
+                col = col.push(horizontal_rule(1));
+                col = col.push(section_header(key.clone(), "Model breakdown", open));
+                if open {
+                    col = col.push(chart_canvas(crate::charts::BarChart {
+                        hover: hover_for(&key),
+                        key,
+                        bars,
+                        color: accent,
+                        peak_cap: false,
+                        fmt: crate::charts::money,
+                        axis: crate::charts::axis_money,
+                        y_max: None,
+                    }));
+                    for m in legend {
+                        let swatch = crate::charts::segment_color(m.color_index);
+                        col = col.push(
+                            row![
+                                container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0)))
+                                    .style(move |_: &Theme| container::Style {
+                                        background: Some(Background::Color(swatch)),
+                                        border: Border::default().rounded(2.0),
+                                        ..Default::default()
+                                    }),
+                                text(m.name.clone()).size(12).width(Length::Fill),
+                                text(crate::charts::money(m.cost)).size(12).color(muted()),
+                            ]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Storage breakdown (cached scan of the provider's local data dirs).
+    if let Some(fp) = app.storage.get(provider).filter(|f| f.has_local_data()) {
+        let key = format!("{provider}:storage");
+        let open = app.expanded_charts.contains(&key);
+        col = col.push(horizontal_rule(1));
+        col = col.push(section_header(key, "Storage", open));
+        if open {
+            col = col.push(
+                text(format!(
+                    "Total: {}",
+                    crate::storage::bytes_label(fp.total_bytes)
+                ))
+                .size(12)
+                .color(muted()),
+            );
+            let rows = crate::storage::rows(fp);
+            let max = rows.iter().map(|r| r.1).max().unwrap_or(1).max(1) as f32;
+            for (name, bytes) in rows {
+                col = col.push(
+                    column![
+                        row![
+                            text(name).size(12).width(Length::Fill),
+                            text(crate::storage::bytes_label(bytes))
+                                .size(12)
+                                .color(muted()),
+                        ],
+                        progress_bar(0.0..=1.0, bytes as f32 / max).height(4).style(
+                            move |_: &Theme| progress_bar::Style {
+                                background: Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.1)),
+                                bar: Background::Color(accent),
                                 border: Border::default().rounded(2.0),
-                                ..Default::default()
                             }
                         ),
-                        text(m.name.clone()).size(12).width(Length::Fill),
-                        text(crate::charts::money(m.cost)).size(12).color(muted()),
                     ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
+                    .spacing(3),
+                );
+            }
+            if fp.unreadable > 0 {
+                col = col.push(
+                    text(format!("{} unreadable item(s) skipped", fp.unreadable))
+                        .size(11)
+                        .color(muted()),
                 );
             }
         }

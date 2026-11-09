@@ -12,6 +12,10 @@ pub struct Notice {
     pub kind: &'static str, // "low" | "reset" | "status"
     pub provider: String,
     pub message: String,
+    /// Quota window key ("primary", "secondary", "extra:<id>"); empty for status notices.
+    pub window_key: String,
+    /// Remaining percent after the transition; 0 for status notices.
+    pub remaining: i64,
 }
 
 #[derive(Clone, Default)]
@@ -100,6 +104,8 @@ pub fn transition_events(prev: &[Entry], next: &[Entry], threshold: u32) -> Vec<
                     kind: "low",
                     provider: row.provider.clone(),
                     message: format!("{}: {}% quota remaining.", window.label, window.remaining),
+                    window_key: window.key.clone(),
+                    remaining: window.remaining,
                 });
             } else if !old.reset.is_empty()
                 && !window.resets_at.is_empty()
@@ -113,6 +119,8 @@ pub fn transition_events(prev: &[Entry], next: &[Entry], threshold: u32) -> Vec<
                         "{} quota reset · {}% remaining.",
                         window.label, window.remaining
                     ),
+                    window_key: window.key.clone(),
+                    remaining: window.remaining,
                 });
             }
         }
@@ -129,6 +137,8 @@ pub fn transition_events(prev: &[Entry], next: &[Entry], threshold: u32) -> Vec<
                         kind: "status",
                         provider: row.provider.clone(),
                         message,
+                        window_key: String::new(),
+                        remaining: 0,
                     });
                 }
             }
@@ -137,10 +147,10 @@ pub fn transition_events(prev: &[Entry], next: &[Entry], threshold: u32) -> Vec<
     events
 }
 
-/// Detect transitions and post them via `org.freedesktop.Notifications`
+/// Post events via `org.freedesktop.Notifications`
 /// (notify-rust), matching the Qt app's 8-second "CodexBar · <provider>".
-pub fn maybe_notify(prev: &[Entry], next: &[Entry], threshold: u32) {
-    for event in transition_events(prev, next, threshold) {
+pub fn post(events: &[Notice]) {
+    for event in events {
         let _ = notify_rust::Notification::new()
             .appname("CodexBar")
             .summary(&format!("CodexBar · {}", event.provider))

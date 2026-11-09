@@ -1,6 +1,6 @@
 [package]
 name = "codexbar-linux"
-version = "0.84.1"
+version = "0.84.2"
 edition = "2021"
 license = "MIT"
 description = "CodexBar desktop for Linux (Rust) - tray, popover, spend dashboard, settings"
@@ -20,6 +20,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 notify-rust = "4"
 dirs = "6"
 libc = "0.2"
+ureq = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [profile.release]
 lto = "thin"

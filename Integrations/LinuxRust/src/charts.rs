@@ -391,6 +391,10 @@ pub struct BarChart {
     pub peak_cap: bool,
     pub hover: Option<usize>,
     pub fmt: fn(f64) -> String,
+    /// Y-axis tick label formatter.
+    pub axis: fn(f64) -> String,
+    /// Fixed y maximum (e.g. 100 for percent); `None` scales to the data.
+    pub y_max: Option<f64>,
 }
 
 impl BarChart {
@@ -458,7 +462,7 @@ impl canvas::Program<Message> for BarChart {
         let dim = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
         let plot = plot_rect(size);
         let frames = bar_frames(plot, self.bars.len(), BAR_WIDTH_RATIO);
-        let max = max_value(&self.bars);
+        let max = self.y_max.unwrap_or_else(|| max_value(&self.bars));
         let baseline = plot.y + plot.height;
         frame.fill_rectangle(
             Point::new(plot.x, baseline),
@@ -468,7 +472,7 @@ impl canvas::Program<Message> for BarChart {
         for tick in y_ticks(max) {
             let y = baseline - (tick / max) as f32 * plot.height;
             frame.fill_text(text(
-                axis_money(tick),
+                (self.axis)(tick),
                 Point::new(Y_AXIS_WIDTH - 6.0, y),
                 dim,
                 alignment::Horizontal::Right,
@@ -561,6 +565,105 @@ impl canvas::Program<Message> for BarChart {
                     alignment::Horizontal::Left,
                 ));
             }
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quota burndown line chart
+// ---------------------------------------------------------------------------
+
+/// Plot position of a burndown point: x over the window, y as remaining % (0 at the bottom).
+pub fn burndown_point(
+    plot: Rectangle,
+    b: &crate::history::Burndown,
+    at: i64,
+    remaining: f64,
+) -> Point {
+    let span = (b.reset - b.start).max(1) as f32;
+    let fx = ((at - b.start) as f32 / span).clamp(0.0, 1.0);
+    let fy = (remaining as f32 / 100.0).clamp(0.0, 1.0);
+    Point::new(plot.x + fx * plot.width, plot.y + (1.0 - fy) * plot.height)
+}
+
+/// Canvas program for `QuotaBurndownChartMenuView`: remaining % (solid, with points) against the
+/// ideal linear burn (dashed grey) from window start to reset.
+pub struct BurndownChart {
+    pub burn: crate::history::Burndown,
+    pub color: Color,
+}
+
+impl canvas::Program<Message> for BurndownChart {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let size = bounds.size();
+        if size.width < 60.0 || size.height < 40.0 {
+            return vec![frame.into_geometry()];
+        }
+        let dim = Color::from_rgba(1.0, 1.0, 1.0, 0.55);
+        let plot = plot_rect(size);
+        let baseline = plot.y + plot.height;
+        for tick in [0.0, 50.0, 100.0] {
+            let y = baseline - (tick / 100.0) as f32 * plot.height;
+            frame.fill_rectangle(
+                Point::new(plot.x, y),
+                Size::new(plot.width, 1.0),
+                Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+            );
+            frame.fill_text(text(
+                format!("{tick:.0}%"),
+                Point::new(Y_AXIS_WIDTH - 6.0, y),
+                dim,
+                alignment::Horizontal::Right,
+            ));
+        }
+        let b = &self.burn;
+        let a = burndown_point(plot, b, b.start, b.ideal_at(b.start));
+        let z = burndown_point(plot, b, b.reset, b.ideal_at(b.reset));
+        let segments = 24;
+        for i in (0..segments).step_by(2) {
+            let t0 = i as f32 / segments as f32;
+            let t1 = (i + 1) as f32 / segments as f32;
+            let p0 = Point::new(a.x + (z.x - a.x) * t0, a.y + (z.y - a.y) * t0);
+            let p1 = Point::new(a.x + (z.x - a.x) * t1, a.y + (z.y - a.y) * t1);
+            frame.stroke(
+                &Path::line(p0, p1),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.45))
+                    .with_width(1.0),
+            );
+        }
+        let pts: Vec<Point> = b
+            .samples
+            .iter()
+            .map(|s| burndown_point(plot, b, s.at, s.remaining))
+            .collect();
+        if pts.len() > 1 {
+            let path = Path::new(|p| {
+                p.move_to(pts[0]);
+                for q in &pts[1..] {
+                    p.line_to(*q);
+                }
+            });
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(self.color)
+                    .with_width(2.0),
+            );
+        }
+        if let Some(last) = pts.last() {
+            frame.fill(&Path::circle(*last, 3.5), self.color);
         }
         vec![frame.into_geometry()]
     }
@@ -742,5 +845,28 @@ mod tests {
         };
         let r = tooltip_rect(right_bar, size, 80.0, 40.0);
         assert!(r.x + r.width <= 300.0 && r.x < right_bar.x);
+    }
+
+    #[test]
+    fn burndown_points_map_window_to_plot() {
+        let b = crate::history::Burndown {
+            start: 1000,
+            reset: 2000,
+            samples: vec![],
+        };
+        let plot = Rectangle {
+            x: 10.0,
+            y: 8.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        assert_eq!(burndown_point(plot, &b, 1000, 100.0), Point::new(10.0, 8.0));
+        assert_eq!(burndown_point(plot, &b, 2000, 0.0), Point::new(110.0, 88.0));
+        assert_eq!(burndown_point(plot, &b, 1500, 50.0), Point::new(60.0, 48.0));
+        // Out-of-window values clamp rather than escape the plot.
+        assert_eq!(
+            burndown_point(plot, &b, 5000, 150.0),
+            Point::new(110.0, 8.0)
+        );
     }
 }
