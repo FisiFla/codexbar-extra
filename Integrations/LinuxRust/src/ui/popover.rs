@@ -1,9 +1,10 @@
 //! Quick View popover (mac `MenuCardView` order / Qt `qml/QuickView.qml` layout):
-//! header, provider switcher, Overview or provider card body, footer.
+//! provider switcher, Overview or provider card body, action rows, footer.
 
 use crate::model::{CostEntry, Entry, QuotaWindow};
 use crate::settings::Settings;
-use crate::state::{App, Message, Page};
+use crate::state::{App, Message, Page, SettingsPane};
+use crate::ui::popover_charts::{self, glyph, Glyph};
 use iced::widget::{
     button, column, container, horizontal_rule, progress_bar, row, scrollable, text, Column, Row,
     Space, Stack,
@@ -181,12 +182,13 @@ pub fn scroll_id() -> scrollable::Id {
 }
 
 pub fn view(app: &App) -> Element<Message> {
-    let body = body(app);
+    // Mac menu order: switcher, card + chart rows, action rows (all scrolling), then the fixed
+    // Settings / About / Quit rows.
+    let content = column![body(app), actions(app)].width(Length::Fill);
     column![
-        header(app),
         switcher(app),
         horizontal_rule(1),
-        crate::ui::style::scrollable(body)
+        crate::ui::style::scrollable(content)
             .id(scroll_id())
             .width(Length::Fill)
             .height(Length::Fill),
@@ -198,38 +200,9 @@ pub fn view(app: &App) -> Element<Message> {
     .into()
 }
 
-fn header(app: &App) -> Element<'_, Message> {
-    let refresh = crate::ui::style::button(text("Refresh").size(12))
-        .on_press_maybe(if app.busy {
-            None
-        } else {
-            Some(Message::Refresh)
-        })
-        .style(|theme: &Theme, status: button::Status| {
-            let base = button::text(theme, status);
-            button::Style {
-                border: Border::default().rounded(6.0),
-                ..base
-            }
-        })
-        .padding([2, 8]);
-    let title = row![
-        text("CodexBar")
-            .size(14)
-            .font(semibold())
-            .width(Length::Fill),
-        refresh,
-    ]
-    .align_y(Alignment::Center);
-    container(column![title, text(updated_line(app)).size(12).color(muted())].spacing(2))
-        .padding(iced::Padding {
-            top: 12.0,
-            right: 14.0,
-            bottom: 8.0,
-            left: 20.0,
-        })
-        .width(Length::Fill)
-        .into()
+/// Hairline divider between card sections (inset like the Mac menu separators).
+fn rule<'a>() -> Element<'a, Message> {
+    container(horizontal_rule(1)).padding([4.0, 0.0]).into()
 }
 
 /// Capsule meter: iced progress bar with optional pace-expected tick overlay.
@@ -290,7 +263,7 @@ fn tab_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style
         button::Style {
             background,
             text_color,
-            border: Border::default().rounded(9.0),
+            border: Border::default().rounded(8.0),
             ..Default::default()
         }
     }
@@ -314,75 +287,77 @@ fn overview_glyph<'a>(c: Color) -> Element<'a, Message> {
         ]
         .spacing(2),
     )
-    .center_y(Length::Fixed(20.0))
+    .center(Length::Fixed(18.0))
+    .into()
+}
+
+/// One switcher tab: icon, name, mini usage bar (mac `ProviderSwitcherButtons`).
+fn tab<'a>(
+    selected: bool,
+    icon: Element<'a, Message>,
+    label: String,
+    mini: Element<'a, Message>,
+    index: i32,
+) -> Element<'a, Message> {
+    let fg = if selected { Color::WHITE } else { muted() };
+    crate::ui::style::button(
+        column![
+            icon,
+            text(label)
+                .size(11)
+                .color(fg)
+                .wrapping(iced::widget::text::Wrapping::None),
+            container(mini).width(Length::Fixed(46.0)),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(3),
+    )
+    .on_press(Message::SelectEntry(index))
+    .style(tab_style(selected))
+    .padding([6, 9])
     .into()
 }
 
 fn switcher(app: &App) -> Element<'_, Message> {
-    let mut tabs = Row::new().spacing(3).padding(iced::Padding {
-        top: 0.0,
-        right: 16.0,
-        bottom: 0.0,
-        left: 16.0,
+    let mut tabs = Row::new().spacing(2).padding(iced::Padding {
+        top: 6.0,
+        right: 12.0,
+        bottom: 8.0,
+        left: 12.0,
     });
-    // Overview tab
     let overview_selected = app.selected == -1;
     let overview_color = if overview_selected {
         Color::WHITE
     } else {
         muted()
     };
-    tabs = tabs.push(
-        crate::ui::style::button(
-            column![
-                overview_glyph(overview_color),
-                text("Overview").size(11).color(overview_color),
-                Space::with_height(Length::Fixed(3.0)),
-            ]
-            .align_x(Alignment::Center)
-            .spacing(2)
-            .width(Length::Fixed(64.0)),
-        )
-        .on_press(Message::SelectEntry(-1))
-        .style(tab_style(overview_selected))
-        .padding([6, 4]),
-    );
+    tabs = tabs.push(tab(
+        overview_selected,
+        overview_glyph(overview_color),
+        "Overview".to_string(),
+        meter_bar(0, Color::TRANSPARENT, None, 3.0),
+        -1,
+    ));
     for (i, entry) in app.entries.iter().enumerate() {
         let selected = app.selected == i as i32;
         let fg = if selected { Color::WHITE } else { muted() };
-        let name = crate::model::provider_name(&entry.provider);
-        let mini: Element<Message> = match entry.windows.first() {
-            Some(w) => {
-                let value = quota_display_value(w.remaining, &app.settings.quota_display);
-                let fill = if selected {
-                    Color::WHITE
-                } else {
-                    rgb(accent_rgb(&entry.provider))
-                };
-                container(meter_bar(value, fill, None, 3.0))
-                    .width(Length::Fixed(52.0))
-                    .into()
-            }
-            None => text(EM_DASH).size(11).color(fg).into(),
+        let value = entry
+            .windows
+            .first()
+            .map(|w| quota_display_value(w.remaining, &app.settings.quota_display))
+            .unwrap_or(0);
+        let fill = if selected {
+            Color::WHITE
+        } else {
+            rgb(accent_rgb(&entry.provider))
         };
-        tabs = tabs.push(
-            crate::ui::style::button(
-                column![
-                    text(crate::descriptors::tag(&entry.provider))
-                        .size(12)
-                        .font(semibold())
-                        .color(fg),
-                    text(name).size(11).color(fg),
-                    mini,
-                ]
-                .align_x(Alignment::Center)
-                .spacing(2)
-                .width(Length::Fixed(64.0)),
-            )
-            .on_press(Message::SelectEntry(i as i32))
-            .style(tab_style(selected))
-            .padding([6, 4]),
-        );
+        tabs = tabs.push(tab(
+            selected,
+            crate::icons::icon(&entry.provider, 18.0, fg),
+            crate::model::provider_name(&entry.provider),
+            meter_bar(value, fill, None, 3.0),
+            i as i32,
+        ));
     }
     scrollable(tabs)
         .style(crate::ui::style::scroll_style)
@@ -390,7 +365,6 @@ fn switcher(app: &App) -> Element<'_, Message> {
             crate::ui::style::scrollbar(),
         ))
         .width(Length::Fill)
-        .height(Length::Fixed(69.0))
         .into()
 }
 
@@ -427,8 +401,9 @@ fn body(app: &App) -> Element<'_, Message> {
 }
 
 fn overview_body(app: &App) -> Element<'_, Message> {
-    let mut col = Column::new().spacing(12);
-    col = col.push(text("Overview").size(20).font(semibold()));
+    let mut col = Column::new().spacing(10);
+    col = col.push(text("Overview").size(18).font(semibold()));
+    col = col.push(text(updated_line(app)).size(12).color(muted()));
     if !app.spending.is_empty() {
         let today: f64 = app.spending.iter().map(|c| c.today).sum();
         let month: f64 = app.spending.iter().map(|c| c.month).sum();
@@ -446,46 +421,54 @@ fn overview_body(app: &App) -> Element<'_, Message> {
     } else if app.cost_busy {
         col = col.push(text("Reading local history…").size(12).color(muted()));
     }
+    col = col.push(rule());
     for (i, entry) in app.entries.iter().enumerate() {
         let name = crate::model::provider_name(&entry.provider);
-        let (quota_text, meter) = match entry.windows.first() {
-            Some(w) => {
-                let value = quota_display_value(w.remaining, &app.settings.quota_display);
-                let fill = if is_warning(
-                    app.settings.warning_colors,
-                    w.remaining,
-                    app.settings.notify_threshold,
-                ) {
-                    rgb(WARNING_RGB)
-                } else {
-                    rgb(accent_rgb(&entry.provider))
-                };
-                (
-                    format!(
+        let mut lines = Column::new().spacing(5).width(Length::Fill);
+        let mut head = Row::new().spacing(8).align_y(Alignment::Center);
+        head = head.push(crate::icons::brand(&entry.provider, 16.0, Color::WHITE));
+        head = head.push(text(name).size(14).font(semibold()).width(Length::Fill));
+        if !entry.plan.is_empty() {
+            head = head.push(text(entry.plan.clone()).size(12).color(muted()));
+        }
+        lines = lines.push(head);
+        if let Some(w) = entry.windows.first() {
+            let value = quota_display_value(w.remaining, &app.settings.quota_display);
+            let fill = if is_warning(
+                app.settings.warning_colors,
+                w.remaining,
+                app.settings.notify_threshold,
+            ) {
+                rgb(WARNING_RGB)
+            } else {
+                rgb(accent_rgb(&entry.provider))
+            };
+            lines = lines.push(meter_bar(value, fill, None, 6.0));
+            lines = lines.push(
+                row![
+                    text(format!(
                         "{value}% {}",
                         quota_display_suffix(&app.settings.quota_display)
-                    ),
-                    meter_bar(value, fill, None, 5.0),
-                )
-            }
-            None => (
-                EM_DASH.to_string(),
-                meter_bar(0, rgb(accent_rgb(&entry.provider)), None, 5.0),
-            ),
-        };
-        let mut lines = Column::new().spacing(6).width(Length::Fill);
-        lines = lines.push(
-            row![
-                text(name).size(14).font(semibold()).width(Length::Fill),
-                text(quota_text).size(12).color(muted()),
-            ]
-            .align_y(Alignment::Center),
-        );
-        if entry.windows.first().is_some() {
-            lines = lines.push(meter);
+                    ))
+                    .size(12)
+                    .color(muted())
+                    .width(Length::Fill),
+                    text(reset_display_text(
+                        &w.resets_at,
+                        &w.reset_text,
+                        &app.settings.reset_display,
+                        chrono::Utc::now(),
+                    ))
+                    .size(12)
+                    .color(muted()),
+                ]
+                .align_y(Alignment::Center),
+            );
+        } else {
+            lines = lines.push(text(EM_DASH).size(12).color(muted()));
         }
         col = col.push(
-            crate::ui::style::button(container(lines).padding(11).width(Length::Fill))
+            crate::ui::style::button(container(lines).padding([8, 10]).width(Length::Fill))
                 .on_press(Message::SelectEntry(i as i32))
                 .style(|theme: &Theme, status: button::Status| {
                     let hovered =
@@ -498,37 +481,107 @@ fn overview_body(app: &App) -> Element<'_, Message> {
                 .width(Length::Fill),
         );
     }
-    container(col).padding(20).width(Length::Fill).into()
+    container(col).padding([14, 20]).width(Length::Fill).into()
 }
 
-fn footer() -> Element<'static, Message> {
-    let action = |label: &'static str, msg: Message| {
-        crate::ui::style::button(text(label).size(13).width(Length::Fill))
-            .on_press(msg)
-            .style(|theme: &Theme, status: button::Status| {
-                let base = button::text(theme, status);
-                button::Style {
-                    border: Border::default().rounded(6.0),
-                    ..base
-                }
-            })
-            .padding([6, 10])
-            .width(Length::Fill)
+/// Hover-highlighted, borderless menu row (mac `MenuHighlightStyle`).
+fn menu_row_style(theme: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let disabled = matches!(status, button::Status::Disabled);
+    button::Style {
+        background: hovered.then(|| Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08))),
+        text_color: if disabled {
+            muted()
+        } else {
+            theme.palette().text
+        },
+        border: Border::default().rounded(6.0),
+        ..Default::default()
+    }
+}
+
+/// Icon + label menu row, optionally with a trailing chevron.
+fn menu_row<'a>(
+    icon: Glyph,
+    label: String,
+    msg: Option<Message>,
+    trailing: Option<Glyph>,
+) -> Element<'a, Message> {
+    let tint = if msg.is_some() { Color::WHITE } else { muted() };
+    let mut r = Row::new()
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .push(glyph(icon, 15.0, tint))
+        .push(text(label).size(13).width(Length::Fill));
+    if let Some(t) = trailing {
+        r = r.push(glyph(t, 11.0, muted()));
+    }
+    crate::ui::style::button(r)
+        .on_press_maybe(msg)
+        .style(menu_row_style)
+        .padding([5, 8])
+        .width(Length::Fill)
+        .into()
+}
+
+/// Scrolling action rows (mac "Add Account / Usage Dashboard / Status Page" group).
+fn actions(app: &App) -> Element<'_, Message> {
+    let refresh = if app.busy {
+        menu_row(Glyph::Refresh, "Refreshing…".to_string(), None, None)
+    } else {
+        menu_row(
+            Glyph::Refresh,
+            "Refresh".to_string(),
+            Some(Message::Refresh),
+            None,
+        )
     };
-    let about = container(
-        text(format!("About CodexBar (v{})", env!("CARGO_PKG_VERSION")))
-            .size(13)
-            .color(muted()),
-    )
-    .padding([6, 10])
-    .width(Length::Fill);
     container(
         column![
-            action("Usage & Spend…", Message::ShowPage(Page::Usage)),
-            action("Agent Sessions…", Message::ShowPage(Page::Sessions)),
-            action("Settings…", Message::ShowPage(Page::Settings)),
-            about,
-            action("Quit", Message::Quit),
+            container(rule()).padding([0.0, 8.0]),
+            refresh,
+            menu_row(
+                Glyph::Dashboard,
+                "Usage & Spend…".to_string(),
+                Some(Message::ShowPage(Page::Usage)),
+                None,
+            ),
+            menu_row(
+                Glyph::Sessions,
+                "Agent Sessions…".to_string(),
+                Some(Message::ShowPage(Page::Sessions)),
+                None,
+            ),
+        ]
+        .spacing(1),
+    )
+    .padding(iced::Padding {
+        top: 0.0,
+        right: 12.0,
+        bottom: 6.0,
+        left: 12.0,
+    })
+    .width(Length::Fill)
+    .into()
+}
+
+/// Fixed bottom rows: Settings… / About CodexBar / Quit.
+fn footer() -> Element<'static, Message> {
+    container(
+        column![
+            menu_row(
+                Glyph::Settings,
+                "Settings…".to_string(),
+                Some(Message::ShowPage(Page::Settings)),
+                None,
+            ),
+            menu_row(
+                Glyph::Info,
+                format!("About CodexBar (v{})", env!("CARGO_PKG_VERSION")),
+                Some(Message::OpenSettingsPane(SettingsPane::About)),
+                None,
+            ),
+            menu_row(Glyph::Quit, "Quit".to_string(), Some(Message::Quit), None),
         ]
         .spacing(1),
     )
@@ -543,7 +596,7 @@ fn footer() -> Element<'static, Message> {
 }
 
 fn section_title(label: &str) -> Element<'static, Message> {
-    text(label.to_string()).size(15).font(semibold()).into()
+    text(label.to_string()).size(14).font(semibold()).into()
 }
 
 fn provider_body<'a>(
@@ -552,12 +605,12 @@ fn provider_body<'a>(
     cost: Option<&'a CostEntry>,
 ) -> Element<'a, Message> {
     let s = &app.settings;
-    let mut col = Column::new().spacing(14).width(Length::Fill);
-    // Card header: name + account (line 1), updated + plan (line 2)
+    let mut col = Column::new().spacing(10).width(Length::Fill);
+    // Card header (mac `UsageMenuCardHeaderView`): name + account, updated + plan.
     let mut head1 = Row::new().align_y(Alignment::Center);
     head1 = head1.push(
         text(crate::model::provider_name(&entry.provider))
-            .size(21)
+            .size(18)
             .font(semibold())
             .width(Length::Fill),
     );
@@ -581,14 +634,16 @@ fn provider_body<'a>(
     } else if !entry.status.is_empty() {
         col = col.push(text(entry.status.clone()).size(12).color(muted()));
     }
-    col = col.push(horizontal_rule(1));
+    col = col.push(rule());
     // Metrics in order
     if entry.windows.is_empty() {
         col = col.push(text(EM_DASH).size(13).color(muted()));
     } else {
+        let mut metrics = Column::new().spacing(14).width(Length::Fill);
         for window in &entry.windows {
-            col = col.push(metric_view(window, s, &entry.provider));
+            metrics = metrics.push(metric_view(window, s, &entry.provider));
         }
+        col = col.push(metrics);
     }
     // DeepSeek-only price clock
     if entry.provider == "deepseek" {
@@ -596,30 +651,27 @@ fn provider_body<'a>(
     }
     // OpenAI-only: Admin API live usage window (mac "Live Usage" card action).
     if entry.provider == "openai" {
-        col = col.push(
-            crate::ui::style::button(text("Live usage…").size(13))
-                .on_press(Message::ShowPage(Page::OpenAiLive))
-                .padding([4, 10])
-                .style(crate::ui::style::push),
-        );
+        col = col.push(menu_row(
+            Glyph::Chart,
+            "Live usage…".to_string(),
+            Some(Message::ShowPage(Page::OpenAiLive)),
+            None,
+        ));
     }
     // Credits
     if let Some(credits) = entry.credits {
-        let mut sec = Column::new().spacing(6).width(Length::Fill);
-        sec = sec.push(horizontal_rule(1));
-        sec = sec.push(section_title("Credits"));
-        sec = sec.push(
+        col = col.push(rule());
+        col = col.push(section_title("Credits"));
+        col = col.push(
             text(format!("{} remaining", format_credits(credits)))
-                .size(13)
+                .size(12)
                 .color(muted()),
         );
-        col = col.push(sec);
     }
     // Reset credits (hide at 0: model cannot distinguish unknown from none)
     if entry.reset_credits_available > 0 {
-        let mut sec = Column::new().spacing(6).width(Length::Fill);
-        sec = sec.push(horizontal_rule(1));
-        sec = sec.push(section_title("Reset credits"));
+        col = col.push(rule());
+        col = col.push(section_title("Reset credits"));
         let mut line = format!("{} available", entry.reset_credits_available);
         if !entry.reset_credits_next_expiry.is_empty() {
             line.push_str(&format!(
@@ -627,28 +679,31 @@ fn provider_body<'a>(
                 entry.reset_credits_next_expiry
             ));
         }
-        sec = sec.push(text(line).size(13).color(muted()));
-        col = col.push(sec);
+        col = col.push(text(line).size(12).color(muted()));
     }
     // Extra usage / provider cost
     if !entry.extra_usage_text.is_empty() {
-        let mut sec = Column::new().spacing(6).width(Length::Fill);
-        sec = sec.push(horizontal_rule(1));
-        sec = sec.push(section_title("Extra usage"));
-        sec = sec.push(text(entry.extra_usage_text.clone()).size(13).color(muted()));
-        col = col.push(sec);
+        col = col.push(rule());
+        col = col.push(section_title("Extra usage"));
+        col = col.push(text(entry.extra_usage_text.clone()).size(12));
     }
-    // Cost (local history)
-    if s.show_costs && (cost.is_some() || app.cost_busy || !app.cost_error.is_empty()) {
-        col = col.push(cost_section(app, cost));
+    // Cost (local history), with the cost-history chart inline.
+    if s.show_costs
+        && (cost.is_some()
+            || app.cost_busy
+            || !app.cost_error.is_empty()
+            || cost_payload(app, &entry.provider).is_some())
+    {
+        col = col.push(rule());
+        col = col.push(cost_section(app, &entry.provider, cost));
     }
     col = col.push(chart_sections(app, &entry.provider));
     // Provider detail sections
     for section in &entry.details {
-        let mut sec = Column::new().spacing(6).width(Length::Fill);
-        sec = sec.push(horizontal_rule(1));
+        let mut sec = Column::new().spacing(5).width(Length::Fill);
+        sec = sec.push(rule());
         if !section.title.is_empty() {
-            sec = sec.push(text(section.title.clone()).size(14).font(semibold()));
+            sec = sec.push(section_title(&section.title));
         }
         for (label, value, secondary) in &section.rows {
             let shown_value = if value.is_empty() {
@@ -668,9 +723,10 @@ fn provider_body<'a>(
         }
         col = col.push(sec);
     }
-    container(col).padding(20).width(Length::Fill).into()
+    container(col).padding([14, 20]).width(Length::Fill).into()
 }
 
+/// Metric row (mac `MenuCardMetricRow`): title, capsule bar, `N% used` left + reset right, pace.
 fn metric_view(window: &QuotaWindow, s: &Settings, provider: &str) -> Element<'static, Message> {
     let amount = quota_display_value(window.remaining, &s.quota_display);
     let warning = is_warning(s.warning_colors, window.remaining, s.notify_threshold);
@@ -691,20 +747,22 @@ fn metric_view(window: &QuotaWindow, s: &Settings, provider: &str) -> Element<'s
         &s.reset_display,
         chrono::Utc::now(),
     );
-    let mut col = Column::new().spacing(6).width(Length::Fill);
+    let mut col = Column::new().spacing(5).width(Length::Fill);
+    col = col.push(text(label).size(14).font(semibold()));
+    col = col.push(meter_bar(amount, fill, tick, 6.0));
     col = col.push(
         row![
-            text(label).size(15).font(semibold()).width(Length::Fill),
             text(format!(
                 "{amount}% {}",
                 quota_display_suffix(&s.quota_display)
             ))
-            .size(13),
+            .size(12)
+            .color(muted())
+            .width(Length::Fill),
+            text(reset).size(12).color(muted()),
         ]
         .align_y(Alignment::Center),
     );
-    col = col.push(meter_bar(amount, fill, tick, 6.0));
-    col = col.push(text(reset).size(12).color(muted()));
     if s.show_pace && !window.pace.is_empty() {
         col = col.push(text(window.pace.clone()).size(12).color(muted()));
     }
@@ -769,32 +827,93 @@ fn deepseek_section() -> Element<'static, Message> {
     sec.into()
 }
 
-fn cost_section(app: &App, cost: Option<&CostEntry>) -> Element<'static, Message> {
-    let mut sec = Column::new().spacing(6).width(Length::Fill);
-    sec = sec.push(horizontal_rule(1));
-    sec = sec.push(section_title("Cost across accounts"));
+fn cost_payload<'a>(app: &'a App, provider: &str) -> Option<&'a crate::cli::CostPayload> {
+    app.cost_payloads
+        .iter()
+        .find(|p| p.provider == provider && p.error.is_none() && !p.daily.is_empty())
+}
+
+/// Tokens recorded for `date` in the per-day history, if any.
+pub(crate) fn tokens_on(cost: &CostEntry, date: &str) -> Option<i64> {
+    cost.daily
+        .iter()
+        .find(|(d, _, _)| d == date)
+        .map(|(_, _, t)| *t)
+}
+
+fn cost_line(label: &str, amount: f64, tokens: Option<i64>) -> String {
+    match tokens.filter(|t| *t > 0) {
+        Some(t) => format!(
+            "{label}: {} · {} tokens",
+            format_money(amount),
+            crate::throughput::count(t as f64)
+        ),
+        None => format!("{label}: {}", format_money(amount)),
+    }
+}
+
+/// Collapsible menu-row header (title + chevron); `Show`/`Hide` words are gone like on the Mac.
+fn row_header(
+    key: String,
+    title: &'static str,
+    open: bool,
+    icon: Option<Glyph>,
+    bold: bool,
+) -> Element<'static, Message> {
+    let mut r = Row::new().spacing(10).align_y(Alignment::Center);
+    if let Some(g) = icon {
+        r = r.push(glyph(g, 15.0, Color::WHITE));
+    }
+    let label = text(title).size(if bold { 14 } else { 13 });
+    r = r.push(
+        if bold { label.font(semibold()) } else { label }.width(Length::Fill),
+    );
+    r = r.push(glyph(
+        if open {
+            Glyph::ChevronDown
+        } else {
+            Glyph::ChevronRight
+        },
+        11.0,
+        muted(),
+    ));
+    crate::ui::style::button(r)
+        .on_press(Message::ToggleChart(key))
+        .style(menu_row_style)
+        .padding([5, 8])
+        .width(Length::Fill)
+        .into()
+}
+
+fn detail_text(s: String) -> Element<'static, Message> {
+    text(s).size(12).color(muted()).into()
+}
+
+/// Cost block (mac "Cost ›"): Today / Last 30 days lines and the cost-history chart, open by
+/// default. Collapsing it stores `<provider>:cost-collapsed` in `expanded_charts`.
+fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<'static, Message> {
+    let mut sec = Column::new().spacing(5).width(Length::Fill);
+    let payload = cost_payload(app, provider);
+    let key = format!("{provider}:cost-collapsed");
+    let open = payload.is_some() && !app.expanded_charts.contains(&key);
+    sec = if payload.is_some() {
+        sec.push(row_header(key, "Cost", open, None, true))
+    } else {
+        sec.push(section_title("Cost"))
+    };
     if app.cost_busy {
         sec = sec.push(text("Reading local history…").size(12).color(muted()));
     } else if !app.cost_error.is_empty() {
         sec = sec.push(text(app.cost_error.clone()).size(12).color(rgb(ERROR_RGB)));
     }
     if let Some(cost) = cost {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        sec = sec.push(text(cost_line("Today", cost.today, tokens_on(cost, &today))).size(13));
+        sec = sec.push(text(cost_line("Last 30 days", cost.month, Some(cost.tokens))).size(13));
         sec = sec.push(
-            text(format!(
-                "Today {}  ·  Last 30 days {}",
-                format_money(cost.today),
-                format_money(cost.month)
-            ))
-            .size(13),
-        );
-        sec = sec.push(
-            text(format!(
-                "{} tokens · {}",
-                format_count(cost.tokens),
-                provenance_label(&cost.provenance)
-            ))
-            .size(12)
-            .color(muted()),
+            text(provenance_label(&cost.provenance).to_string())
+                .size(11)
+                .color(muted()),
         );
         if !cost.error.is_empty() {
             sec = sec.push(text(cost.error.clone()).size(12).color(muted()));
@@ -803,30 +922,44 @@ fn cost_section(app: &App, cost: Option<&CostEntry>) -> Element<'static, Message
             sec = sec.push(text(cost.coverage.clone()).size(12).color(muted()));
         }
     }
+    if let (true, Some(payload)) = (open, payload) {
+        let bars = crate::charts::cost_bars(&payload.daily);
+        let hover = hover_for(app, &format!("{provider}:cost"));
+        let detail = match popover_charts::selected_index(&bars, hover) {
+            Some(i) => {
+                let date = bars[i].date.clone();
+                match payload.daily.iter().find(|d| d.date == date) {
+                    Some(d) => popover_charts::cost_detail(&date, d.total_cost, d.total_tokens),
+                    None => popover_charts::detail_line(&bars, hover, crate::charts::money),
+                }
+            }
+            None => popover_charts::detail_line(&bars, hover, crate::charts::money),
+        };
+        let total: f64 = payload.daily.iter().map(|d| d.total_cost).sum();
+        sec = sec.push(chart_canvas(crate::charts::BarChart {
+            hover,
+            key: format!("{provider}:cost"),
+            bars,
+            color: rgb(accent_rgb(provider)),
+            peak_cap: true,
+            fmt: crate::charts::money,
+            axis: crate::charts::axis_money,
+            y_max: None,
+        }));
+        sec = sec.push(detail_text(detail));
+        sec = sec.push(detail_text(format!(
+            "Est. total (30 days): {}",
+            crate::charts::money(total)
+        )));
+    }
     sec.into()
 }
 
-fn section_header(key: String, title: &'static str, open: bool) -> Element<'static, Message> {
-    crate::ui::style::button(
-        row![
-            text(title).size(14).font(semibold()).width(Length::Fill),
-            text(if open { "Hide" } else { "Show" })
-                .size(12)
-                .color(muted()),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .on_press(Message::ToggleChart(key))
-    .style(|theme: &Theme, status: button::Status| {
-        let base = button::text(theme, status);
-        button::Style {
-            border: Border::default().rounded(6.0),
-            ..base
-        }
-    })
-    .padding([4, 0])
-    .width(Length::Fill)
-    .into()
+fn hover_for(app: &App, key: &str) -> Option<usize> {
+    app.chart_hover
+        .as_ref()
+        .filter(|(k, _)| k == key)
+        .map(|(_, i)| *i)
 }
 
 /// Segmented series picker (mac `Picker(.segmented)`); the selected index lives in
@@ -859,17 +992,12 @@ fn percent_label(v: f64) -> String {
     format!("{v:.0}%")
 }
 
-/// Expandable chart sections (mac hover submenus): plan utilization, quota burndown, tokens/min,
-/// cost history, model breakdown and storage. Each is hidden when it has no data.
+/// Chart menu rows (mac hover submenus rendered inline): usage breakdown, credits history, plan
+/// utilization, quota burndown, tokens/min and storage. Each is hidden when it has no data.
 fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
-    let mut col = Column::new().spacing(6).width(Length::Fill);
+    let mut col = Column::new().spacing(5).width(Length::Fill);
     let accent = rgb(accent_rgb(provider));
-    let hover_for = |key: &str| {
-        app.chart_hover
-            .as_ref()
-            .filter(|(k, _)| k == key)
-            .map(|(_, i)| *i)
-    };
+    let hover_for = |key: &str| hover_for(app, key);
     let selected_series = |key: &str, len: usize| {
         app.chart_series
             .get(key)
@@ -879,15 +1007,112 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
     };
     let tz = chrono::Local::now().offset().local_minus_utc() as i64;
     let now = chrono::Utc::now().timestamp();
+    let mut first = true;
+    let mut sep = |col: Column<'a, Message>| {
+        let col = if first { col.push(rule()) } else { col };
+        first = false;
+        col
+    };
+    let section = |key: String, title: &'static str| {
+        let open = app.expanded_charts.contains(&key);
+        (row_header(key, title, open, Some(Glyph::Chart), false), open)
+    };
+
+    let payload = if app.settings.show_costs {
+        cost_payload(app, provider)
+    } else {
+        None
+    };
+
+    // Usage breakdown (stacked per-model bars).
+    if let Some(payload) = payload {
+        let (bars, _legend) = crate::charts::model_bars(&payload.daily, 5);
+        if !bars.is_empty() {
+            let key = format!("{provider}:models");
+            let (head, open) = section(key.clone(), "Usage breakdown");
+            col = sep(col).push(head);
+            if open {
+                let hover = hover_for(&key);
+                col = col.push(detail_text(popover_charts::detail_line(
+                    &bars,
+                    hover,
+                    crate::charts::money,
+                )));
+                let rows =
+                    popover_charts::detail_rows(&bars, hover, crate::charts::money, 4);
+                col = col.push(chart_canvas(crate::charts::BarChart {
+                    hover,
+                    key,
+                    bars,
+                    color: accent,
+                    peak_cap: false,
+                    fmt: crate::charts::money,
+                    axis: crate::charts::axis_money,
+                    y_max: None,
+                }));
+                for (color_index, name, value) in rows {
+                    let swatch = crate::charts::segment_color(color_index);
+                    col = col.push(
+                        row![
+                            container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0)))
+                                .style(move |_: &Theme| container::Style {
+                                    background: Some(Background::Color(swatch)),
+                                    border: Border::default().rounded(2.0),
+                                    ..Default::default()
+                                }),
+                            text(name).size(12).width(Length::Fill),
+                            text(value).size(12).color(muted()),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    );
+                }
+            }
+        }
+    }
+
+    // Credits history (local balance snapshots; mac scrapes the OpenAI web dashboard instead).
+    if let Some(bars) = app.history.credit_bars(provider, tz) {
+        let key = format!("{provider}:credits");
+        let (head, open) = section(key.clone(), "Credits history");
+        col = sep(col).push(head);
+        if open {
+            let total: f64 = bars.iter().filter_map(|b| b.value).sum();
+            let hover = hover_for(&key);
+            col = col.push(chart_canvas(crate::charts::BarChart {
+                hover,
+                key,
+                color: accent,
+                peak_cap: true,
+                fmt: credits_label,
+                axis: credits_label,
+                y_max: None,
+                bars: bars.clone(),
+            }));
+            col = col.push(detail_text(popover_charts::detail_line(
+                &bars,
+                hover,
+                credits_label,
+            )));
+            col = col.push(detail_text(format!(
+                "Credits used (total {})",
+                credits_label(total)
+            )));
+            col = col.push(
+                text("Daily drops in the credit balance, sampled hourly on this machine; top-ups are ignored.")
+                    .size(11)
+                    .color(muted()),
+            );
+        }
+    }
 
     // Plan utilization history + quota burndown (local usage history).
     let series = app.history.series_for(provider);
     if !series.is_empty() {
         let titles: Vec<String> = series.iter().map(|s| s.label.clone()).collect();
         let key = format!("{provider}:util");
-        let open = app.expanded_charts.contains(&key);
-        col = col.push(horizontal_rule(1));
-        col = col.push(section_header(key.clone(), "Plan utilization", open));
+        let (head, open) = section(key.clone(), "Plan utilization");
+        col = sep(col).push(head);
         if open {
             let idx = selected_series(&key, series.len());
             if series.len() > 1 {
@@ -895,16 +1120,22 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
             }
             let s = series[idx];
             let bars = crate::history::utilization_bars(s, tz);
+            let hover = hover_for(&key);
             col = col.push(chart_canvas(crate::charts::BarChart {
-                hover: hover_for(&key),
+                hover,
                 key,
-                bars,
                 color: accent,
                 peak_cap: false,
                 fmt: percent_label,
                 axis: percent_label,
                 y_max: Some(100.0),
+                bars: bars.clone(),
             }));
+            col = col.push(detail_text(popover_charts::detail_line(
+                &bars,
+                hover,
+                percent_label,
+            )));
             let cadence = if s.window_minutes < 1440 {
                 "Peak used per day"
             } else {
@@ -926,9 +1157,8 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
             .collect();
         if !burns.is_empty() {
             let key = format!("{provider}:burn");
-            let open = app.expanded_charts.contains(&key);
-            col = col.push(horizontal_rule(1));
-            col = col.push(section_header(key.clone(), "Quota burndown", open));
+            let (head, open) = section(key.clone(), "Quota burndown");
+            col = col.push(head);
             if open {
                 let idx = selected_series(&key, burns.len());
                 if burns.len() > 1 {
@@ -956,11 +1186,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
                     .width(Length::Fill),
                 );
                 if let Some(r) = remaining {
-                    col = col.push(
-                        text(format!("{r:.0}% usage remaining"))
-                            .size(12)
-                            .color(muted()),
-                    );
+                    col = col.push(detail_text(format!("{r:.0}% usage remaining")));
                 }
                 if let Some(t) = last_at {
                     col = col.push(
@@ -973,172 +1199,56 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         }
     }
 
-    // Tokens/min and cost sections come from the per-day `cost` payload.
-    if app.settings.show_costs {
-        if let Some(payload) = app
-            .cost_payloads
-            .iter()
-            .find(|p| p.provider == provider && p.error.is_none() && !p.daily.is_empty())
-        {
-            let tpm_bars = crate::throughput::daily_bars(&payload.daily);
-            if let Some(sum) = crate::throughput::summary(&tpm_bars) {
-                let key = format!("{provider}:tpm");
-                let open = app.expanded_charts.contains(&key);
-                col = col.push(horizontal_rule(1));
-                col = col.push(section_header(
-                    key.clone(),
-                    "Tokens / min · daily average",
-                    open,
-                ));
-                if open {
-                    col = col.push(chart_canvas(crate::charts::BarChart {
-                        hover: hover_for(&key),
-                        key,
-                        bars: tpm_bars,
-                        color: accent,
-                        peak_cap: true,
-                        fmt: crate::throughput::per_min,
-                        axis: crate::throughput::count,
-                        y_max: None,
-                    }));
-                    col = col.push(
-                        text(format!(
-                            "Latest {} · Peak {} on {} · Avg {}",
-                            crate::throughput::count(sum.latest),
-                            crate::throughput::count(sum.peak),
-                            crate::charts::short_date(&sum.peak_date),
-                            crate::throughput::count(sum.average),
-                        ))
-                        .size(12)
-                        .color(muted()),
-                    );
-                    col = col.push(
-                        text("Approximation: each day's tokens ÷ 1,440 min, not a measured per-minute rate.")
-                            .size(11)
-                            .color(muted()),
-                    );
-                }
-            }
-
-            let cost_key = format!("{provider}:cost");
-            let cost_open = app.expanded_charts.contains(&cost_key);
-            col = col.push(horizontal_rule(1));
-            col = col.push(section_header(cost_key.clone(), "Cost history", cost_open));
-            if cost_open {
-                let bars = crate::charts::cost_bars(&payload.daily);
-                let total: f64 = payload.daily.iter().map(|d| d.total_cost).sum();
+    // Tokens/min from the per-day `cost` payload.
+    if let Some(payload) = payload {
+        let tpm_bars = crate::throughput::daily_bars(&payload.daily);
+        if let Some(sum) = crate::throughput::summary(&tpm_bars) {
+            let key = format!("{provider}:tpm");
+            let (head, open) = section(key.clone(), "Tokens / min · daily average");
+            col = sep(col).push(head);
+            if open {
+                let hover = hover_for(&key);
                 col = col.push(chart_canvas(crate::charts::BarChart {
-                    hover: hover_for(&cost_key),
-                    key: cost_key,
-                    bars,
+                    hover,
+                    key,
                     color: accent,
                     peak_cap: true,
-                    fmt: crate::charts::money,
-                    axis: crate::charts::axis_money,
+                    fmt: crate::throughput::per_min,
+                    axis: crate::throughput::count,
                     y_max: None,
+                    bars: tpm_bars.clone(),
                 }));
+                col = col.push(detail_text(popover_charts::detail_line(
+                    &tpm_bars,
+                    hover,
+                    crate::throughput::per_min,
+                )));
+                col = col.push(detail_text(format!(
+                    "Latest {} · Peak {} on {} · Avg {}",
+                    crate::throughput::count(sum.latest),
+                    crate::throughput::count(sum.peak),
+                    crate::charts::short_date(&sum.peak_date),
+                    crate::throughput::count(sum.average),
+                )));
                 col = col.push(
-                    text(format!(
-                        "Est. total (30 days): {}",
-                        crate::charts::money(total)
-                    ))
-                    .size(12)
-                    .color(muted()),
-                );
-                col = col.push(
-                    text(provenance_label(
-                        payload.provenance.as_deref().unwrap_or("unknown"),
-                    ))
-                    .size(11)
-                    .color(muted()),
+                    text("Approximation: each day's tokens ÷ 1,440 min, not a measured per-minute rate.")
+                        .size(11)
+                        .color(muted()),
                 );
             }
-
-            let (bars, legend) = crate::charts::model_bars(&payload.daily, 5);
-            if !bars.is_empty() {
-                let key = format!("{provider}:models");
-                let open = app.expanded_charts.contains(&key);
-                col = col.push(horizontal_rule(1));
-                col = col.push(section_header(key.clone(), "Model breakdown", open));
-                if open {
-                    col = col.push(chart_canvas(crate::charts::BarChart {
-                        hover: hover_for(&key),
-                        key,
-                        bars,
-                        color: accent,
-                        peak_cap: false,
-                        fmt: crate::charts::money,
-                        axis: crate::charts::axis_money,
-                        y_max: None,
-                    }));
-                    for m in legend {
-                        let swatch = crate::charts::segment_color(m.color_index);
-                        col = col.push(
-                            row![
-                                container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0)))
-                                    .style(move |_: &Theme| container::Style {
-                                        background: Some(Background::Color(swatch)),
-                                        border: Border::default().rounded(2.0),
-                                        ..Default::default()
-                                    }),
-                                text(m.name.clone()).size(12).width(Length::Fill),
-                                text(crate::charts::money(m.cost)).size(12).color(muted()),
-                            ]
-                            .spacing(8)
-                            .align_y(Alignment::Center),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Credits history (local balance snapshots; mac scrapes the OpenAI web dashboard instead).
-    if let Some(bars) = app.history.credit_bars(provider, tz) {
-        let key = format!("{provider}:credits");
-        let open = app.expanded_charts.contains(&key);
-        col = col.push(horizontal_rule(1));
-        col = col.push(section_header(key.clone(), "Credits history", open));
-        if open {
-            let total: f64 = bars.iter().filter_map(|b| b.value).sum();
-            col = col.push(chart_canvas(crate::charts::BarChart {
-                hover: hover_for(&key),
-                key,
-                bars,
-                color: accent,
-                peak_cap: true,
-                fmt: credits_label,
-                axis: credits_label,
-                y_max: None,
-            }));
-            col = col.push(
-                text(format!("Credits used (total {})", credits_label(total)))
-                    .size(12)
-                    .color(muted()),
-            );
-            col = col.push(
-                text("Daily drops in the credit balance, sampled hourly on this machine; top-ups are ignored.")
-                    .size(11)
-                    .color(muted()),
-            );
         }
     }
 
     // Storage breakdown (cached scan of the provider's local data dirs).
     if let Some(fp) = app.storage.get(provider).filter(|f| f.has_local_data()) {
         let key = format!("{provider}:storage");
-        let open = app.expanded_charts.contains(&key);
-        col = col.push(horizontal_rule(1));
-        col = col.push(section_header(key, "Storage", open));
+        let (head, open) = section(key, "Storage");
+        col = sep(col).push(head);
         if open {
-            col = col.push(
-                text(format!(
-                    "Total: {}",
-                    crate::storage::bytes_label(fp.total_bytes)
-                ))
-                .size(12)
-                .color(muted()),
-            );
+            col = col.push(detail_text(format!(
+                "Total: {}",
+                crate::storage::bytes_label(fp.total_bytes)
+            )));
             let rows = crate::storage::rows(fp);
             let max = rows.iter().map(|r| r.1).max().unwrap_or(1).max(1) as f32;
             for (name, bytes) in rows {
@@ -1306,6 +1416,29 @@ mod tests {
             reset_display_text("2026-11-26T10:00:00Z", "", "countdown", now),
             "Resets in 2d 2h"
         );
+    }
+
+    #[test]
+    fn cost_line_formats_tokens_when_known() {
+        assert_eq!(cost_line("Today", 0.04, Some(15_000)), "Today: $0.04 · 15K tokens");
+        assert_eq!(cost_line("Today", 0.0, Some(0)), "Today: $0.00");
+        assert_eq!(cost_line("Last 30 days", 254.24, None), "Last 30 days: $254.24");
+    }
+
+    #[test]
+    fn tokens_on_finds_the_day() {
+        let c = CostEntry {
+            provider: "x".into(),
+            today: 0.0,
+            month: 0.0,
+            tokens: 0,
+            provenance: String::new(),
+            error: String::new(),
+            coverage: String::new(),
+            daily: vec![("2026-11-09".into(), 1.0, 42)],
+        };
+        assert_eq!(tokens_on(&c, "2026-11-09"), Some(42));
+        assert_eq!(tokens_on(&c, "2026-11-08"), None);
     }
 
     #[test]

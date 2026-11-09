@@ -5,12 +5,10 @@
 //! total is "~$x" (lower bound), a family-fallback price is "est. $x" (estimate), and a percentile
 //! needs enough samples before it is claimed.
 
-use super::spend_view::{
-    bar_fraction, count, money_lb, share_bar, swatch, tab_button, ACCENT, EM_DASH,
-};
+use super::spend_view::{bar_fraction, count, money_lb, share_bar, swatch, ACCENT, EM_DASH};
 use crate::charts::{self, ChartBar};
 use crate::scan::aggregate::{
-    Money, Perf, ProjectRow, SessionRow, ToolRow, View, Zone, P95_MIN_SAMPLES, SLOW_TOOL_MS,
+    Money, Perf, SessionRow, ToolRow, View, Zone, P95_MIN_SAMPLES, SLOW_TOOL_MS,
 };
 use crate::scan::Provider;
 use crate::state::{App, Message, SessionSort};
@@ -517,8 +515,8 @@ pub fn tool_table(app: &App, tools: &[ToolRow], title: &str) -> Element<'static,
     .into()
 }
 
-/// The aggregate sections that sit under the heatmap.
-pub fn insights(app: &App) -> Element<'static, Message> {
+/// Sessions detail extras (Mac `SessionUsageBrowser`): hourly activity, performance, tools.
+pub fn sections(app: &App) -> Element<'static, Message> {
     if !app.scan_loaded {
         return note("Scanning local sessions…");
     }
@@ -527,70 +525,11 @@ pub fn insights(app: &App) -> Element<'static, Message> {
         return note("No local session history in this period.");
     }
     column![
-        heading("Token mix"),
-        token_mix(&v.token_mix),
-        hourly(app),
-        performance(&v.perf),
-        tool_table(app, &v.tools, "Tool activity"),
+        crate::ui::spend_charts::panel(hourly(app)),
+        crate::ui::spend_charts::panel(performance(&v.perf)),
+        crate::ui::spend_charts::panel(tool_table(app, &v.tools, "Tool activity")),
     ]
     .spacing(12)
-    .into()
-}
-
-// ---------------------------------------------------------------------------
-// Tabs
-// ---------------------------------------------------------------------------
-
-pub fn tab_buttons(current: &str) -> Element<'static, Message> {
-    row![
-        tab_button("Providers", "providers", current),
-        tab_button("Models", "models", current),
-        tab_button("Projects", "projects", current),
-        tab_button("Sessions", "sessions", current),
-        tab_button("Ledger", "ledger", current),
-    ]
-    .spacing(6)
-    .into()
-}
-
-pub fn projects_tab(app: &App) -> Element<'static, Message> {
-    if !app.scan_loaded {
-        return note("Scanning local sessions…");
-    }
-    let rows: &[ProjectRow] = &app.scan_view.projects;
-    if rows.is_empty() {
-        return note("No local session history in this period.");
-    }
-    let max = rows.iter().map(|p| p.cost.usd).fold(0.0, f64::max);
-    let max_tokens = rows.iter().map(|p| p.tokens.total()).max().unwrap_or(1) as f64;
-    let mut col = column![].spacing(8);
-    for (i, p) in rows.iter().enumerate() {
-        let frac = if max > 0.0 {
-            bar_fraction(p.cost.usd, max)
-        } else {
-            bar_fraction(p.tokens.total() as f64, max_tokens)
-        };
-        col = col.push(
-            column![
-                row![
-                    text(format!("#{} {}", i + 1, p.name)),
-                    horizontal_space(),
-                    text(format!(
-                        "{} · {} tokens · {} sessions · {} requests",
-                        fmt_cost(&p.cost),
-                        fmt_compact(p.tokens.total()),
-                        p.sessions,
-                        count(Some(p.requests as i64))
-                    )),
-                ],
-                share_bar(frac, ACCENT),
-            ]
-            .spacing(4),
-        );
-    }
-    col.push(note(
-        "Project is the last folder of each session's working directory; sessions without one are grouped as (unknown).",
-    ))
     .into()
 }
 
@@ -604,21 +543,20 @@ fn session_button(app: &App, s: &SessionRow) -> Element<'static, Message> {
                 ..Default::default()
             }
         }),
-        text(s.provider.label()).size(12).width(Length::Fixed(64.0)),
+        text(s.provider.label()).size(12).width(Length::Fixed(52.0)),
         text(s.project.clone().unwrap_or_else(|| EM_DASH.into()))
             .size(13)
-            .width(Length::Fixed(130.0)),
+            .width(Length::FillPortion(2)),
         text(s.primary_model().to_string())
             .size(13)
-            .width(Length::Fixed(150.0)),
+            .width(Length::FillPortion(3)),
         text(fmt_ts(s.start_ms, app.scan_zone))
             .size(12)
-            .width(Length::Fixed(100.0)),
+            .width(Length::Fixed(84.0)),
         text(fmt_compact(s.tokens.total()))
             .size(13)
-            .width(Length::Fixed(64.0)),
-        text(fmt_cost(&s.cost)).size(13).width(Length::Fixed(90.0)),
-        text(format!("{} tools", s.tool_calls)).size(12),
+            .width(Length::Fixed(56.0)),
+        text(fmt_cost(&s.cost)).size(13).width(Length::Fixed(96.0)),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
@@ -660,8 +598,7 @@ pub fn sessions_tab(app: &App) -> Element<'static, Message> {
         crate::ui::style::text_input("Search sessions, projects, models", &app.session_query)
             .on_input(Message::SessionQuery)
             .size(13)
-            .width(Length::Fixed(280.0)),
-        horizontal_space(),
+            .width(Length::Fill),
         text("Sort").size(12).color(MUTED),
         sort_button("Recent", SessionSort::Recent, app.session_sort),
         sort_button("Cost", SessionSort::Cost, app.session_sort),

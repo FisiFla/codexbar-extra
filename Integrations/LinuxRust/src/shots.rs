@@ -37,6 +37,29 @@ pub fn capturing() -> bool {
     std::env::var_os("CODEXBAR_SCREENSHOT_DIR").is_some()
 }
 
+/// `--usage` run: the Settings window opens on the Spend pane and steps through the dashboard
+/// sections instead of the settings panes.
+fn usage_run() -> bool {
+    std::env::args().any(|a| a == "--usage")
+}
+
+/// Dashboard capture steps: name and the scroll offset of the section under test.
+const SPEND_STEPS: &[(&str, f32)] = &[
+    ("top", 0.0),
+    ("providers", 300.0),
+    ("models", 300.0),
+    ("projects", 300.0),
+    ("chats", 300.0),
+    ("sessions", 300.0),
+    ("trend-overview", 870.0),
+    ("trend-hour", 870.0),
+    ("trend-selected", 870.0),
+    ("ledger-top", 1430.0),
+    ("ledger-bottom", 1900.0),
+    ("heatmap", 3000.0),
+    ("data-controls", 4000.0),
+];
+
 /// The window whose redraws are being waited for, and whether enough have been seen. These are
 /// statics (not thread-locals) because the subscription filter runs on the runtime thread.
 static TARGET: Mutex<Option<iced::window::Id>> = Mutex::new(None);
@@ -71,8 +94,11 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
     let wants_costs = app
         .windows
         .values()
-        .any(|p| matches!(p, Page::Usage | Page::QuickView));
-    let wants_scan = app.windows.values().any(|p| *p == Page::Usage);
+        .any(|p| matches!(p, Page::Usage | Page::QuickView) || (usage_run() && *p == Page::Settings));
+    let wants_scan = app
+        .windows
+        .values()
+        .any(|p| *p == Page::Usage || (usage_run() && *p == Page::Settings));
     let ready = !app.windows.is_empty()
         && !app.busy
         && (!app.updated.is_empty() || app.windows.values().all(|p| *p == Page::Sessions))
@@ -115,18 +141,11 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
             .iter()
             .map(|n| (*id, n.to_string()))
             .collect::<Vec<_>>(),
-            Page::Usage => [
-                "insights",
-                "tools",
-                "providers",
-                "projects",
-                "sessions",
-                "models",
-                "ledger",
-            ]
-            .iter()
-            .map(|t| (*id, format!("spend-{t}")))
-            .collect(),
+            Page::Usage => Vec::new(),
+            Page::Settings if usage_run() => SPEND_STEPS
+                .iter()
+                .map(|(n, _)| (*id, format!("spend-{n}")))
+                .collect(),
             Page::Sessions => vec![(*id, "sessions".to_string())],
             Page::QuotaAlert => vec![(*id, "overlay-alert".to_string())],
             Page::Confetti => vec![(*id, "overlay-confetti".to_string())],
@@ -221,38 +240,8 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                 ),
             ]));
         }
-        if let Some(tab) = name.strip_prefix("spend-") {
-            // "insights" and "tools" capture the aggregate sections above the tabs.
-            app.spend_tab = if tab == "insights" || tab == "tools" {
-                "providers"
-            } else {
-                tab
-            }
-            .to_string();
-            if tab == "sessions" {
-                // Open the detail pane on the most expensive session.
-                let top = crate::ui::spend_sessions::browse_sessions(
-                    &app.scan_view.sessions,
-                    "",
-                    crate::state::SessionSort::Cost,
-                )
-                .first()
-                .map(|s| (s.provider, s.id.clone()));
-                app.selected_session = top;
-            }
-            // Scroll the section under test into view (usage cards sit at the bottom).
-            let y = match tab {
-                "insights" => 600.0,
-                "tools" => 960.0,
-                _ => 1240.0,
-            };
-            return Some(iced::Task::batch([
-                raise,
-                iced::widget::scrollable::scroll_to(
-                    crate::ui::spend_view::scroll_id(),
-                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
-                ),
-            ]));
+        if let Some(step) = name.strip_prefix("spend-") {
+            return Some(iced::Task::batch([raise, apply_spend_step(app, step)]));
         }
         if let Some(provider) = name.strip_prefix("provider-") {
             app.selected_provider = Some(provider.to_string());
@@ -294,6 +283,62 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
         }
         Message::None
     }))
+}
+
+/// Put the dashboard into the state `step` captures and scroll to its section.
+fn apply_spend_step(app: &mut App, step: &str) -> iced::Task<Message> {
+    use crate::ui::{spend_charts as sc, spend_view};
+    app.settings_pane = crate::state::SettingsPane::Spend;
+    app.spend_ui = Default::default();
+    app.chart_hover = None;
+    app.selected_session = None;
+    app.spend_tab = "providers".into();
+    let today = chrono::Local::now().date_naive();
+    match step {
+        "providers" | "models" | "projects" | "chats" | "sessions" => {
+            app.spend_tab = step.to_string();
+            if step == "sessions" {
+                // Open the detail pane on the most expensive session.
+                app.selected_session = crate::ui::spend_sessions::browse_sessions(
+                    &app.scan_view.sessions,
+                    "",
+                    crate::state::SessionSort::Cost,
+                )
+                .first()
+                .map(|s| (s.provider, s.id.clone()));
+            }
+        }
+        "trend-hour" => app.spend_ui.hour = true,
+        "trend-selected" => {
+            // Pin the most expensive day and hover the heatmap-free chart on it.
+            app.spend_ui.pin = app
+                .spend
+                .days
+                .iter()
+                .filter(|d| d.1.is_finite())
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .and_then(|d| spend_view::parse_date(&d.0));
+        }
+        "ledger-top" | "ledger-bottom" => {
+            app.spend_ui.expanded.insert("ledger".into());
+        }
+        "heatmap" => {
+            let grid = sc::activity_grid(&app.spend.days, today);
+            if let Some(c) = grid.cells.iter().max_by_key(|c| c.tokens.unwrap_or(-1)) {
+                app.chart_hover = Some(("spend-heat".into(), c.col * 7 + c.row));
+            }
+        }
+        _ => {}
+    }
+    let y = SPEND_STEPS
+        .iter()
+        .find(|(n, _)| *n == step)
+        .map(|(_, y)| *y)
+        .unwrap_or(0.0);
+    iced::widget::scrollable::scroll_to(
+        spend_view::scroll_id(),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+    )
 }
 
 /// Synthetic traffic (no real data): three models with a slow wave, a cached-input share and

@@ -28,6 +28,7 @@ fn template_bytes(id: &str) -> Option<&'static [u8]> {
         .map(|(_, b)| *b)
 }
 
+#[cfg(test)]
 pub fn has_icon(id: &str) -> bool {
     template_bytes(id).is_some()
 }

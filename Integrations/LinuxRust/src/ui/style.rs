@@ -7,7 +7,6 @@ use iced::overlay::menu;
 use iced::widget::{button as button_widget, text_input as text_input_widget};
 use iced::widget::{
     button::{self, Button},
-    checkbox::{self},
     container,
     pick_list::{self},
     progress_bar,
@@ -163,41 +162,7 @@ pub fn meter(fill: Color, height: f32) -> impl Fn(&Theme) -> progress_bar::Style
     }
 }
 
-/// 14pt rounded checkbox: hairline border when off, accent fill + white check when on.
-pub fn checkbox<'a, M>(label: impl ToString, checked: bool) -> iced::widget::Checkbox<'a, M> {
-    iced::widget::checkbox(label.to_string(), checked)
-        .size(14)
-        .spacing(8)
-        .style(checkbox_style)
-}
-
-pub fn checkbox_style(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
-    let (checked, hovered, disabled) = match status {
-        checkbox::Status::Active { is_checked } => (is_checked, false, false),
-        checkbox::Status::Hovered { is_checked } => (is_checked, true, false),
-        checkbox::Status::Disabled { is_checked } => (is_checked, false, true),
-    };
-    let fade = |c: Color| {
-        if disabled {
-            Color { a: c.a * 0.4, ..c }
-        } else {
-            c
-        }
-    };
-    let (fill, border) = control_colors(checked, hovered);
-    checkbox::Style {
-        background: Background::Color(fade(fill)),
-        icon_color: fade(Color::WHITE),
-        border: Border {
-            color: fade(border),
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        text_color: Some(fade(theme.palette().text)),
-    }
-}
-
-/// Fill and hairline colours shared by checkbox and radio (on = accent, off = faint with ring).
+/// Fill and hairline colours for the radio (on = accent, off = faint with ring).
 fn control_colors(on: bool, hovered: bool) -> (Color, Color) {
     match (on, hovered) {
         (true, true) => (Color::from_rgb(0.2, 0.58, 1.0), Color::TRANSPARENT),

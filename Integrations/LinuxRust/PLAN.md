@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, latest `linux-v0.84.6`)
+## Status (2026-11-09, latest `linux-v0.84.7`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -42,8 +42,14 @@ license under `licenses/`). Windows are matched by app_id from the session's pro
 feedback main device → `WGPU_POWER_PREF`, `src/gpu.rs`). iced's default low-power adapter put it on the iGPU while the
 compositor ran on the dGPU, and the cross-GPU copy showed stray lines while moving, resizing and scrolling.
 
-Open: user review (2026-11-09) says the screens still look different from the Mac app and graphs are missing; needs a
-screen-by-screen audit against the Swift views. Known limits: Focus heuristics on COSMIC (no pid in the protocol), GNOME Focus needs
+`linux-v0.84.7` parity pass after the user review (2026-11-09: "screens are different, no graphs"): the screens now
+follow the Swift views. Provider logos are the macOS app's own SVGs (embedded by `build.rs`, `src/icons.rs`). Usage &
+Spend is a Settings pane again (`--usage` opens Settings there), with the Mac section order and a stacked-by-provider
+trend chart (`src/ui/spend_charts.rs`). The Settings sidebar has the coloured pane tiles and a "Providers N on" list.
+The Quick View follows the Mac menu card, with the cost chart open by default (`src/ui/popover_charts.rs`).
+
+Open: no side-by-side check on a real Mac yet; Add Account / Status Page menu rows, provider drag-reorder and the
+provider detail view are not ported. Known limits: Focus heuristics on COSMIC (no pid in the protocol), GNOME Focus needs
 the Window Calls extension, overlays on GNOME/X11 use always-on-top windows.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 

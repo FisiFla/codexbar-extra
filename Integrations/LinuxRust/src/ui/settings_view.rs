@@ -7,26 +7,14 @@
 //! (`Message::SaveSettings`), like Qt.
 
 use crate::settings::Settings;
-use crate::state::{App, Message, Page, SettingsPane};
-use crate::ui::style::{checkbox, radio, scrollable};
+use crate::state::{App, Message, SettingsPane};
+use crate::ui::style::{radio, scrollable};
 use iced::widget::slider;
 use iced::widget::{column, container, row, text};
 use iced::{Color, Element, Length};
 use std::path::PathBuf;
 
-pub(crate) const ALL_PANES: [SettingsPane; 11] = [
-    SettingsPane::General,
-    SettingsPane::Providers,
-    SettingsPane::Spend,
-    SettingsPane::Menu,
-    SettingsPane::MenuBar,
-    SettingsPane::Notifications,
-    SettingsPane::Hooks,
-    SettingsPane::Plugins,
-    SettingsPane::Advanced,
-    SettingsPane::Debug,
-    SettingsPane::About,
-];
+pub(crate) const ALL_PANES: [SettingsPane; 11] = crate::ui::settings_sidebar::PANE_ORDER;
 
 const PROVIDER_PRESETS: [&str; 6] = ["codex", "claude", "both", "all", "enabled", "custom"];
 const SOURCE_OPTIONS: [(&str, &str); 5] = [
@@ -84,6 +72,7 @@ pub fn format_provider_order(order: &[String]) -> String {
     order.join(", ")
 }
 
+#[allow(dead_code)]
 pub fn filtered_catalog<'a>(
     catalog: &'a [(String, String)],
     query: &str,
@@ -177,19 +166,34 @@ fn changed(app: &App, f: impl Fn(&mut Settings)) -> Message {
     Message::SettingsChanged(Box::new(s))
 }
 
+fn switch_row<'a>(
+    label: &str,
+    cur: bool,
+    on_toggle: impl Fn(bool) -> Message + 'a,
+) -> Element<'a, Message> {
+    row![
+        text(label.to_string()).width(Length::Fill),
+        iced::widget::toggler(cur)
+            .on_toggle(on_toggle)
+            .size(22.0)
+            .style(crate::ui::style::toggler),
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
 fn check<'a>(
     label: &str,
     cur: bool,
     base: Settings,
     set: impl Fn(&mut Settings, bool) + 'a,
 ) -> Element<'a, Message> {
-    checkbox(label.to_string(), cur)
-        .on_toggle(move |v| {
-            let mut s = base.clone();
-            set(&mut s, v);
-            Message::SettingsChanged(Box::new(s))
-        })
-        .into()
+    switch_row(label, cur, move |v| {
+        let mut s = base.clone();
+        set(&mut s, v);
+        Message::SettingsChanged(Box::new(s))
+    })
 }
 
 fn text_field<'a>(
@@ -243,16 +247,31 @@ fn radio_group<'a>(
     col.into()
 }
 
+/// Mac grouped section: semibold header, then a rounded group box holding the rows.
 fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
     column![
-        text(title.to_string()).size(15).font(iced::Font {
+        text(title.to_string()).size(14).font(iced::Font {
             weight: iced::font::Weight::Semibold,
             ..iced::Font::DEFAULT
         }),
-        body
+        group_box(body),
     ]
     .spacing(8)
+    .padding([0, 4])
     .into()
+}
+
+fn group_box<'a>(body: Element<'a, Message>) -> Element<'a, Message> {
+    container(body)
+        .padding([12, 16])
+        .width(Length::Fill)
+        .style(|theme| {
+            let mut st = crate::ui::style::card(theme);
+            st.background = Some(Color::from_rgba(1.0, 1.0, 1.0, 0.03).into());
+            st.border.radius = 12.0.into();
+            st
+        })
+        .into()
 }
 
 fn note(s: &str) -> Element<'_, Message> {
@@ -262,18 +281,21 @@ fn note(s: &str) -> Element<'_, Message> {
         .into()
 }
 
+/// Label left, control right (Mac grouped-form row).
 fn labeled<'a>(label: &str, control: Element<'a, Message>) -> Element<'a, Message> {
     row![
-        container(text(label.to_string())).width(Length::Fixed(220.0)),
-        control
+        text(label.to_string()).width(Length::Fill),
+        container(control).width(Length::Fixed(340.0)),
     ]
-    .spacing(8)
+    .spacing(12)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 
 // ---------- view ----------
 
-pub fn view(app: &App) -> Element<Message> {
+pub fn view(app: &App) -> Element<'_, Message> {
+    let spend = app.settings_pane == SettingsPane::Spend;
     let detail = match app.settings_pane {
         SettingsPane::General => general_pane(app),
         SettingsPane::Providers => providers_pane(app),
@@ -287,79 +309,32 @@ pub fn view(app: &App) -> Element<Message> {
         SettingsPane::Debug => debug_pane(app),
         SettingsPane::About => about_pane(app),
     };
-    let mut detail_col = column![
-        text(pane_title(app.settings_pane))
-            .size(22)
-            .font(iced::Font {
-                weight: iced::font::Weight::Semibold,
-                ..iced::Font::DEFAULT
-            }),
-        detail
-    ]
-    .spacing(12);
-    if !app.error.trim().is_empty() {
-        detail_col =
-            detail_col.push(text(app.error.clone()).color(Color::from_rgb(0.9, 0.4, 0.35)));
+    let mut detail_col = column![detail].spacing(16);
+    if !spend {
+        // Mac panes carry no in-pane title (it lives in the window title bar).
+        if !app.error.trim().is_empty() {
+            detail_col =
+                detail_col.push(text(app.error.clone()).color(Color::from_rgb(0.9, 0.4, 0.35)));
+        }
+        detail_col = detail_col.push(group_box(
+            row![
+                container(note("Closing windows keeps CodexBar running.")).width(Length::Fill),
+                crate::ui::style::button(text("Save")).on_press(Message::SaveSettings),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+        ));
     }
-    detail_col = detail_col.push(
-        row![
-            container(note("Closing windows keeps CodexBar running.")).width(Length::Fill),
-            crate::ui::style::button(text("Save")).on_press(Message::SaveSettings),
-        ]
-        .spacing(8),
-    );
+    let mut pane = scrollable(container(detail_col).padding([20, 20]).width(Length::Fill));
+    if spend {
+        pane = pane.id(crate::ui::spend_view::scroll_id());
+    }
     row![
-        container(sidebar(app))
-            .width(Length::Fixed(260.0))
-            .height(Length::Fill),
-        container(scrollable(
-            container(detail_col).padding(16).width(Length::Fill)
-        ))
-        .width(Length::Fill)
-        .height(Length::Fill),
+        crate::ui::settings_sidebar::view(app),
+        container(pane).width(Length::Fill).height(Length::Fill),
     ]
     .into()
-}
-
-fn sidebar(app: &App) -> Element<'_, Message> {
-    let mut col = column![
-        crate::ui::style::text_input("Search settings", &app.settings_search)
-            .on_input(Message::SettingsSearchChanged),
-    ]
-    .spacing(6)
-    .padding(10);
-    for pane in filtered_panes(&app.settings_search) {
-        let selected = pane == app.settings_pane && app.selected_provider.is_none();
-        col = col.push(
-            crate::ui::style::button(text(pane_title(pane)))
-                .on_press(Message::OpenSettingsPane(pane))
-                .style(crate::ui::style::sidebar(selected))
-                .width(Length::Fill),
-        );
-    }
-    col = col.push(text(format!("Providers ({})", app.catalog.len())).size(13));
-    let providers = filtered_catalog(&app.catalog, &app.settings_search);
-    if providers.is_empty() {
-        col = col.push(note(if app.catalog.is_empty() {
-            "No providers loaded yet — the catalog loads from the CLI."
-        } else {
-            "No matching settings or providers."
-        }));
-    }
-    let mut list = column![].spacing(2);
-    for (id, name) in providers {
-        let selected = app.selected_provider.as_deref() == Some(id.as_str());
-        list = list.push(
-            crate::ui::style::button(
-                row![status_dot(dot_color(app, id)), text(name.clone())].spacing(6),
-            )
-            .on_press(Message::SelectProvider(id.clone()))
-            .style(crate::ui::style::sidebar(selected))
-            .width(Length::Fill),
-        );
-    }
-    col = col.push(scrollable(list));
-    col.into()
 }
 
 fn general_pane(app: &App) -> Element<'_, Message> {
@@ -426,7 +401,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
         ),
         section(
             "System",
-            column![checkbox("Start at login".to_string(), crate::autostart::status()).on_toggle(Message::SetAutostart)]
+            column![switch_row("Start at login", crate::autostart::status(), Message::SetAutostart)]
                 .spacing(8)
                 .into(),
         ),
@@ -534,8 +509,9 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     if let Some(meta) = app.provider_meta.iter().find(|p| p.provider == id) {
         let pid = id.to_string();
         body = body.push(
-            checkbox("Enabled", meta.enabled)
-                .on_toggle(move |v| Message::SetProviderEnabled(pid.clone(), v)),
+            switch_row("Enabled", meta.enabled, move |v| {
+                Message::SetProviderEnabled(pid.clone(), v)
+            }),
         );
         let auth = &meta.authentication;
         if auth.api_key || auth.cookie_header {
@@ -623,14 +599,18 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
     section("Selected provider", body.into())
 }
 
+/// The full Usage & Spend dashboard (it draws its own header), then the cost toggle.
 fn spend_pane(app: &App) -> Element<'_, Message> {
-    let s = &app.settings;
+    // The dashboard carries its own "Track costs" toggle; Save persists it like every pane.
     column![
-        check("Local spending (show costs)", s.show_costs, s.clone(), |st, v| st.show_costs = v),
-        note("Spend figures are local list-price estimates from the CodexBar CLI cost scan — not a billing receipt. Unknown values show as —, never 0."),
-        crate::ui::style::button(text("Open Usage & Spend")).on_press(Message::ShowPage(Page::Usage)),
+        crate::ui::spend_view::dashboard(app),
+        row![
+            container(note("Closing windows keeps CodexBar running.")).width(Length::Fill),
+            crate::ui::style::button(text("Save")).on_press(Message::SaveSettings),
+        ]
+        .align_y(iced::Alignment::Center),
     ]
-    .spacing(10)
+    .spacing(20)
     .into()
 }
 
@@ -773,13 +753,11 @@ fn extra_check<'a>(
     base: crate::extras::Extras,
     set: impl Fn(&mut crate::extras::Extras, bool) + 'a,
 ) -> Element<'a, Message> {
-    checkbox(label.to_string(), cur)
-        .on_toggle(move |v| {
-            let mut e = base.clone();
-            set(&mut e, v);
-            Message::ExtrasChanged(Box::new(e))
-        })
-        .into()
+    switch_row(label, cur, move |v| {
+        let mut e = base.clone();
+        set(&mut e, v);
+        Message::ExtrasChanged(Box::new(e))
+    })
 }
 
 fn notifications_pane(app: &App) -> Element<'_, Message> {
@@ -1004,7 +982,7 @@ mod tests {
         assert!(!pane_matches(SettingsPane::General, "hooks"));
         assert_eq!(
             filtered_panes("menu"),
-            vec![SettingsPane::Menu, SettingsPane::MenuBar]
+            vec![SettingsPane::MenuBar, SettingsPane::Menu]
         );
     }
 

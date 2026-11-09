@@ -24,13 +24,13 @@ Also available as a native [Linux desktop app](Integrations/LinuxRust/README.md)
 ## What's different in this fork
 
 - **Native Rust Linux desktop app** ([`Integrations/LinuxRust`](Integrations/LinuxRust/README.md)) built on iced. It brings the macOS screens to Linux:
-  - **Quick View:** the menu popover, with per-provider usage, burn rate, cost and model charts, and credits history.
-  - **Usage & Spend dashboard:** Insights, Tools, Providers, Projects, Sessions, Models and Ledger tabs.
+  - **Quick View:** the menu popover, laid out like the Mac menu: provider switcher with logos, usage bars, cost with its history chart, and chart rows for usage breakdown, credits, plan utilization and quota burndown.
+  - **Usage & Spend dashboard:** a Settings pane, as on the Mac: summary, ranked providers/models/projects/sessions, a spend trend chart stacked by provider (daily and hourly), the daily ledger and a token-activity heatmap.
   - **OpenAI Live:** live usage for an OpenAI admin key.
   - **Agent Sessions:** lists your coding-agent sessions. Focus brings the session's terminal window forward on KDE, GNOME (with the Window Calls extension), Hyprland, Sway, niri, COSMIC and X11.
   - **Share Stats:** usage-card images you can copy or save as PNG.
   - **Overlays:** quota alerts and confetti. They draw on wlroots, KDE and COSMIC, and fall back to always-on-top windows elsewhere.
-  - **More:** Stay Awake, a menu bar layout editor, and a Settings window with every pane.
+  - **More:** Stay Awake, a menu bar layout editor, and a Settings window with the Mac sidebar and every pane.
 
   It replaces the upstream Qt app as a drop-in: same binary name, flags, IPC socket, settings file and tarball layout, so the Omarchy widget keeps working. Releases for x86_64 and ARM64 are tagged `linux-v*`.
 - **OpenCode local models in the token ledger:** v2 `session_message` rows from any provider are counted, so locally hosted models (Ollama, Strata, …) appear at their recorded $0 cost.

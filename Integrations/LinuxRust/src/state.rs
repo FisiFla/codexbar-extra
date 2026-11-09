@@ -92,9 +92,11 @@ pub struct App {
     pub selected: i32, // -1 overview, else entry index (popover)
     pub settings_pane: SettingsPane,
     pub settings_search: String,
+    pub settings_sort_alpha: bool,
     pub selected_provider: Option<String>,
     pub spend_period_days: i64,
     pub spend_tab: String,
+    pub spend_ui: crate::ui::spend_view::SpendUi,
     pub pending_page: Option<Page>,
     /// Last successful cost load / last cost request (Qt `m_costUpdated` / `m_costRequested`).
     pub cost_updated: Option<std::time::Instant>,
@@ -194,6 +196,7 @@ pub enum Message {
     IpcCmd(IpcCommand),
     OpenSettingsPane(SettingsPane),
     SettingsSearchChanged(String),
+    ToggleProviderSort,
     SelectProvider(String),
     SettingsChanged(Box<Settings>),
     LayoutEdit(crate::menubar_layout::LayoutEdit),
@@ -202,6 +205,7 @@ pub enum Message {
     AutostartResult(Result<bool, String>),
     SetSpendPeriod(i64),
     SetSpendTab(String),
+    Spend(crate::ui::spend_view::SpendMsg),
     ScanLoaded(std::sync::Arc<crate::scan::ScanSnapshot>),
     SetScanZone(crate::scan::aggregate::Zone),
     SessionQuery(String),

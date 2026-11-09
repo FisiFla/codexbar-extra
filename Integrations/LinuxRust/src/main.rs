@@ -121,9 +121,11 @@ fn main() -> iced::Result {
                 selected: 0,
                 settings_pane: SettingsPane::General,
                 settings_search: String::new(),
+                settings_sort_alpha: false,
                 selected_provider: None,
                 spend_period_days: 30,
                 spend_tab: "providers".into(),
+                spend_ui: Default::default(),
                 pending_page: initial,
                 cost_updated: None,
                 cost_requested: None,
@@ -777,6 +779,10 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             app.settings_search = s;
             iced::Task::none()
         }
+        Message::ToggleProviderSort => {
+            app.settings_sort_alpha = !app.settings_sort_alpha;
+            iced::Task::none()
+        }
         Message::SelectProvider(p) => {
             app.selected_provider = Some(p);
             app.settings_pane = SettingsPane::Providers;
@@ -817,6 +823,10 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
         }
         Message::SetSpendTab(t) => {
             app.spend_tab = t;
+            iced::Task::none()
+        }
+        Message::Spend(m) => {
+            app.spend_ui.apply(m);
             iced::Task::none()
         }
         Message::AccountAction { provider, login } => iced::Task::perform(
