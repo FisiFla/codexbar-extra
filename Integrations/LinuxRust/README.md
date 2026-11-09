@@ -97,7 +97,8 @@ The archive lands in `.local/packages/`; create its checksum with
 ## Uninstall
 
 Quit CodexBar (`codexbar-linux --quit`), then remove
-`~/.local/bin/codexbar-linux`,
+`~/.local/bin/codexbar-linux`, `~/.local/bin/codexbar-cosmic-focus` (COSMIC
+Focus helper, if installed),
 `$XDG_DATA_HOME/applications/com.steipete.CodexBar.desktop`,
 `$XDG_DATA_HOME/icons/hicolor/scalable/apps/codexbar.svg` and
 `$XDG_CONFIG_HOME/autostart/com.steipete.CodexBar.desktop` (default data and
@@ -106,6 +107,14 @@ remove `~/.config/omarchy/plugins/steipete.codexbar` and its `shell.json`
 layout entry (restoring the `shell.json.codexbar-backup-*` file works too).
 Preferences in `~/.config/codexbar/` and their backups can be kept for a
 later reinstall or deleted.
+
+## License
+
+CodexBar for Linux is MIT (see the repository `LICENSE`). The release tarball also ships
+`bin/codexbar-cosmic-focus`, a separate GPL-3.0-only helper used only for session Focus on COSMIC
+(it needs the GPL `cosmic-protocols` bindings). It is a standalone program that the app runs as a
+subprocess, never linked in; its source is in `cosmic-focus/` and its license in
+`licenses/codexbar-cosmic-focus/`.
 
 ## Parity notes
 

@@ -44,6 +44,8 @@ jobs:
         run: cargo test --release --locked
       - name: Build
         run: cargo build --release --locked
+      - name: Build COSMIC focus helper (GPL, separate program)
+        run: cargo build --release --locked --manifest-path cosmic-focus/Cargo.toml
       - name: Package
         id: package
         env:
@@ -55,6 +57,7 @@ jobs:
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           fi
           archive="$(python3 package.py --binary target/release/codexbar-linux \
+            --cosmic-focus cosmic-focus/target/release/codexbar-cosmic-focus \
             --version "$version" --arch "$ARCH" --output "$RUNNER_TEMP/dist")"
           (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,24 @@
+[package]
+name = "codexbar-cosmic-focus"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "COSMIC toplevel list/activate helper for codexbar-linux (separate GPL program)"
+publish = false
+
+# Standalone package: deliberately NOT a member of the MIT codexbar-linux crate.
+[workspace]
+
+[[bin]]
+name = "codexbar-cosmic-focus"
+path = "src/main.rs"
+
+[dependencies]
+cosmic-protocols = { version = "=0.2.0", default-features = false, features = ["client"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true

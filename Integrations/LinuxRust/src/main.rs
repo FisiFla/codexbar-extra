@@ -494,11 +494,11 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             }
             iced::Task::none()
         }
-        Message::FocusSession(pid) => {
+        Message::FocusSession(pid, hints) => {
             app.focus_status = "Focusing\u{2026}".into();
             iced::Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || focus::focus_session(pid))
+                    tokio::task::spawn_blocking(move || focus::focus_session(pid, &hints))
                         .await
                         .unwrap_or_else(|e| Err(e.to_string()))
                 },

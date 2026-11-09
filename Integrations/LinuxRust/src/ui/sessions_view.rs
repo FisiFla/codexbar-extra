@@ -71,7 +71,17 @@ fn session_card(s: &Session, now: chrono::DateTime<chrono::Utc>) -> Element<'sta
         .clone()
         .filter(|p| !p.is_empty())
         .map(Message::CopyText);
-    let focus = s.pid.map(Message::FocusSession);
+    let hints: Vec<String> = [
+        s.project_name.clone(),
+        s.cwd
+            .as_deref()
+            .and_then(|c| std::path::Path::new(c).file_name())
+            .map(|n| n.to_string_lossy().into_owned()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let focus = s.pid.map(|pid| Message::FocusSession(pid, hints));
     body = body.push(
         row![
             small_button("Focus", focus),

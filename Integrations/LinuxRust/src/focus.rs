@@ -4,8 +4,9 @@
 //! the owner of a window, nearest first. Backends: Hyprland (`hyprctl`), Sway (`swaymsg`) and
 //! niri (`niri msg`), each detected by its env var; KWin scripting over D-Bus on KDE Wayland;
 //! the "Window Calls" extension's D-Bus API on GNOME Wayland (`gdbus`); `xdotool` / `wmctrl`
-//! on X11 (and XWayland). Other Wayland compositors expose no portable focus API, so that
-//! case is a no-op with an explanatory status. Never synthesizes input: activation is a
+//! on X11 (and XWayland). COSMIC goes through the separate GPL `codexbar-cosmic-focus`
+//! helper, run as a program and never linked. Other Wayland compositors expose no portable
+//! focus API, so that case is a no-op with an explanatory status. Never synthesizes input: activation is a
 //! window-manager request (`focuswindow` / `focus` / `focus-window` / `_NET_ACTIVE_WINDOW` /
 //! KWin `activeWindow` / Window Calls `Activate`).
 
@@ -47,6 +48,7 @@ pub enum Backend {
     KWin,
     Gnome,
     X11,
+    Cosmic,
     Unsupported,
 }
 
@@ -65,6 +67,7 @@ pub struct CompositorEnv {
 pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool, comp: CompositorEnv) -> Backend {
     let kde = desktop.split(':').any(|d| d.eq_ignore_ascii_case("kde"));
     let gnome = desktop.split(':').any(|d| d.eq_ignore_ascii_case("gnome"));
+    let cosmic = desktop.split(':').any(|d| d.eq_ignore_ascii_case("cosmic"));
     if comp.hyprland {
         Backend::Hyprland
     } else if comp.sway {
@@ -75,6 +78,8 @@ pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool, comp: Composi
         Backend::KWin
     } else if gnome && wayland {
         Backend::Gnome
+    } else if cosmic && wayland {
+        Backend::Cosmic
     } else if x_display {
         Backend::X11
     } else {
@@ -406,8 +411,144 @@ fn focus_kwin(pids: &[i64]) -> Result<String, String> {
     result
 }
 
-/// Blocking; call from `spawn_blocking`. Ok/Err are both user-facing status lines.
-pub fn focus_session(pid: i64) -> Result<String, String> {
+/// Lowercase and drop `-`, `_` and `.` so `com.system76.CosmicTerm` and `cosmic-term` compare equal.
+fn normalize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '-' | '_' | '.'))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Does a toplevel `app_id` name this process (`comm` or exe basename)? Compares the whole id and
+/// its last dot-segment.
+fn app_id_matches(app_id: &str, name: &str) -> bool {
+    let name = normalize(name);
+    !name.is_empty()
+        && (normalize(app_id) == name || normalize(app_id.rsplit('.').next().unwrap_or("")) == name)
+}
+
+/// COSMIC toplevels carry no pid, so pick by name: the nearest ancestor (`names` is one
+/// `[comm, exe basename]` list per ancestor, nearest first) whose name matches some toplevel's
+/// `app_id` wins; among several windows of that app prefer one whose title contains a hint
+/// (project name / cwd basename), else the first. `toplevels` are `(id, app_id, title)`.
+pub fn pick_cosmic_toplevel(
+    toplevels: &[(String, String, String)],
+    names: &[Vec<String>],
+    hints: &[String],
+) -> Option<String> {
+    for ancestor in names {
+        let matching: Vec<_> = toplevels
+            .iter()
+            .filter(|(_, app_id, _)| ancestor.iter().any(|n| app_id_matches(app_id, n)))
+            .collect();
+        if matching.is_empty() {
+            continue;
+        }
+        let hit = matching.iter().find(|(_, _, title)| {
+            let title = title.to_lowercase();
+            hints
+                .iter()
+                .any(|h| !h.is_empty() && title.contains(&h.to_lowercase()))
+        });
+        return Some(hit.unwrap_or(&matching[0]).0.clone());
+    }
+    None
+}
+
+/// Parse `codexbar-cosmic-focus list` output into `(id, app_id, title)` rows.
+pub fn parse_cosmic_list(json: &str) -> Vec<(String, String, String)> {
+    let Ok(serde_json::Value::Array(rows)) = serde_json::from_str(json) else {
+        return Vec::new();
+    };
+    let text = |r: &serde_json::Value, k: &str| match r.get(k) {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    };
+    rows.iter()
+        .filter_map(|r| {
+            Some((
+                text(r, "id")?,
+                text(r, "app_id").unwrap_or_default(),
+                text(r, "title").unwrap_or_default(),
+            ))
+        })
+        .collect()
+}
+
+const COSMIC_HELPER: &str = "codexbar-cosmic-focus";
+
+/// The helper next to the running executable, else on `PATH`.
+fn cosmic_helper() -> Option<std::path::PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(COSMIC_HELPER)))
+        .filter(|c| c.is_file());
+    let on_path = || {
+        std::env::var_os("PATH").and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join(COSMIC_HELPER))
+                .find(|c| c.is_file())
+        })
+    };
+    beside.or_else(on_path)
+}
+
+/// `[comm, exe basename]` for each pid in `chain`.
+fn process_names(chain: &[i64]) -> Vec<Vec<String>> {
+    chain
+        .iter()
+        .map(|pid| {
+            let dir = Path::new("/proc").join(pid.to_string());
+            let comm = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+            let exe = std::fs::read_link(dir.join("exe"))
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            vec![comm.trim().to_string(), exe]
+        })
+        .collect()
+}
+
+fn focus_cosmic(chain: &[i64], hints: &[String]) -> Result<String, String> {
+    let Some(helper) = cosmic_helper() else {
+        return Err(
+            "Focus on COSMIC needs the codexbar-cosmic-focus helper (GPL, shipped in the \
+                    release tarball)."
+                .into(),
+        );
+    };
+    let out = Command::new(&helper)
+        .arg("list")
+        .output()
+        .map_err(|e| format!("Could not run codexbar-cosmic-focus: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "codexbar-cosmic-focus list failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let toplevels = parse_cosmic_list(&String::from_utf8_lossy(&out.stdout));
+    let Some(id) = pick_cosmic_toplevel(&toplevels, &process_names(chain), hints) else {
+        return Err("No COSMIC window matches this session's terminal.".into());
+    };
+    let out = Command::new(&helper)
+        .args(["activate", &id])
+        .output()
+        .map_err(|e| format!("Could not run codexbar-cosmic-focus: {e}"))?;
+    if out.status.success() {
+        Ok("Asked COSMIC to focus the terminal window.".into())
+    } else {
+        Err(format!(
+            "codexbar-cosmic-focus activate failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Blocking; call from `spawn_blocking`. Ok/Err are both user-facing status lines. `hints` are
+/// project / cwd names used only to choose between windows of the same app on COSMIC.
+pub fn focus_session(pid: i64, hints: &[String]) -> Result<String, String> {
     let chain = ancestor_chain(pid, Path::new("/proc"));
     if chain.is_empty() {
         return Err(format!(
@@ -431,15 +572,11 @@ pub fn focus_session(pid: i64) -> Result<String, String> {
         Backend::KWin => focus_kwin(&chain),
         Backend::Gnome => focus_gnome(&chain),
         Backend::X11 => focus_x11(&chain),
-        Backend::Unsupported => Err(if desktop.to_ascii_lowercase().contains("cosmic") {
-            "Focusing windows on COSMIC needs the COSMIC toplevel protocol, which is not \
-             supported yet. Use Open folder, or switch to the terminal manually."
-        } else {
-            "Focusing windows is not supported on this compositor (supported: Hyprland, Sway, \
-             niri, KDE, GNOME with Window Calls, X11). Use Open folder, or switch to the \
-             terminal manually."
-        }
-        .into()),
+        Backend::Cosmic => focus_cosmic(&chain, hints),
+        Backend::Unsupported => Err("Focusing windows is not supported on this compositor \
+             (supported: Hyprland, Sway, niri, KDE, GNOME with Window Calls, COSMIC, X11). Use \
+             Open folder, or switch to the terminal manually."
+            .into()),
     }
 }
 
@@ -514,8 +651,9 @@ mod tests {
         );
         assert_eq!(pick_backend("GNOME", false, true, none), Backend::X11);
         assert_eq!(pick_backend("X-Cinnamon", false, true, none), Backend::X11);
+        assert_eq!(pick_backend("COSMIC", true, false, none), Backend::Cosmic);
         assert_eq!(
-            pick_backend("COSMIC", true, false, none),
+            pick_backend("COSMIC", false, false, none),
             Backend::Unsupported
         );
         assert_eq!(
@@ -627,5 +765,61 @@ mod tests {
         let out = r#"('[{"id":5,"pid":77,"title":"vim \'x\'"}]',)"#;
         let json = parse_gdbus_string(out).unwrap();
         assert_eq!(gnome_window(&json, &[77]), Some(5));
+    }
+
+    fn tl(id: &str, app_id: &str, title: &str) -> (String, String, String) {
+        (id.into(), app_id.into(), title.into())
+    }
+
+    fn names(v: &[&[&str]]) -> Vec<Vec<String>> {
+        v.iter()
+            .map(|a| a.iter().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn cosmic_matches_app_id_forms_against_nearest_ancestor() {
+        let tls = [
+            tl("a", "com.system76.CosmicFiles", "Files"),
+            tl("b", "com.system76.CosmicTerm", "~"),
+            tl("c", "firefox", "web"),
+        ];
+        // claude -> zsh -> cosmic-term
+        let n = names(&[&["claude", "node"], &["zsh", "zsh"], &["cosmic-term", ""]]);
+        assert_eq!(pick_cosmic_toplevel(&tls, &n, &[]), Some("b".into()));
+        assert!(app_id_matches("com.system76.CosmicTerm", "cosmic_term"));
+        assert!(app_id_matches("Alacritty", "alacritty"));
+        assert!(!app_id_matches("firefox", ""));
+        assert_eq!(
+            pick_cosmic_toplevel(&tls, &names(&[&["bash", "bash"]]), &[]),
+            None
+        );
+        assert_eq!(pick_cosmic_toplevel(&tls, &[], &[]), None);
+    }
+
+    #[test]
+    fn cosmic_prefers_title_with_hint_else_first() {
+        let tls = [
+            tl("a", "com.system76.CosmicTerm", "~/other"),
+            tl("b", "com.system76.CosmicTerm", "~/Projects/Widget"),
+        ];
+        let n = names(&[&["cosmic-term", "cosmic-term"]]);
+        let hint = vec!["".to_string(), "widget".to_string()];
+        assert_eq!(pick_cosmic_toplevel(&tls, &n, &hint), Some("b".into()));
+        assert_eq!(pick_cosmic_toplevel(&tls, &n, &[]), Some("a".into()));
+        let miss = vec!["nothing".to_string()];
+        assert_eq!(pick_cosmic_toplevel(&tls, &n, &miss), Some("a".into()));
+    }
+
+    #[test]
+    fn cosmic_list_json_parses_and_skips_bad_rows() {
+        let j =
+            r#"[{"id":"x1","app_id":"foot","title":"t"},{"id":7,"app_id":"a"},{"app_id":"nope"}]"#;
+        assert_eq!(
+            parse_cosmic_list(j),
+            vec![tl("x1", "foot", "t"), tl("7", "a", "")]
+        );
+        assert!(parse_cosmic_list("garbage").is_empty());
+        assert!(parse_cosmic_list("{}").is_empty());
     }
 }

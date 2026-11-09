@@ -216,7 +216,7 @@ pub enum Message {
     OpenUrl(String),
     CopySummary,
     RefreshSessions,
-    FocusSession(i64),
+    FocusSession(i64, Vec<String>),
     FocusDone(Result<String, String>),
     ExtrasChanged(Box<crate::extras::Extras>),
     DismissOverlays,

@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, latest `linux-v0.84.4`)
+## Status (2026-11-09, latest `linux-v0.84.5`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -34,8 +34,12 @@ balance), and a mac-style theme pass (accent #0A84FF, segmented controls, rounde
 confetti, click-to-dismiss alert; GNOME/X11 fall back to always-on-top windows), mac-style checkbox/radio/slider/pick-list/
 scroller styles, and session Focus on GNOME via the "Window Calls" extension.
 
-Open (honest gaps): Focus on COSMIC needs `zcosmic_toplevel_manager_v1`, whose Rust bindings (`cosmic-protocols`) are
-GPL-3.0-only — not linked into this MIT binary pending a licensing decision.
+`linux-v0.84.5` adds: session Focus on COSMIC through `codexbar-cosmic-focus`, a separate GPL-3.0-only helper program
+(`cosmic-focus/`, uses `cosmic-protocols`; talks to the MIT app only via argv/stdout, shipped in the tarball with its
+license under `licenses/`). Windows are matched by app_id from the session's process ancestry, then by project title.
+
+Open: nothing from the parity matrix. Known limits: Focus heuristics on COSMIC (no pid in the protocol), GNOME Focus needs
+the Window Calls extension, overlays on GNOME/X11 use always-on-top windows.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 
 ## Why the Qt app feels so far behind

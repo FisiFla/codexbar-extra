@@ -11,6 +11,7 @@ selected automatically.
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -30,6 +31,20 @@ def default_binary():
     return None
 
 
+def install_cosmic_helper():
+    # Optional GPL helper (COSMIC Focus) shipped in the tarball; the app finds it beside itself.
+    helper = REPO / 'bin/codexbar-cosmic-focus'
+    if not helper.is_file():
+        return
+    destination = Path.home() / '.local/bin/codexbar-cosmic-focus'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + '.tmp')
+    shutil.copyfile(helper, temporary)
+    temporary.chmod(0o755)
+    os.replace(temporary, destination)
+    print(f'Installed {destination}')
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not DELEGATE.is_file():
@@ -47,6 +62,7 @@ def main(argv=None):
         module.main()
     finally:
         sys.argv = original
+    install_cosmic_helper()
 
 
 if __name__ == '__main__':

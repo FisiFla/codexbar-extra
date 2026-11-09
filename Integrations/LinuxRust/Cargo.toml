@@ -1,6 +1,6 @@
 [package]
 name = "codexbar-linux"
-version = "0.84.4"
+version = "0.84.5"
 edition = "2021"
 license = "MIT"
 description = "CodexBar desktop for Linux (Rust) - tray, popover, spend dashboard, settings"

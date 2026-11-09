@@ -38,6 +38,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path,
                         help='Prebuilt codexbar-linux (default: cargo build --release)')
+    parser.add_argument('--cosmic-focus', type=Path,
+                        help='Prebuilt codexbar-cosmic-focus (GPL helper); adds it and its license')
     parser.add_argument('--version', default=None,
                         help='Version without the v prefix (default: Cargo.toml version)')
     parser.add_argument('--arch', choices=sorted(set(ARCHITECTURES.values())),
@@ -67,6 +69,13 @@ def main():
         'Integrations/Omarchy/Panel.qml': REPO / 'Integrations/Omarchy/Panel.qml',
         'Integrations/Omarchy/manifest.json': REPO / 'Integrations/Omarchy/manifest.json',
     }
+    executables = {'bin/codexbar-linux'}
+    if args.cosmic_focus:
+        # Separate GPL-3.0-only program, shipped beside (never linked into) the MIT app.
+        files['bin/codexbar-cosmic-focus'] = args.cosmic_focus.resolve()
+        files['licenses/codexbar-cosmic-focus/LICENSE'] = HERE / 'cosmic-focus/LICENSE'
+        files['licenses/codexbar-cosmic-focus/README.md'] = HERE / 'cosmic-focus/README.md'
+        executables.add('bin/codexbar-cosmic-focus')
     # The adapter reads these beside itself; an archive without them falls back to text tags.
     icons = sorted((REPO / 'Sources/CodexBar/Resources').glob('ProviderIcon-*.svg'))
     if not icons:
@@ -86,7 +95,7 @@ def main():
                     info.uid = info.gid = 0
                     info.uname = info.gname = ''
                     info.mtime = 0
-                    info.mode = 0o755 if relative == 'bin/codexbar-linux' else 0o644
+                    info.mode = 0o755 if relative in executables else 0o644
                     with source.open('rb') as content:
                         archive.addfile(info, content)
     print(destination)
