@@ -1,10 +1,15 @@
-# CodexBar 🎚️ — May your tokens never run out.
+# CodexBar Extra 🎚️ — May your tokens never run out.
 
-> Every AI coding limit, in your menu bar.
+> Every AI coding limit, in your menu bar — on macOS and now natively on Linux.
 
-[![Latest release](https://img.shields.io/github/v/release/steipete/CodexBar?style=flat-square&color=0a0a0c)](https://github.com/steipete/CodexBar/releases/latest)
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-0a0a0c?style=flat-square)](https://github.com/steipete/CodexBar/releases/latest)
-[![Linux desktop](https://img.shields.io/badge/Linux-Qt_6-1793d1?style=flat-square)](Integrations/Linux/README.md)
+**CodexBar Extra** is a fork of [steipete/CodexBar](https://github.com/steipete/CodexBar). It tracks
+upstream (currently 0.84.0) and adds a native Rust Linux desktop app that mirrors the macOS app's
+screens, plus a few macOS fixes. See [What's different in this fork](#whats-different-in-this-fork).
+
+[![Linux release](https://img.shields.io/github/v/release/FisiFla/codexbar-extra?style=flat-square&color=1793d1&label=linux)](https://github.com/FisiFla/codexbar-extra/releases/latest)
+[![Upstream release](https://img.shields.io/github/v/release/steipete/CodexBar?style=flat-square&color=0a0a0c&label=upstream)](https://github.com/steipete/CodexBar/releases/latest)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-0a0a0c?style=flat-square)](#macos-app)
+[![Linux desktop](https://img.shields.io/badge/Linux-Rust-1793d1?style=flat-square)](Integrations/LinuxRust/README.md)
 [![Homebrew](https://img.shields.io/badge/brew-steipete%2Ftap%2Fcodexbar-orange?style=flat-square)](https://github.com/steipete/homebrew-tap)
 [![AUR](https://img.shields.io/aur/version/codexbar-cli?style=flat-square&color=1793d1)](https://aur.archlinux.org/packages/codexbar-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-6e5aff?style=flat-square)](LICENSE)
@@ -14,7 +19,24 @@
 
 Tiny macOS 14+ menu bar app that keeps **AI coding-provider limits visible** and shows when each window resets. See the [supported providers](#providers) below. One status item per provider, or Merge Icons mode with a provider switcher. No Dock icon, minimal UI, dynamic bar icons.
 
-Also available as a [Linux desktop app](Integrations/Linux/README.md) with usage and spending windows, separate settings, desktop notifications, and an optional tray icon. On Omarchy, a native bar widget shares the desktop app’s data and follows your theme.
+Also available as a native [Linux desktop app](Integrations/LinuxRust/README.md) (Rust) with a tray icon, Quick View, the Usage & Spend dashboard, Agent Sessions, Share Stats, Settings, quota alerts, and desktop notifications. On Omarchy, a native bar widget shares the desktop app’s data and follows your theme.
+
+## What's different in this fork
+
+- **Native Rust Linux desktop app** ([`Integrations/LinuxRust`](Integrations/LinuxRust/README.md)) built on iced. It brings the macOS screens to Linux:
+  - **Quick View:** the menu popover, with per-provider usage, burn rate, cost and model charts, and credits history.
+  - **Usage & Spend dashboard:** Insights, Tools, Providers, Projects, Sessions, Models and Ledger tabs.
+  - **OpenAI Live:** live usage for an OpenAI admin key.
+  - **Agent Sessions:** lists your coding-agent sessions. Focus brings the session's terminal window forward on KDE, GNOME (with the Window Calls extension), Hyprland, Sway, niri, COSMIC and X11.
+  - **Share Stats:** usage-card images you can copy or save as PNG.
+  - **Overlays:** quota alerts and confetti. They draw on wlroots, KDE and COSMIC, and fall back to always-on-top windows elsewhere.
+  - **More:** Stay Awake, a menu bar layout editor, and a Settings window with every pane.
+
+  It replaces the upstream Qt app as a drop-in: same binary name, flags, IPC socket, settings file and tarball layout, so the Omarchy widget keeps working. Releases for x86_64 and ARM64 are tagged `linux-v*`.
+- **OpenCode local models in the token ledger:** v2 `session_message` rows from any provider are counted, so locally hosted models (Ollama, Strata, …) appear at their recorded $0 cost.
+- **Stable local code signing for macOS builds:** grants survive rebuilds. See [Local signing](docs/FORK_LOCAL_SIGNING.md).
+
+The macOS app and CLI are otherwise upstream's. Provider fixes go upstream first and are merged in.
 
 <img src="docs/codexbar.png" alt="CodexBar menu popover with provider tiles, usage bars, and reset countdowns" width="520" />
 
@@ -29,13 +51,34 @@ Also available as a [Linux desktop app](Integrations/Linux/README.md) with usage
 
 ### macOS app
 
-Requires macOS 14+ (Sonoma). Download from [GitHub Releases](https://github.com/steipete/CodexBar/releases), or install with Homebrew:
+Requires macOS 14+ (Sonoma). This fork does not publish macOS builds. Install upstream's app from [GitHub Releases](https://github.com/steipete/CodexBar/releases), or install it with Homebrew:
 
 ```bash
 brew install --cask codexbar
 ```
 
-### Linux desktop and Omarchy
+To run this fork's macOS changes, [build from source](#build-from-source).
+
+### Linux desktop (Rust, this fork)
+
+Download `CodexBarDesktop-v<version>-linux-<arch>.tar.gz` (x86_64 or aarch64) from this repo's
+[releases](https://github.com/FisiFla/codexbar-extra/releases/latest), verify it with `sha256sum -c`, then:
+
+```bash
+tar -xzf CodexBarDesktop-v<version>-linux-<arch>.tar.gz
+cd CodexBarDesktop-v<version>-linux-<arch>
+python3 Integrations/LinuxRust/install.py --cli /absolute/path/to/codexbar
+```
+
+The app needs glibc 2.39+, a Wayland or X11 session, and an installed CodexBar CLI
+(see [CLI Tarballs](#cli-tarballs-macoslinux)). It does not need Qt.
+The [Linux Rust guide](Integrations/LinuxRust/README.md) covers building from a checkout, the
+installer, uninstalling, and parity notes.
+
+The release archive also contains `codexbar-cosmic-focus`, a small separate GPL-3.0 helper. The app
+uses it only to focus terminal windows on COSMIC, and the main app stays MIT.
+
+### Linux desktop (upstream Qt) and Omarchy
 
 The Qt 6 desktop app supports Wayland and X11, with an optional Omarchy widget.
 Published desktop archives target x86_64 and ARM64 and require glibc 2.39+,
@@ -315,7 +358,8 @@ CLI install:
 - [CodexBar for Windows](https://github.com/hinneslung/CodexBar-for-Windows) — Native Windows tray app powered by the original CodexBar CLI through WSL2; x64 and ARM64 installers.
 
 ## Linux desktop integration?
-- [Linux desktop app](Integrations/Linux/README.md) — x86_64/ARM64 release archives with an installer; Qt 6 usage and spending windows, separate settings, optional system tray, and desktop notifications using the Linux CLI.
+- [Linux desktop app (Rust)](Integrations/LinuxRust/README.md) — this fork's native app: tray icon, Quick View, Usage & Spend dashboard, Agent Sessions with terminal focus, Share Stats, and quota overlays.
+- [Linux desktop app (Qt)](Integrations/Linux/README.md) — upstream's app: x86_64/ARM64 release archives with an installer; Qt 6 usage and spending windows, separate settings, optional system tray, and desktop notifications using the Linux CLI.
 - [Omarchy native widget](Integrations/Omarchy/README.md) — Compact Quickshell usage popup sharing the Linux desktop app’s backend.
 - [CodexBar GTK](https://github.com/SaahiilM/codexbar-gtk) — Community GTK4/libadwaita front-end with usage, spending, and agent sessions from the CodexBar Linux CLI.
 - [codexbar-waybar](https://github.com/Marouan-chak/codexbar-waybar) — Waybar custom module + GTK4 popover for Hyprland / Sway / other Wayland compositors, built on top of the bundled Linux CLI.
@@ -348,4 +392,7 @@ CLI install:
 Inspired by [ccusage](https://github.com/ryoppippi/ccusage) (MIT), specifically the cost usage tracking.
 
 ## License
-MIT • Peter Steinberger ([steipete](https://twitter.com/steipete))
+MIT • Peter Steinberger ([steipete](https://twitter.com/steipete)). CodexBar Extra fork and Linux Rust app by [FisiFla](https://github.com/FisiFla).
+
+The optional COSMIC focus helper (`Integrations/LinuxRust/cosmic-focus`) is GPL-3.0-only because it uses
+`cosmic-protocols`. It is a separate program and is not linked into the MIT app.
