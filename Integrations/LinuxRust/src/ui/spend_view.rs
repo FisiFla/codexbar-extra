@@ -557,7 +557,16 @@ fn usage_card(app: &App, e: &Entry) -> Element<'static, Message> {
         .into()
 }
 
+/// The Usage & Spend window content: the standalone scrolling view of [`dashboard`].
 pub fn view(app: &App) -> Element<'_, Message> {
+    crate::ui::style::scrollable(dashboard(app))
+        .id(scroll_id())
+        .into()
+}
+
+/// The whole dashboard without an outer scrollable (the Settings pane wraps it in one with
+/// [`scroll_id`]).
+pub fn dashboard(app: &App) -> Element<'_, Message> {
     let today = chrono::Local::now().date_naive();
     let period = app.spend_period_days;
     let mut page = column![
@@ -919,9 +928,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         }
     }
 
-    crate::ui::style::scrollable(page.push(usage))
-        .id(scroll_id())
-        .into()
+    page.push(usage).into()
 }
 
 #[cfg(test)]
