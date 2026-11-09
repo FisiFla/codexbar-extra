@@ -7,7 +7,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::model::QuotaWindow;
+use crate::menubar_layout::{self, MenuBarLayout, RenderInput, TitleMode};
+use crate::model::{CostEntry, Entry, QuotaWindow};
 use crate::state::{Shared, TrayCommand};
 
 pub const TRAY_ID: &str = "com.steipete.CodexBar";
@@ -129,6 +130,19 @@ pub fn meters_pixmap_with(
     warning_colors: bool,
     notify_threshold: u32,
 ) -> Vec<u8> {
+    let bars: Vec<Option<i64>> = windows.iter().map(|w| Some(w.remaining)).collect();
+    bars_pixmap(&bars, stale, quota_used, warning_colors, notify_threshold)
+}
+
+/// Draws up to two tracks; `None` (unknown value) leaves the track empty
+/// instead of drawing a fabricated 0 or 100.
+pub fn bars_pixmap(
+    bars: &[Option<i64>],
+    stale: bool,
+    quota_used: bool,
+    warning_colors: bool,
+    notify_threshold: u32,
+) -> Vec<u8> {
     let mut pixmap = match tiny_skia::Pixmap::new(PIXMAP_SIZE, PIXMAP_SIZE) {
         Some(pixmap) => pixmap,
         None => return vec![0; (PIXMAP_SIZE * PIXMAP_SIZE * 4) as usize],
@@ -143,14 +157,14 @@ pub fn meters_pixmap_with(
             TRACK_RADIUS,
             TRACK_RGB,
         );
-        let Some(window) = windows.get(index) else {
+        let Some(Some(remaining)) = bars.get(index).copied() else {
             continue;
         };
-        let fill_width = meter_fill_width(TRACK_WIDTH, window.remaining, quota_used);
+        let fill_width = meter_fill_width(TRACK_WIDTH, remaining, quota_used);
         if fill_width <= 0.0 {
             continue;
         }
-        let rgb = fill_color_rgb(window.remaining, stale, warning_colors, notify_threshold);
+        let rgb = fill_color_rgb(remaining, stale, warning_colors, notify_threshold);
         fill_rounded_rect(
             &mut pixmap,
             TRACK_X,
@@ -227,6 +241,87 @@ fn rounded_rect_path(
     b.finish()
 }
 
+pub enum TrayIcon {
+    /// Themed icon by name (`ICON_NAME`), no pixmap.
+    Named,
+    /// 64x64 RGBA pixmap.
+    Pixmap(Vec<u8>),
+}
+
+/// What the tray shows for a layout: icon, SNI title and tooltip description.
+pub struct TrayView {
+    pub icon: TrayIcon,
+    pub title: String,
+    pub description: String,
+}
+
+pub struct TrayParams<'a> {
+    pub tray_style: &'a str,
+    pub stale: bool,
+    pub quota_used: bool,
+    pub warning_colors: bool,
+    pub notify_threshold: u32,
+}
+
+/// Single entry point shared by the tray and the editor preview.
+/// With the default layout (`[[icon]]`, static title) this is exactly the
+/// pre-layout behaviour: meters or themed icon, title `CodexBar`, no description.
+pub fn tray_view(
+    layout: &MenuBarLayout,
+    entry: Option<&Entry>,
+    cost: Option<&CostEntry>,
+    params: &TrayParams,
+    now: chrono::DateTime<chrono::Utc>,
+) -> TrayView {
+    let rendered = menubar_layout::render(
+        layout,
+        &RenderInput {
+            entry,
+            cost,
+            quota_used: params.quota_used,
+            now,
+        },
+    );
+    // Qt reads the first entry's windows for the tray meters.
+    let windows: Vec<QuotaWindow> = entry
+        .map(|e| e.windows.iter().take(2).cloned().collect())
+        .unwrap_or_default();
+    let bars = rendered.bars();
+    let icon = if rendered.has_icon() {
+        if use_icon_name(params.tray_style, windows.is_empty()) {
+            TrayIcon::Named
+        } else {
+            TrayIcon::Pixmap(meters_pixmap_with(
+                &windows,
+                params.stale,
+                params.quota_used,
+                params.warning_colors,
+                params.notify_threshold,
+            ))
+        }
+    } else if !bars.is_empty() {
+        TrayIcon::Pixmap(bars_pixmap(
+            &bars,
+            params.stale,
+            params.quota_used,
+            params.warning_colors,
+            params.notify_threshold,
+        ))
+    } else {
+        TrayIcon::Named
+    };
+    let text = rendered.title_text();
+    let (title, description) = match layout.title_mode {
+        TitleMode::Layout if !text.is_empty() => (text.clone(), text),
+        _ => (TRAY_TITLE.to_string(), String::new()),
+    };
+    TrayView {
+        icon,
+        title,
+        description,
+    }
+}
+
 /// Cached view of [`Shared`] owned by the tray; refreshed by the
 /// 2-second poller through the ksni handle so `Tray` getters never lock.
 #[derive(Clone, PartialEq)]
@@ -241,6 +336,9 @@ struct TraySnapshot {
     tray_style: String,
     show_tray: bool,
     compact_quick_view: bool,
+    layout: MenuBarLayout,
+    entry: Option<Entry>,
+    cost: Option<CostEntry>,
 }
 
 impl TraySnapshot {
@@ -251,8 +349,16 @@ impl TraySnapshot {
             .first()
             .map(|entry| entry.windows.iter().take(2).cloned().collect())
             .unwrap_or_default();
+        let entry = shared.entries.first().cloned();
+        let cost = entry
+            .as_ref()
+            .and_then(|e| shared.spending.iter().find(|c| c.provider == e.provider))
+            .cloned();
         Self {
             windows,
+            layout: shared.menubar_layout.clone(),
+            entry,
+            cost,
             stale: shared.stale,
             quota_used: shared.quota_used,
             quota_display: shared.settings.quota_display.clone(),
@@ -265,8 +371,20 @@ impl TraySnapshot {
         }
     }
 
-    fn uses_icon_name(&self) -> bool {
-        use_icon_name(&self.tray_style, self.windows.is_empty())
+    fn view(&self) -> TrayView {
+        tray_view(
+            &self.layout,
+            self.entry.as_ref(),
+            self.cost.as_ref(),
+            &TrayParams {
+                tray_style: &self.tray_style,
+                stale: self.stale,
+                quota_used: self.quota_used,
+                warning_colors: self.warning_colors,
+                notify_threshold: self.notify_threshold,
+            },
+            chrono::Utc::now(),
+        )
     }
 }
 
@@ -306,7 +424,7 @@ impl ksni::Tray for CodexTray {
     }
 
     fn title(&self) -> String {
-        TRAY_TITLE.to_string()
+        self.snapshot.view().title
     }
 
     fn category(&self) -> ksni::Category {
@@ -322,37 +440,29 @@ impl ksni::Tray for CodexTray {
     }
 
     fn icon_name(&self) -> String {
-        if self.snapshot.uses_icon_name() {
-            ICON_NAME.to_string()
-        } else {
-            String::new()
+        match self.snapshot.view().icon {
+            TrayIcon::Named => ICON_NAME.to_string(),
+            TrayIcon::Pixmap(_) => String::new(),
         }
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        if self.snapshot.uses_icon_name() {
-            return Vec::new();
+        match self.snapshot.view().icon {
+            TrayIcon::Named => Vec::new(),
+            TrayIcon::Pixmap(rgba) => vec![ksni::Icon {
+                width: PIXMAP_SIZE as i32,
+                height: PIXMAP_SIZE as i32,
+                data: rgba_to_argb(&rgba),
+            }],
         }
-        let rgba = meters_pixmap_with(
-            &self.snapshot.windows,
-            self.snapshot.stale,
-            self.snapshot.quota_used,
-            self.snapshot.warning_colors,
-            self.snapshot.notify_threshold,
-        );
-        vec![ksni::Icon {
-            width: PIXMAP_SIZE as i32,
-            height: PIXMAP_SIZE as i32,
-            data: rgba_to_argb(&rgba),
-        }]
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
+        let view = self.snapshot.view();
         ksni::ToolTip {
-            icon_name: if self.snapshot.uses_icon_name() {
-                ICON_NAME.to_string()
-            } else {
-                String::new()
+            icon_name: match view.icon {
+                TrayIcon::Named => ICON_NAME.to_string(),
+                TrayIcon::Pixmap(_) => String::new(),
             },
             icon_pixmap: Vec::new(),
             title: tooltip_text(
@@ -360,7 +470,7 @@ impl ksni::Tray for CodexTray {
                 &self.snapshot.quota_display,
                 self.snapshot.stale,
             ),
-            description: String::new(),
+            description: view.description,
         }
     }
 
@@ -376,6 +486,18 @@ impl ksni::Tray for CodexTray {
             StandardItem {
                 label: "Usage & Spend\u{2026}".into(),
                 activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::Usage)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Agent Sessions\u{2026}".into(),
+                activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::Sessions)),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Share Stats\u{2026}".into(),
+                activate: Box::new(|tray: &mut Self| tray.send(TrayCommand::ShareStats)),
                 ..Default::default()
             }
             .into(),

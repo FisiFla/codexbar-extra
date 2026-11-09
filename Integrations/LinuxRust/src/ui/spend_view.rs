@@ -18,6 +18,10 @@ use iced::widget::{
 use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 use std::collections::BTreeMap;
 
+pub fn scroll_id() -> scrollable::Id {
+    scrollable::Id::new("spend-body")
+}
+
 pub const EM_DASH: &str = "—";
 const ACCENT: Color = Color::from_rgb(0.18, 0.65, 0.35);
 const UNKNOWN_GRAY: Color = Color::from_rgb(0.45, 0.45, 0.45);
@@ -380,60 +384,8 @@ pub fn heatmap_input(spend: &SpendModel, today: NaiveDate) -> Vec<(NaiveDate, Op
 }
 
 // ---------------------------------------------------------------------------
-// Canvas programs: daily trend bars + activity heatmap
+// Canvas programs: activity heatmap (trend bars live in crate::charts)
 // ---------------------------------------------------------------------------
-
-struct TrendChart {
-    values: Vec<Option<f64>>,
-}
-
-impl canvas::Program<Message> for TrendChart {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &(),
-        _renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(_renderer, bounds.size());
-        if self.values.is_empty() || bounds.width < 4.0 || bounds.height < 4.0 {
-            return vec![frame.into_geometry()];
-        }
-        let max = self
-            .values
-            .iter()
-            .filter_map(|v| *v)
-            .fold(0.0f64, f64::max)
-            .max(0.0);
-        let baseline = bounds.height - 1.0;
-        frame.fill_rectangle(
-            Point::new(0.0, baseline),
-            Size::new(bounds.width, 1.0),
-            Color::from_rgba(1.0, 1.0, 1.0, 0.25),
-        );
-        let step = bounds.width / self.values.len() as f32;
-        let bar_w = (step - 3.0).clamp(1.0, 20.0);
-        for (i, v) in self.values.iter().enumerate() {
-            let x = step * i as f32 + (step - bar_w) / 2.0;
-            match v {
-                // Unknown day: short gray tick on the baseline (not a 0 bar).
-                None => frame.fill_rectangle(
-                    Point::new(x, baseline - 3.0),
-                    Size::new(bar_w, 3.0),
-                    UNKNOWN_GRAY,
-                ),
-                Some(cost) => {
-                    let h = (bar_fraction(*cost, max) * (bounds.height - 4.0)).max(1.0);
-                    frame.fill_rectangle(Point::new(x, baseline - h), Size::new(bar_w, h), ACCENT);
-                }
-            }
-        }
-        vec![frame.into_geometry()]
-    }
-}
 
 const CELL: f32 = 11.0;
 const CELL_GAP: f32 = 3.0;
@@ -613,6 +565,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             button(text(if app.cost_busy { "Refreshing…" } else { "Refresh" }))
                 .on_press_maybe((!app.cost_busy).then_some(Message::RefreshCosts)),
             button(text("Refresh usage")).on_press_maybe((!app.busy).then_some(Message::Refresh)),
+            button(text("Share…")).on_press(Message::ShowPage(crate::state::Page::ShareStats)),
         ]
         .spacing(6),
         text(format!(
@@ -768,17 +721,28 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     // Trend: daily estimated spend bars with text labels (no hover needed).
     if !range.is_empty() {
-        let first = range
-            .first()
-            .map(|d| d.date.to_string())
-            .unwrap_or_default();
-        let last = range.last().map(|d| d.date.to_string()).unwrap_or_default();
-        let max_cost = range.iter().filter_map(|d| d.cost).fold(0.0f64, f64::max);
-        let chart: Element<Message> = Canvas::new(TrendChart {
-            values: range.iter().map(|d| d.cost).collect(),
+        let bars: Vec<crate::charts::ChartBar> = range
+            .iter()
+            .map(|d| crate::charts::ChartBar {
+                date: d.date.format("%Y-%m-%d").to_string(),
+                value: d.cost,
+                segments: Vec::new(),
+            })
+            .collect();
+        let chart: Element<Message> = Canvas::new(crate::charts::BarChart {
+            key: "spend-trend".into(),
+            bars,
+            color: ACCENT,
+            peak_cap: false,
+            hover: app
+                .chart_hover
+                .as_ref()
+                .filter(|(k, _)| k == "spend-trend")
+                .map(|(_, i)| *i),
+            fmt: crate::charts::money,
         })
         .width(Length::Fill)
-        .height(Length::Fixed(120.0))
+        .height(Length::Fixed(140.0))
         .into();
         page = page.push(
             text(format!(
@@ -788,13 +752,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .size(16),
         );
         page = page.push(chart);
-        page = page.push(row![
-            text(first).size(12),
-            horizontal_space(),
-            text(format!("max {}", money(finite(max_cost)))).size(12),
-            horizontal_space(),
-            text(last).size(12),
-        ]);
         page = page
             .push(text("Gray ticks are days with no recorded data (unknown, not $0).").size(12));
     }
@@ -954,7 +911,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         }
     }
 
-    scrollable(page.push(usage)).into()
+    scrollable(page.push(usage)).id(scroll_id()).into()
 }
 
 #[cfg(test)]

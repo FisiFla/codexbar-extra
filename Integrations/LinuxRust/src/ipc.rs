@@ -17,6 +17,8 @@ pub fn command_from_args(args: &[String]) -> serde_json::Value {
         "refresh"
     } else if has("--settings") {
         "settings"
+    } else if has("--sessions") {
+        "sessions"
     } else if has("--spending") {
         "spending"
     } else if has("--quick-view") {

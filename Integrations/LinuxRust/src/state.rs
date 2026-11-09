@@ -2,13 +2,15 @@ use crate::model::{CostEntry, Entry};
 use crate::settings::Settings;
 use crate::spend::SpendModel;
 use iced::window;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrayCommand {
     QuickView,
     Usage,
     Settings,
+    Sessions,
+    ShareStats,
     Refresh,
     Quit,
 }
@@ -36,6 +38,7 @@ pub struct Shared {
     pub updated: String,
     pub quota_used: bool,
     pub settings: Settings,
+    pub menubar_layout: crate::menubar_layout::MenuBarLayout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +46,8 @@ pub enum Page {
     QuickView,
     Usage,
     Settings,
+    Sessions,
+    ShareStats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,6 +67,7 @@ pub enum SettingsPane {
 
 pub struct App {
     pub settings: Settings,
+    pub menubar_layout: crate::menubar_layout::MenuBarLayout,
     pub entries: Vec<Entry>,
     pub prev_entries: Vec<Entry>,
     pub spending: Vec<CostEntry>,
@@ -89,6 +95,25 @@ pub struct App {
     pub cost_updated: Option<std::time::Instant>,
     pub cost_requested: Option<std::time::Instant>,
     pub show_about: bool,
+    pub sessions: Vec<crate::sessions::Session>,
+    pub sessions_error: String,
+    pub sessions_busy: bool,
+    pub sessions_loaded: bool,
+    /// Per-day model breakdowns from the same `cost` call (chart sections).
+    pub cost_payloads: Vec<crate::cli::CostPayload>,
+    /// Expanded chart sections in the popover (`<provider>:<chart>`).
+    pub expanded_charts: BTreeSet<String>,
+    /// Hovered bar: (chart key, bar index).
+    pub chart_hover: Option<(String, usize)>,
+    /// Share Stats window: dark card toggle (session only, not persisted) and last status line.
+    pub share_dark: bool,
+    pub share_status: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareAction {
+    Save,
+    CopyImage,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +121,9 @@ pub enum Message {
     Refresh,
     RefreshCosts,
     UsageLoaded(Result<Vec<Entry>, String>),
-    CostLoaded(Result<Vec<CostEntry>, String>),
+    CostLoaded(Result<(Vec<CostEntry>, Vec<crate::cli::CostPayload>), String>),
+    ToggleChart(String),
+    ChartHover { key: String, index: Option<usize> },
     CatalogLoaded(Vec<crate::cli::ProviderCatalogEntry>),
     SetProviderEnabled(String, bool),
     CredentialDraftChanged(String),
@@ -114,6 +141,7 @@ pub enum Message {
     SettingsSearchChanged(String),
     SelectProvider(String),
     SettingsChanged(Box<Settings>),
+    LayoutEdit(crate::menubar_layout::LayoutEdit),
     SaveSettings,
     SetAutostart(bool),
     AutostartResult(Result<bool, String>),
@@ -122,6 +150,17 @@ pub enum Message {
     AccountAction { provider: String, login: bool },
     OpenUrl(String),
     CopySummary,
+    RefreshSessions,
+    SessionsLoaded(Result<Vec<crate::sessions::Session>, String>),
+    OpenFolder(String),
+    CopyText(String),
+    ShareSetPeriod(i64),
+    ShareSetDark(bool),
+    ShareSave,
+    ShareCopyImage,
+    ShareCopyText,
+    ShareCaptured(ShareAction, Result<Vec<u8>, String>),
+    ShareDone(Result<String, String>),
     Quit,
     None,
 }

@@ -1,12 +1,16 @@
 mod autostart;
+mod charts;
 mod cli;
 mod deepseek;
 mod descriptors;
 mod ipc;
 mod ipc_snapshot;
+mod menubar_layout;
 mod model;
 mod notify;
+mod sessions;
 mod settings;
+mod share;
 mod shots;
 mod spend;
 mod state;
@@ -25,7 +29,7 @@ fn main() -> iced::Result {
         return Ok(());
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("CodexBar desktop for Linux\nUsage: codexbar-linux [--usage|--quick-view|--settings|--spending|--background|--snapshot[--with-spending]|--refresh|--quit|--no-tray|--cli PATH|--autostart status|enable|disable|--configure JSON]");
+        println!("CodexBar desktop for Linux\nUsage: codexbar-linux [--usage|--quick-view|--settings|--spending|--sessions|--background|--snapshot[--with-spending]|--refresh|--quit|--no-tray|--cli PATH|--autostart status|enable|disable|--configure JSON]");
         return Ok(());
     }
     // Client forwarding: if a backend is running, send IPC and exit (Qt-compatible).
@@ -46,6 +50,7 @@ fn main() -> iced::Result {
     let initial = match cmd.get("command").and_then(|v| v.as_str()) {
         Some("quick-view") => Some(Page::QuickView),
         Some("settings") => Some(Page::Settings),
+        Some("sessions") => Some(Page::Sessions),
         Some("background") => None,
         _ => Some(Page::Usage),
     };
@@ -66,13 +71,16 @@ fn main() -> iced::Result {
             if no_tray {
                 settings.show_tray = false;
             }
+            let menubar_layout = menubar_layout::load();
             let shared = SHARED.with(|s| s.clone());
             *shared.lock().unwrap() = Shared {
                 settings: settings.clone(),
+                menubar_layout: menubar_layout.clone(),
                 ..Default::default()
             };
             let app = App {
                 settings,
+                menubar_layout,
                 entries: vec![],
                 prev_entries: vec![],
                 spending: vec![],
@@ -98,6 +106,15 @@ fn main() -> iced::Result {
                 cost_updated: None,
                 cost_requested: None,
                 show_about: false,
+                sessions: vec![],
+                sessions_error: String::new(),
+                sessions_busy: false,
+                sessions_loaded: false,
+                cost_payloads: vec![],
+                expanded_charts: Default::default(),
+                chart_hover: None,
+                share_dark: true,
+                share_status: String::new(),
             };
             let cmds = vec![fetch_usage(&app), fetch_catalog(&app)];
             (app, iced::Task::batch(cmds))
@@ -123,6 +140,7 @@ fn sync_shared(app: &App) {
     s.cost_error = app.cost_error.clone();
     s.updated = app.updated.clone();
     s.settings = app.settings.clone();
+    s.menubar_layout = app.menubar_layout.clone();
     s.quota_used = app.settings.quota_display == "used";
     s.summary = model::summary(&app.entries, s.quota_used);
     *shared().lock().unwrap() = s;
@@ -150,6 +168,15 @@ fn fetch_costs(app: &App) -> iced::Task<Message> {
     )
 }
 
+fn fetch_sessions(app: &mut App) -> iced::Task<Message> {
+    app.sessions_busy = true;
+    let exe = app.settings.executable.clone();
+    iced::Task::perform(
+        async move { cli::fetch_sessions(&exe).await },
+        Message::SessionsLoaded,
+    )
+}
+
 fn fetch_catalog(app: &App) -> iced::Task<Message> {
     let exe = app.settings.executable.clone();
     iced::Task::perform(
@@ -167,18 +194,26 @@ fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
         Page::QuickView => ((420.0, 680.0), "CodexBar"),
         Page::Usage => ((880.0, 620.0), "CodexBar — Usage & Spend"),
         Page::Settings => ((880.0, 620.0), "CodexBar Settings"),
+        Page::Sessions => ((560.0, 680.0), "CodexBar — Agent Sessions"),
+        Page::ShareStats => (ui::share_view::WINDOW_SIZE, "Share AI Usage"),
     };
     let (id, task) = iced::window::open(iced::window::Settings {
         size: iced::Size::new(size.0, size.1),
+        resizable: page != Page::ShareStats,
         ..Default::default()
     });
     app.windows.insert(id, page);
     let _ = title;
     let mut tasks = vec![task.map(move |_| Message::WindowOpened(id, page))];
-    if app.settings.refresh_on_open {
+    if page == Page::Sessions {
+        tasks.push(fetch_sessions(app));
+    } else if app.settings.refresh_on_open {
         tasks.push(fetch_usage(app));
     }
-    if page == Page::Usage {
+    if page == Page::Usage
+        || page == Page::ShareStats
+        || (page == Page::QuickView && app.cost_updated.is_none())
+    {
         tasks.push(fetch_costs(app));
     }
     iced::Task::batch(tasks)
@@ -225,9 +260,12 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             sync_shared(app);
             iced::Task::none()
         }
-        Message::CostLoaded(Ok(costs)) => {
+        Message::CostLoaded(Ok((costs, payloads))) => {
             app.spending = costs.clone();
             app.spend = spend::build_from_entries(&costs);
+            // Entries carry no model breakdowns; take model ranking from the raw payloads.
+            app.spend.by_model = spend::build(&payloads).by_model;
+            app.cost_payloads = payloads;
             app.cost_busy = false;
             app.cost_error.clear();
             app.cost_updated = Some(std::time::Instant::now());
@@ -238,6 +276,24 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             app.cost_busy = false;
             app.cost_error = e;
             sync_shared(app);
+            iced::Task::none()
+        }
+        Message::ToggleChart(key) => {
+            if !app.expanded_charts.remove(&key) {
+                app.expanded_charts.insert(key);
+            }
+            app.chart_hover = None;
+            iced::Task::none()
+        }
+        Message::ChartHover { key, index } => {
+            match index {
+                Some(i) => app.chart_hover = Some((key, i)),
+                // Only the chart that owns the hover may clear it (cursor moving between charts).
+                None if app.chart_hover.as_ref().is_some_and(|(k, _)| *k == key) => {
+                    app.chart_hover = None
+                }
+                None => {}
+            }
             iced::Task::none()
         }
         Message::CatalogLoaded(c) => {
@@ -263,6 +319,8 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             TrayCommand::QuickView => open_page(app, Page::QuickView),
             TrayCommand::Usage => open_page(app, Page::Usage),
             TrayCommand::Settings => open_page(app, Page::Settings),
+            TrayCommand::Sessions => open_page(app, Page::Sessions),
+            TrayCommand::ShareStats => open_page(app, Page::ShareStats),
             TrayCommand::Refresh => {
                 app.busy = true;
                 iced::Task::batch([fetch_usage(app), fetch_costs(app)])
@@ -275,6 +333,8 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 match p.as_str() {
                     "quick-view" => Page::QuickView,
                     "settings" => Page::Settings,
+                    "sessions" => Page::Sessions,
+                    "share-stats" => Page::ShareStats,
                     _ => Page::Usage,
                 },
             ),
@@ -300,6 +360,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             IpcCommand::Quit => iced::exit(),
             IpcCommand::ReloadSettings => {
                 app.settings = settings::load();
+                app.menubar_layout = menubar_layout::load();
                 sync_shared(app);
                 iced::Task::none()
             }
@@ -320,6 +381,16 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
         }
         Message::SettingsChanged(s) => {
             app.settings = *s;
+            sync_shared(app);
+            iced::Task::none()
+        }
+        Message::LayoutEdit(edit) => {
+            // Own file, saved on every edit so the tray follows immediately.
+            menubar_layout::apply(&mut app.menubar_layout, edit);
+            match menubar_layout::save(&app.menubar_layout) {
+                Ok(()) => app.error.clear(),
+                Err(e) => app.error = e,
+            }
             sync_shared(app);
             iced::Task::none()
         }
@@ -411,6 +482,25 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             }
             iced::Task::none()
         }
+        Message::RefreshSessions => fetch_sessions(app),
+        Message::SessionsLoaded(result) => {
+            app.sessions_busy = false;
+            app.sessions_loaded = true;
+            match result {
+                Ok(rows) => {
+                    app.sessions = rows;
+                    app.sessions_error.clear();
+                }
+                // Keep the last good list on screen; the window shows the error above it.
+                Err(e) => app.sessions_error = e,
+            }
+            iced::Task::none()
+        }
+        Message::OpenFolder(dir) => {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+            iced::Task::none()
+        }
+        Message::CopyText(t) => iced::clipboard::write(t),
         Message::OpenUrl(u) => {
             let _ = std::process::Command::new("xdg-open").arg(u).spawn();
             iced::Task::none()
@@ -419,8 +509,78 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             &app.entries,
             app.settings.quota_display == "used",
         )),
+        Message::ShareSetPeriod(d) => {
+            app.spend_period_days = d;
+            iced::Task::none()
+        }
+        Message::ShareSetDark(d) => {
+            app.share_dark = d;
+            iced::Task::none()
+        }
+        Message::ShareSave => share_capture(app, state::ShareAction::Save),
+        Message::ShareCopyImage => share_capture(app, state::ShareAction::CopyImage),
+        Message::ShareCopyText => match ui::share_view::current_payload(app) {
+            Some(p) => {
+                app.share_status = "Stats copied".into();
+                iced::clipboard::write(share::text(&p))
+            }
+            None => iced::Task::none(),
+        },
+        Message::ShareCaptured(action, Err(e)) => {
+            let _ = action;
+            if std::env::var_os("CODEXBAR_SCREENSHOT_DIR").is_some() {
+                eprintln!("share: {e}");
+            }
+            app.share_status = e;
+            iced::Task::none()
+        }
+        Message::ShareCaptured(action, Ok(png)) => iced::Task::perform(
+            async move {
+                match action {
+                    state::ShareAction::Save => {
+                        share::save_png(&png).map(|p| format!("Image saved to {}", p.display()))
+                    }
+                    state::ShareAction::CopyImage => share::copy_png(png)
+                        .await
+                        .map(|_| "Image copied".to_string()),
+                }
+            },
+            Message::ShareDone,
+        ),
+        Message::ShareDone(result) => {
+            app.share_status = result.unwrap_or_else(|e| e);
+            if std::env::var_os("CODEXBAR_SCREENSHOT_DIR").is_some() {
+                eprintln!("share: {}", app.share_status);
+            }
+            iced::Task::none()
+        }
         Message::Quit => iced::exit(),
     }
+}
+
+/// Screenshots the Share Stats window and crops it to the card; the result
+/// comes back as `ShareCaptured` for saving or copying.
+pub(crate) fn share_capture(app: &mut App, action: state::ShareAction) -> iced::Task<Message> {
+    let Some((id, _)) = app.windows.iter().find(|(_, p)| **p == Page::ShareStats) else {
+        return iced::Task::none();
+    };
+    app.share_status = "Rendering image…".into();
+    iced::window::screenshot(*id).map(move |shot| {
+        Message::ShareCaptured(
+            action,
+            share::crop_to_png(
+                &shot.bytes,
+                (shot.size.width, shot.size.height),
+                shot.scale_factor,
+                [
+                    ui::share_view::PAD,
+                    ui::share_view::PAD,
+                    ui::share_view::CARD_W,
+                    ui::share_view::CARD_H,
+                ],
+            ),
+        )
+    })
 }
 
 fn view(app: &App, id: iced::window::Id) -> iced::Element<Message> {
@@ -428,6 +588,8 @@ fn view(app: &App, id: iced::window::Id) -> iced::Element<Message> {
         Some(Page::QuickView) => ui::popover::view(app),
         Some(Page::Usage) => ui::spend_view::view(app),
         Some(Page::Settings) => ui::settings_view::view(app),
+        Some(Page::Sessions) => ui::sessions_view::view(app),
+        Some(Page::ShareStats) => ui::share_view::view(app),
         None => iced::widget::text("CodexBar").into(),
     }
 }
@@ -441,7 +603,13 @@ fn subscription(app: &App) -> iced::Subscription<Message> {
     let closed = iced::window::close_events().map(Message::WindowClosed);
     let tray_sub = iced::Subscription::run(|| tray::stream(shared())).map(Message::TrayCmd);
     let ipc_sub = iced::Subscription::run(|| ipc::stream(shared())).map(Message::IpcCmd);
-    iced::Subscription::batch([tick, poll, closed, tray_sub, ipc_sub])
+    // Agent Sessions auto-refresh every 10 s, only while its window is open.
+    let sessions_poll = if app.windows.values().any(|p| *p == Page::Sessions) {
+        iced::time::every(Duration::from_secs(10)).map(|_| Message::RefreshSessions)
+    } else {
+        iced::Subscription::none()
+    };
+    iced::Subscription::batch([tick, poll, closed, tray_sub, ipc_sub, sessions_poll])
 }
 
 #[cfg(test)]

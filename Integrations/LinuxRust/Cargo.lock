@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "codexbar-linux"
-version = "0.84.0"
+version = "0.84.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

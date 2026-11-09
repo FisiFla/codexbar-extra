@@ -10,9 +10,13 @@ Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards),
 all panes, provider detail with enable/disable + API key/cookie via CLI (stdin), notifications, autostart,
 Qt-compatible argv/IPC/`linux.json`/tarball, Omarchy adapter. Verified live against the CLI on COSMIC.
 
-Open: hover chart submenus, Menu Bar layout editor (V7 tokens), Share Stats PNG, OpenAI Live window,
-Agent Sessions (`sessions --json-v2`; parser exists, unwired), `dashboard` JSON (parser exists, unwired),
-local session/tool spend scanners, quota overlay/confetti, per-pane visual polish towards the mac look.
+`linux-v0.84.1` adds: Agent Sessions window (`--sessions`, tray, popover; `sessions --json-v2`), Share Stats window
+(1200×630 card, Save PNG to Pictures, Copy image via wl-copy/xclip), Menu Bar layout editor (tokens, conditionals, presets,
+live preview; stored in `~/.config/codexbar/menubar-layout.json`, linux.json untouched), popover Cost history / Model
+breakdown chart sections and hover tooltips on all bar charts, model ranking in Spend/Share from per-day breakdowns.
+
+Open: OpenAI Live window (Admin API key), credits/utilization/burndown/storage/throughput charts (no Linux data source
+in the CLI yet), local session/tool spend scanners, quota overlay/confetti, session window focus, per-pane visual polish.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 
 ## Why the Qt app feels so far behind

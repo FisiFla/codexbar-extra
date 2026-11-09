@@ -673,7 +673,7 @@ pub fn handle_request(req: &Value, shared: &Arc<Mutex<Shared>>) -> (Value, Optio
             )
         }
         "refresh" => (json!({ "ok": true }), Some(IpcCommand::Refresh)),
-        "settings" | "usage" | "spending" | "quick-view" => (
+        "settings" | "usage" | "spending" | "quick-view" | "sessions" => (
             json!({ "ok": true }),
             Some(IpcCommand::Show(command.to_string())),
         ),

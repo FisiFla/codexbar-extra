@@ -456,7 +456,9 @@ pub async fn fetch_entries(
     )
     .await
 }
-pub async fn fetch_costs(exe: &str) -> Result<Vec<crate::model::CostEntry>, String> {
+pub async fn fetch_costs(
+    exe: &str,
+) -> Result<(Vec<crate::model::CostEntry>, Vec<CostPayload>), String> {
     let argv: Vec<String> = [
         exe,
         "cost",
@@ -471,9 +473,8 @@ pub async fn fetch_costs(exe: &str) -> Result<Vec<crate::model::CostEntry>, Stri
     .map(|s| s.to_string())
     .collect();
     let stdout = run_cli_read(&argv).await?;
-    Ok(crate::model::derive_costs(
-        &parse_cost(&stdout).map_err(|e| e.to_string())?,
-    ))
+    let payloads = parse_cost(&stdout).map_err(|e| e.to_string())?;
+    Ok((crate::model::derive_costs(&payloads), payloads))
 }
 
 // --- dashboard / sessions ---------------------------------------------
@@ -488,7 +489,7 @@ pub fn sessions_argv(exe: &str) -> Vec<String> {
 pub fn parse_dashboard(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
     serde_json::from_slice(bytes)
 }
-pub fn parse_sessions(bytes: &[u8]) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+pub fn parse_sessions(bytes: &[u8]) -> Result<Vec<crate::sessions::Session>, serde_json::Error> {
     serde_json::from_slice(bytes)
 }
 
@@ -499,7 +500,7 @@ pub async fn fetch_dashboard(exe: &str) -> Result<serde_json::Value, String> {
 }
 
 /// `codexbar sessions --json-v2` — live local agent sessions.
-pub async fn fetch_sessions(exe: &str) -> Result<Vec<serde_json::Value>, String> {
+pub async fn fetch_sessions(exe: &str) -> Result<Vec<crate::sessions::Session>, String> {
     let stdout = run_cli_read(&sessions_argv(exe)).await?;
     parse_sessions(&stdout).map_err(|e| e.to_string())
 }
@@ -742,7 +743,7 @@ mod tests {
         assert_eq!(dash["providers"][0]["id"], "codex");
         assert!(parse_sessions(b"[]").unwrap().is_empty());
         let one = parse_sessions(br#"[{"provider":"codex"}]"#).unwrap();
-        assert_eq!(one[0]["provider"], "codex");
+        assert_eq!(one[0].provider, "codex");
     }
 
     #[tokio::test]

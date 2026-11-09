@@ -176,13 +176,20 @@ fn format_credits(v: f64) -> String {
     }
 }
 
+pub fn scroll_id() -> scrollable::Id {
+    scrollable::Id::new("quick-view-body")
+}
+
 pub fn view(app: &App) -> Element<Message> {
     let body = body(app);
     column![
         header(app),
         switcher(app),
         horizontal_rule(1),
-        scrollable(body).width(Length::Fill).height(Length::Fill),
+        scrollable(body)
+            .id(scroll_id())
+            .width(Length::Fill)
+            .height(Length::Fill),
         horizontal_rule(1),
         footer(),
     ]
@@ -533,6 +540,7 @@ fn footer() -> Element<'static, Message> {
     container(
         column![
             action("Usage & Spend…", Message::ShowPage(Page::Usage)),
+            action("Agent Sessions…", Message::ShowPage(Page::Sessions)),
             action("Settings…", Message::ShowPage(Page::Settings)),
             about,
             action("Quit", Message::Quit),
@@ -639,6 +647,7 @@ fn provider_body<'a>(
     // Cost (local history)
     if s.show_costs && (cost.is_some() || app.cost_busy || !app.cost_error.is_empty()) {
         col = col.push(cost_section(app, cost));
+        col = col.push(chart_sections(app, &entry.provider));
     }
     // Provider detail sections
     for section in &entry.details {
@@ -801,6 +810,123 @@ fn cost_section(app: &App, cost: Option<&CostEntry>) -> Element<'static, Message
         }
     }
     sec.into()
+}
+
+/// Expandable chart sections (mac hover submenus): cost history and model breakdown, built
+/// only from the per-day `cost` payload. Hidden when the provider has no daily data.
+fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
+    let mut col = Column::new().spacing(6).width(Length::Fill);
+    let Some(payload) = app
+        .cost_payloads
+        .iter()
+        .find(|p| p.provider == provider && p.error.is_none() && !p.daily.is_empty())
+    else {
+        return col.into();
+    };
+    let accent = rgb(accent_rgb(provider));
+    let hover_for = |key: &str| {
+        app.chart_hover
+            .as_ref()
+            .filter(|(k, _)| k == key)
+            .map(|(_, i)| *i)
+    };
+    let header = |key: String, title: &'static str, open: bool| {
+        button(
+            row![
+                text(title).size(14).font(semibold()).width(Length::Fill),
+                text(if open { "Hide" } else { "Show" })
+                    .size(12)
+                    .color(muted()),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::ToggleChart(key))
+        .style(|theme: &Theme, status: button::Status| {
+            let base = button::text(theme, status);
+            button::Style {
+                border: Border::default().rounded(6.0),
+                ..base
+            }
+        })
+        .padding([4, 0])
+        .width(Length::Fill)
+    };
+
+    let cost_key = format!("{provider}:cost");
+    let cost_open = app.expanded_charts.contains(&cost_key);
+    col = col.push(horizontal_rule(1));
+    col = col.push(header(cost_key.clone(), "Cost history", cost_open));
+    if cost_open {
+        let bars = crate::charts::cost_bars(&payload.daily);
+        let total: f64 = payload.daily.iter().map(|d| d.total_cost).sum();
+        col = col.push(chart_canvas(crate::charts::BarChart {
+            hover: hover_for(&cost_key),
+            key: cost_key,
+            bars,
+            color: accent,
+            peak_cap: true,
+            fmt: crate::charts::money,
+        }));
+        col = col.push(
+            text(format!(
+                "Est. total (30 days): {}",
+                crate::charts::money(total)
+            ))
+            .size(12)
+            .color(muted()),
+        );
+        col = col.push(
+            text(provenance_label(
+                payload.provenance.as_deref().unwrap_or("unknown"),
+            ))
+            .size(11)
+            .color(muted()),
+        );
+    }
+
+    let (bars, legend) = crate::charts::model_bars(&payload.daily, 5);
+    if !bars.is_empty() {
+        let key = format!("{provider}:models");
+        let open = app.expanded_charts.contains(&key);
+        col = col.push(horizontal_rule(1));
+        col = col.push(header(key.clone(), "Model breakdown", open));
+        if open {
+            col = col.push(chart_canvas(crate::charts::BarChart {
+                hover: hover_for(&key),
+                key,
+                bars,
+                color: accent,
+                peak_cap: false,
+                fmt: crate::charts::money,
+            }));
+            for m in legend {
+                let swatch = crate::charts::segment_color(m.color_index);
+                col = col.push(
+                    row![
+                        container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0))).style(
+                            move |_: &Theme| container::Style {
+                                background: Some(Background::Color(swatch)),
+                                border: Border::default().rounded(2.0),
+                                ..Default::default()
+                            }
+                        ),
+                        text(m.name.clone()).size(12).width(Length::Fill),
+                        text(crate::charts::money(m.cost)).size(12).color(muted()),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+    }
+    col.into()
+}
+
+fn chart_canvas(chart: crate::charts::BarChart) -> Element<'static, Message> {
+    iced::widget::Canvas::new(chart)
+        .width(Length::Fill)
+        .height(Length::Fixed(150.0))
+        .into()
 }
 
 #[cfg(test)]

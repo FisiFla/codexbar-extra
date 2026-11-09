@@ -664,67 +664,70 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
         })
         .step(1u32)
     };
-    column![section(
-        "Tray / bar",
-        column![
-            labeled(
-                "Tray style",
-                radio_group(
-                    &[("Meters", "meters"), ("Icon", "icon")],
-                    &s.tray_style,
-                    s.clone(),
-                    |st, v| st.tray_style = v.to_string(),
+    column![
+        crate::ui::menubar_editor::view(app),
+        section(
+            "Tray / bar",
+            column![
+                labeled(
+                    "Tray style",
+                    radio_group(
+                        &[("Meters", "meters"), ("Icon", "icon")],
+                        &s.tray_style,
+                        s.clone(),
+                        |st, v| st.tray_style = v.to_string(),
+                    ),
                 ),
-            ),
-            check("Tray icon", s.show_tray, s.clone(), |st, v| st.show_tray =
-                v),
-            check(
-                "Use compact Quick View from the tray",
-                s.compact_quick_view,
-                s.clone(),
-                |st, v| st.compact_quick_view = v
-            ),
-            check(
-                "Highlight low quota (warning colors)",
-                s.warning_colors,
-                s.clone(),
-                |st, v| st.warning_colors = v
-            ),
-            check(
-                "Show session, weekly and pace in the bar",
-                s.show_bar_detail,
-                s.clone(),
-                |st, v| st.show_bar_detail = v
-            ),
-            check(
-                "Show per-model caps in the bar",
-                s.show_scoped_caps,
-                s.clone(),
-                |st, v| st.show_scoped_caps = v
-            ),
-            labeled(
-                "Providers in the bar",
-                row![
-                    container(bar_slider).width(Length::Fixed(220.0)),
-                    text(if s.bar_providers == 0 {
-                        "—".to_string()
-                    } else {
-                        s.bar_providers.to_string()
-                    }),
-                ]
-                .spacing(8)
-                .into(),
-            ),
-            check(
-                "Follow Omarchy theme colors",
-                s.follow_omarchy_theme,
-                s.clone(),
-                |st, v| st.follow_omarchy_theme = v
-            ),
-        ]
-        .spacing(8)
-        .into(),
-    ),]
+                check("Tray icon", s.show_tray, s.clone(), |st, v| st.show_tray =
+                    v),
+                check(
+                    "Use compact Quick View from the tray",
+                    s.compact_quick_view,
+                    s.clone(),
+                    |st, v| st.compact_quick_view = v
+                ),
+                check(
+                    "Highlight low quota (warning colors)",
+                    s.warning_colors,
+                    s.clone(),
+                    |st, v| st.warning_colors = v
+                ),
+                check(
+                    "Show session, weekly and pace in the bar",
+                    s.show_bar_detail,
+                    s.clone(),
+                    |st, v| st.show_bar_detail = v
+                ),
+                check(
+                    "Show per-model caps in the bar",
+                    s.show_scoped_caps,
+                    s.clone(),
+                    |st, v| st.show_scoped_caps = v
+                ),
+                labeled(
+                    "Providers in the bar",
+                    row![
+                        container(bar_slider).width(Length::Fixed(220.0)),
+                        text(if s.bar_providers == 0 {
+                            "—".to_string()
+                        } else {
+                            s.bar_providers.to_string()
+                        }),
+                    ]
+                    .spacing(8)
+                    .into(),
+                ),
+                check(
+                    "Follow Omarchy theme colors",
+                    s.follow_omarchy_theme,
+                    s.clone(),
+                    |st, v| st.follow_omarchy_theme = v
+                ),
+            ]
+            .spacing(8)
+            .into(),
+        ),
+    ]
     .spacing(16)
     .into()
 }

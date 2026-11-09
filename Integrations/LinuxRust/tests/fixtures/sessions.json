@@ -1,0 +1,8 @@
+[
+  {"startedAt":"2026-11-09T10:00:00Z","pid":4242,"state":"active","lastActivityAt":"2026-11-09T11:59:00Z","source":"cli","provider":"claude","projectName":"demo_app","id":"c-new","transcriptPath":"/home/user/.claude/projects/-home-user-demo-app/c-new.jsonl","host":"devbox","cwd":"/home/user/code/demo_app"},
+  {"startedAt":"2026-11-09T09:00:00Z","pid":4100,"state":"active","lastActivityAt":"2026-11-09T11:30:00Z","source":"ide","provider":"claude","projectName":"older","id":"c-old","transcriptPath":"/home/user/.claude/projects/x/c-old.jsonl","host":"devbox","cwd":"/home/user/code/older"},
+  {"startedAt":"2026-11-09T08:00:00Z","pid":5001,"state":"active","lastActivityAt":"2026-11-09T11:00:00Z","source":"desktopApp","provider":"codex","projectName":"api","id":"x-1","transcriptPath":"/home/user/.codex/sessions/2026/11/09/rollout-x1.jsonl","host":"devbox","cwd":"/home/user/code/api"},
+  {"startedAt":"2026-11-08T08:00:00Z","state":"idle","lastActivityAt":"2026-11-08T20:00:00Z","source":"cli","provider":"claude","id":"idle-1","host":"devbox","cwd":"/home/user/code/notes/"},
+  {"startedAt":"2026-11-08T08:00:00Z","state":"idle","lastActivityAt":"2026-11-08T21:00:00Z","source":"cli","provider":"pi","sessionName":"me@example.com review","id":"mail","host":"devbox"},
+  {"id":"odd","state":"hibernating","futureField":{"a":1},"provider":"codex"}
+]
