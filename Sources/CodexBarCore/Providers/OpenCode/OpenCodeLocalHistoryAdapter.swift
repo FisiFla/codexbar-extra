@@ -115,7 +115,7 @@ enum OpenCodeLocalHistoryAdapter {
 
         /// Upstream rule, kept for legacy `message` rows: their eligibility drives an OpenAI-shaped
         /// parts lookup, so widening it here would drag non-OpenAI rows through machinery built for them.
-        // Provider-specific by design: legacy `message` rows are admitted only when OpenAI-backed, matching upstream.
+        /// Provider-specific by design: legacy `message` rows are admitted only when OpenAI-backed, matching upstream.
         var isAssistant: Bool {
             self.providerID == "openai" && self.role == "assistant"
         }

@@ -1,4 +1,4 @@
-import CodexBarCore
+import CodexBarCore // swiftlint:disable file_length
 import Foundation
 
 /// Group copies share a memo; its inputs are immutable and cache state does not affect equality.
