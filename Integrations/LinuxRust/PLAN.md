@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, latest `linux-v0.84.5`)
+## Status (2026-11-09, latest `linux-v0.84.6`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -38,7 +38,12 @@ scroller styles, and session Focus on GNOME via the "Window Calls" extension.
 (`cosmic-focus/`, uses `cosmic-protocols`; talks to the MIT app only via argv/stdout, shipped in the tarball with its
 license under `licenses/`). Windows are matched by app_id from the session's process ancestry, then by project title.
 
-Open: nothing from the parity matrix. Known limits: Focus heuristics on COSMIC (no pid in the protocol), GNOME Focus needs
+`linux-v0.84.6` fixes: on hybrid-GPU machines the app now renders on the compositor's GPU (linux-dmabuf v4 default
+feedback main device → `WGPU_POWER_PREF`, `src/gpu.rs`). iced's default low-power adapter put it on the iGPU while the
+compositor ran on the dGPU, and the cross-GPU copy showed stray lines while moving, resizing and scrolling.
+
+Open: user review (2026-11-09) says the screens still look different from the Mac app and graphs are missing; needs a
+screen-by-screen audit against the Swift views. Known limits: Focus heuristics on COSMIC (no pid in the protocol), GNOME Focus needs
 the Window Calls extension, overlays on GNOME/X11 use always-on-top windows.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 

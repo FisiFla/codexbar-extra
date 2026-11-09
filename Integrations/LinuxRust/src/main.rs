@@ -5,6 +5,7 @@ mod deepseek;
 mod descriptors;
 mod extras;
 mod focus;
+mod gpu;
 mod history;
 mod ipc;
 mod ipc_snapshot;
@@ -56,6 +57,8 @@ fn main() -> iced::Result {
         eprintln!("CodexBar desktop is not running");
         std::process::exit(1);
     }
+    // Before iced (and any thread) starts: draw on the compositor's GPU on hybrid machines.
+    gpu::select_compositor_gpu();
 
     let initial = match cmd.get("command").and_then(|v| v.as_str()) {
         Some("quick-view") => Some(Page::QuickView),
