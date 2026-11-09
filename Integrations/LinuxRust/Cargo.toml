@@ -1,6 +1,6 @@
 [package]
 name = "codexbar-linux"
-version = "0.84.3"
+version = "0.84.4"
 edition = "2021"
 license = "MIT"
 description = "CodexBar desktop for Linux (Rust) - tray, popover, spend dashboard, settings"
@@ -16,6 +16,9 @@ iced = { version = "0.13", features = ["tokio", "svg", "image", "canvas"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "net", "io-util", "fs", "sync"] }
 ksni = "0.2"
 tiny-skia = "0.11"
+smithay-client-toolkit = { version = "0.19.2", default-features = false }
+wayland-client = "0.31"
+cosmic-text = "0.12.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 notify-rust = "4"
 dirs = "6"

@@ -186,7 +186,7 @@ pub fn view(app: &App) -> Element<Message> {
         header(app),
         switcher(app),
         horizontal_rule(1),
-        scrollable(body)
+        crate::ui::style::scrollable(body)
             .id(scroll_id())
             .width(Length::Fill)
             .height(Length::Fill),
@@ -385,8 +385,9 @@ fn switcher(app: &App) -> Element<'_, Message> {
         );
     }
     scrollable(tabs)
+        .style(crate::ui::style::scroll_style)
         .direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new(),
+            crate::ui::style::scrollbar(),
         ))
         .width(Length::Fill)
         .height(Length::Fixed(69.0))

@@ -8,6 +8,7 @@ mod focus;
 mod history;
 mod ipc;
 mod ipc_snapshot;
+mod layer_overlay;
 mod menubar_layout;
 mod model;
 mod notify;
@@ -154,6 +155,7 @@ fn main() -> iced::Result {
                 focus_status: String::new(),
                 stay_awake: stay_awake::StayAwake::new(),
             };
+            layer_overlay::dev_test();
             let cmds = vec![fetch_usage(&app), fetch_catalog(&app), scan_storage()];
             (app, iced::Task::batch(cmds))
         })
@@ -327,7 +329,14 @@ fn open_overlay(app: &mut App, page: Page, size: (f32, f32)) -> iced::Task<Messa
     iced::Task::batch(tasks)
 }
 
+/// Layer-shell overlays unless a screenshot capture or forced overlay needs the iced windows
+/// (layer surfaces cannot be captured) or the compositor lacks `zwlr_layer_shell_v1`.
+fn use_layer() -> bool {
+    !shots::capturing() && !overlay::forced() && layer_overlay::available()
+}
+
 fn close_overlays(app: &mut App) -> iced::Task<Message> {
+    layer_overlay::dismiss_all();
     app.alert = None;
     app.confetti = None;
     let ids: Vec<_> = app
@@ -340,6 +349,9 @@ fn close_overlays(app: &mut App) -> iced::Task<Message> {
 }
 
 fn show_alert(app: &mut App, alert: overlay::Alert) -> iced::Task<Message> {
+    if use_layer() && layer_overlay::show_alert(&alert) {
+        return iced::Task::none();
+    }
     app.alert = Some(ui::overlay_view::AlertState {
         alert,
         started: std::time::Instant::now(),
@@ -348,6 +360,9 @@ fn show_alert(app: &mut App, alert: overlay::Alert) -> iced::Task<Message> {
 }
 
 fn show_confetti(app: &mut App, provider: String) -> iced::Task<Message> {
+    if use_layer() && layer_overlay::show_confetti(&provider) {
+        return iced::Task::none();
+    }
     app.confetti = Some(ui::overlay_view::ConfettiState {
         provider,
         started: std::time::Instant::now(),

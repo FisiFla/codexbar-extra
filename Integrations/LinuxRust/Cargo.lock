@@ -584,9 +584,10 @@ dependencies = [
 
 [[package]]
 name = "codexbar-linux"
-version = "0.84.3"
+version = "0.84.4"
 dependencies = [
  "chrono",
+ "cosmic-text",
  "dirs 6.0.0",
  "iced",
  "ksni",
@@ -595,9 +596,11 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "smithay-client-toolkit 0.19.2",
  "tiny-skia",
  "tokio",
  "ureq",
+ "wayland-client",
 ]
 
 [[package]]

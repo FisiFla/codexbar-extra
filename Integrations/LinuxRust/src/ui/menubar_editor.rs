@@ -10,7 +10,8 @@ use crate::menubar_layout::{
 };
 use crate::state::{App, Message};
 use crate::tray::{self, TrayIcon, TrayParams};
-use iced::widget::{column, container, image, pick_list, row, text};
+use crate::ui::style::pick_list;
+use iced::widget::{column, container, image, row, text};
 use iced::{Color, Element, Length};
 use std::fmt;
 

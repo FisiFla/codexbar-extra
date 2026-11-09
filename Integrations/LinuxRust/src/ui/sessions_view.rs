@@ -5,7 +5,8 @@ use crate::descriptors;
 use crate::sessions::{self, Session};
 use crate::state::{App, Message};
 use crate::ui::popover::accent_rgb;
-use iced::widget::{column, container, horizontal_space, row, scrollable, text, Column, Space};
+use crate::ui::style::scrollable;
+use iced::widget::{column, container, horizontal_space, row, text, Column, Space};
 use iced::{Background, Border, Color, Element, Font, Length, Theme};
 
 fn muted() -> Color {

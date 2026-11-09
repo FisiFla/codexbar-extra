@@ -641,7 +641,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     if !app.settings.show_costs {
         page = page.push(text("Enable local spending in Settings."));
-        return scrollable(page.push(usage)).into();
+        return crate::ui::style::scrollable(page.push(usage)).into();
     }
 
     let range = daily_range(&app.spend.days, period, today);
@@ -690,7 +690,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
         } else {
             "No local cost history yet."
         }));
-        return scrollable(page.push(usage)).into();
+        return crate::ui::style::scrollable(page.push(usage)).into();
     }
 
     // Summary cards.
@@ -919,7 +919,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
         }
     }
 
-    scrollable(page.push(usage)).id(scroll_id()).into()
+    crate::ui::style::scrollable(page.push(usage))
+        .id(scroll_id())
+        .into()
 }
 
 #[cfg(test)]

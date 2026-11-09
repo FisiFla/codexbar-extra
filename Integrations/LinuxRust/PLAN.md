@@ -3,7 +3,7 @@
 Status: approved direction (Rust from scratch, macOS app untouched).
 Location: `Integrations/LinuxRust/` (Qt app in `Integrations/Linux/` stays until parity, then packaging swaps).
 
-## Status (2026-11-09, latest `linux-v0.84.3`)
+## Status (2026-11-09, latest `linux-v0.84.4`)
 
 Shipped: tray (SNI meters/icon), Quick View popover (switcher, provider cards, pace, cost, DeepSeek clock),
 Usage & Spend (totals, trend, heatmap, provider/model/ledger tabs, usage cards), Settings shell with search and
@@ -30,8 +30,12 @@ is live, never blocks user suspend or lid), session Focus on Hyprland / Sway / n
 drops per day, recorded locally because the mac source is the OpenAI web dashboard; shown only when the CLI reports a
 balance), and a mac-style theme pass (accent #0A84FF, segmented controls, rounded cards/source-list/fields, thin meters).
 
-Open (honest gaps): layer-shell overlays (plain always-on-top windows; some compositors ignore the hint), Focus on
-GNOME/COSMIC Wayland (no public API), checkbox/radio/slider/scrollbar still iced defaults with the accent colour.
+`linux-v0.84.4` adds: quota alert / confetti as real `zwlr_layer_shell_v1` overlays (COSMIC, KDE, wlroots; click-through
+confetti, click-to-dismiss alert; GNOME/X11 fall back to always-on-top windows), mac-style checkbox/radio/slider/pick-list/
+scroller styles, and session Focus on GNOME via the "Window Calls" extension.
+
+Open (honest gaps): Focus on COSMIC needs `zcosmic_toplevel_manager_v1`, whose Rust bindings (`cosmic-protocols`) are
+GPL-3.0-only — not linked into this MIT binary pending a licensing decision.
 Dev aid: `CODEXBAR_SCREENSHOT_DIR=<dir>` captures every window/pane/tab as PNG and quits.
 
 ## Why the Qt app feels so far behind

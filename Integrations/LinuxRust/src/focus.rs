@@ -3,10 +3,11 @@
 //! The session pid is walked up through `/proc/<pid>/stat` parents; each ancestor is tried as
 //! the owner of a window, nearest first. Backends: Hyprland (`hyprctl`), Sway (`swaymsg`) and
 //! niri (`niri msg`), each detected by its env var; KWin scripting over D-Bus on KDE Wayland;
-//! `xdotool` / `wmctrl` on X11 (and XWayland). Other Wayland compositors expose no portable
-//! focus API, so that case is a no-op with an explanatory status. Never synthesizes input:
-//! activation is a window-manager request (`focuswindow` / `focus` / `focus-window` /
-//! `_NET_ACTIVE_WINDOW` / KWin `activeWindow`).
+//! the "Window Calls" extension's D-Bus API on GNOME Wayland (`gdbus`); `xdotool` / `wmctrl`
+//! on X11 (and XWayland). Other Wayland compositors expose no portable focus API, so that
+//! case is a no-op with an explanatory status. Never synthesizes input: activation is a
+//! window-manager request (`focuswindow` / `focus` / `focus-window` / `_NET_ACTIVE_WINDOW` /
+//! KWin `activeWindow` / Window Calls `Activate`).
 
 use std::path::Path;
 use std::process::Command;
@@ -44,6 +45,7 @@ pub enum Backend {
     Sway,
     Niri,
     KWin,
+    Gnome,
     X11,
     Unsupported,
 }
@@ -57,10 +59,12 @@ pub struct CompositorEnv {
     pub niri: bool,
 }
 
-/// A compositor-specific socket wins; KDE on Wayland -> KWin scripting; any session with an X
-/// display -> xdotool/wmctrl; otherwise nothing portable exists.
+/// A compositor-specific socket wins; KDE on Wayland -> KWin scripting; GNOME on Wayland ->
+/// Window Calls extension; any session with an X display -> xdotool/wmctrl; otherwise nothing
+/// portable exists.
 pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool, comp: CompositorEnv) -> Backend {
     let kde = desktop.split(':').any(|d| d.eq_ignore_ascii_case("kde"));
+    let gnome = desktop.split(':').any(|d| d.eq_ignore_ascii_case("gnome"));
     if comp.hyprland {
         Backend::Hyprland
     } else if comp.sway {
@@ -69,6 +73,8 @@ pub fn pick_backend(desktop: &str, wayland: bool, x_display: bool, comp: Composi
         Backend::Niri
     } else if kde && wayland {
         Backend::KWin
+    } else if gnome && wayland {
+        Backend::Gnome
     } else if x_display {
         Backend::X11
     } else {
@@ -249,6 +255,89 @@ fn focus_x11(pids: &[i64]) -> Result<String, String> {
     Err("No window found for this session's terminal.".into())
 }
 
+/// Decode the string out of `gdbus call` output for a single-string reply, `('...',)`. GVariant
+/// quotes with `'` (or `"` when the text holds a `'` but no `"`) and escapes `\`, the quote
+/// and control characters (`\n`, `\uXXXX`, ...).
+pub fn parse_gdbus_string(out: &str) -> Option<String> {
+    let rest = out.trim().strip_prefix('(')?;
+    let mut chars = rest.chars();
+    let quote = chars.next().filter(|c| *c == '\'' || *c == '"')?;
+    let mut text = String::new();
+    loop {
+        let c = chars.next()?;
+        if c == quote {
+            break;
+        }
+        if c != '\\' {
+            text.push(c);
+            continue;
+        }
+        match chars.next()? {
+            'n' => text.push('\n'),
+            't' => text.push('\t'),
+            'r' => text.push('\r'),
+            'a' => text.push('\x07'),
+            'b' => text.push('\x08'),
+            'f' => text.push('\x0c'),
+            'v' => text.push('\x0b'),
+            n @ ('u' | 'U') => {
+                let len = if n == 'u' { 4 } else { 8 };
+                let hex: String = chars.by_ref().take(len).collect();
+                text.push(
+                    u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .and_then(char::from_u32)?,
+                );
+            }
+            other => text.push(other),
+        }
+    }
+    // Only the tuple's trailing `,)` may follow the string.
+    chars.as_str().trim().starts_with(',').then_some(text)
+}
+
+/// Id of the window in a Window Calls `List` JSON array owned by the nearest of `pids`.
+pub fn gnome_window(json: &str, pids: &[i64]) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let windows = v.as_array()?;
+    pids.iter().find_map(|p| {
+        windows.iter().find_map(|w| {
+            (w.get("pid")?.as_i64()? == *p)
+                .then(|| u32::try_from(w.get("id")?.as_u64()?).ok())
+                .flatten()
+        })
+    })
+}
+
+fn gdbus_windows(method: &str, arg: Option<&str>) -> Option<String> {
+    let method = format!("org.gnome.Shell.Extensions.Windows.{method}");
+    let mut args = vec![
+        "call",
+        "--session",
+        "--dest",
+        "org.gnome.Shell",
+        "--object-path",
+        "/org/gnome/Shell/Extensions/Windows",
+        "--method",
+        &method,
+    ];
+    args.extend(arg);
+    run("gdbus", &args)
+}
+
+fn focus_gnome(pids: &[i64]) -> Result<String, String> {
+    const NEEDS_EXT: &str = "GNOME needs the Window Calls extension to focus windows.";
+    if !have("gdbus") {
+        return Err("gdbus was not found; it is needed to focus terminals on GNOME.".into());
+    }
+    let listing = gdbus_windows("List", None).ok_or(NEEDS_EXT)?;
+    let json = parse_gdbus_string(&listing).ok_or(NEEDS_EXT)?;
+    let id = gnome_window(&json, pids).ok_or("No window found for this session's terminal.")?;
+    gdbus_windows("Activate", Some(&id.to_string()))
+        .map(|_| "Focused the terminal window.".to_string())
+        .ok_or_else(|| "The Window Calls extension could not activate the window.".to_string())
+}
+
 fn focus_kwin(pids: &[i64]) -> Result<String, String> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
@@ -340,12 +429,17 @@ pub fn focus_session(pid: i64) -> Result<String, String> {
         Backend::Sway => focus_sway(&chain),
         Backend::Niri => focus_niri(&chain),
         Backend::KWin => focus_kwin(&chain),
+        Backend::Gnome => focus_gnome(&chain),
         Backend::X11 => focus_x11(&chain),
-        Backend::Unsupported => Err(
+        Backend::Unsupported => Err(if desktop.to_ascii_lowercase().contains("cosmic") {
+            "Focusing windows on COSMIC needs the COSMIC toplevel protocol, which is not \
+             supported yet. Use Open folder, or switch to the terminal manually."
+        } else {
             "Focusing windows is not supported on this compositor (supported: Hyprland, Sway, \
-             niri, KDE, X11). Use Open folder, or switch to the terminal manually."
-                .into(),
-        ),
+             niri, KDE, GNOME with Window Calls, X11). Use Open folder, or switch to the \
+             terminal manually."
+        }
+        .into()),
     }
 }
 
@@ -414,7 +508,11 @@ mod tests {
     fn backend_selection() {
         let none = CompositorEnv::default();
         assert_eq!(pick_backend("KDE", true, true, none), Backend::KWin);
-        assert_eq!(pick_backend("ubuntu:GNOME", true, true, none), Backend::X11);
+        assert_eq!(
+            pick_backend("ubuntu:GNOME", true, true, none),
+            Backend::Gnome
+        );
+        assert_eq!(pick_backend("GNOME", false, true, none), Backend::X11);
         assert_eq!(pick_backend("X-Cinnamon", false, true, none), Backend::X11);
         assert_eq!(
             pick_backend("COSMIC", true, false, none),
@@ -493,5 +591,41 @@ mod tests {
         );
         assert_eq!(wmctrl_window(l, &[7]), None);
         assert_eq!(wmctrl_window("junk line", &[7]), None);
+    }
+
+    #[test]
+    fn gdbus_output_is_unwrapped_and_unescaped() {
+        let out = "('[{\"id\":1,\"title\":\"it\\'s\\\\ a\\n\"}]',)\n";
+        assert_eq!(
+            parse_gdbus_string(out).as_deref(),
+            Some("[{\"id\":1,\"title\":\"it's\\ a\n\"}]")
+        );
+        assert_eq!(parse_gdbus_string("('[]',)").as_deref(), Some("[]"));
+        assert_eq!(parse_gdbus_string("(\"it's\",)").as_deref(), Some("it's"));
+        assert_eq!(
+            parse_gdbus_string("('caf\\u00e9',)").as_deref(),
+            Some("café")
+        );
+        assert_eq!(parse_gdbus_string("('unterminated"), None);
+        assert_eq!(parse_gdbus_string("()"), None);
+        assert_eq!(parse_gdbus_string("garbage"), None);
+    }
+
+    #[test]
+    fn gnome_windows_match_nearest_ancestor() {
+        let j = r#"[{"id":11,"pid":100,"wm_class":"foot","title":"a","focus":false},
+                    {"id":22,"pid":200,"wm_class":"x","title":"b","focus":true},
+                    {"id":-1,"pid":300}]"#;
+        assert_eq!(gnome_window(j, &[300, 200, 100]), Some(22));
+        assert_eq!(gnome_window(j, &[100]), Some(11));
+        assert_eq!(gnome_window(j, &[9]), None);
+        assert_eq!(gnome_window("nope", &[100]), None);
+    }
+
+    #[test]
+    fn gnome_end_to_end_from_gdbus_text() {
+        let out = r#"('[{"id":5,"pid":77,"title":"vim \'x\'"}]',)"#;
+        let json = parse_gdbus_string(out).unwrap();
+        assert_eq!(gnome_window(&json, &[77]), Some(5));
     }
 }

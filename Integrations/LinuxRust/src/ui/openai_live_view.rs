@@ -7,8 +7,8 @@ use crate::openai_live::{self as live, LiveError, Snapshot};
 use crate::share::compact_count;
 use crate::state::{App, Message};
 use iced::widget::{
-    button, column, container, horizontal_rule, horizontal_space, pick_list, row, scrollable, text,
-    Canvas, Column, Row, Space,
+    button, column, container, horizontal_rule, horizontal_space, row, text, Canvas, Column, Row,
+    Space,
 };
 use iced::{Background, Border, Color, Element, Font, Length, Theme};
 
@@ -50,7 +50,7 @@ fn header(app: &App, names: &[String]) -> Element<'static, Message> {
         .filter
         .clone()
         .unwrap_or_else(|| live::ALL_MODELS.to_string());
-    let picker = pick_list(options, Some(selected), |s| {
+    let picker = crate::ui::style::pick_list(options, Some(selected), |s| {
         Message::OpenAiLiveFilter((s != live::ALL_MODELS).then_some(s))
     })
     .width(Length::Fixed(240.0));
@@ -356,7 +356,7 @@ pub fn view(app: &App) -> Element<Message> {
         }
     }
     container(
-        scrollable(body.padding(iced::Padding {
+        crate::ui::style::scrollable(body.padding(iced::Padding {
             top: 0.0,
             right: 14.0,
             bottom: 0.0,

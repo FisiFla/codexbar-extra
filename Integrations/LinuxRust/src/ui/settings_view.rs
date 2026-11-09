@@ -8,7 +8,9 @@
 
 use crate::settings::Settings;
 use crate::state::{App, Message, Page, SettingsPane};
-use iced::widget::{checkbox, column, container, radio, row, scrollable, slider, text};
+use crate::ui::style::{checkbox, radio, scrollable};
+use iced::widget::slider;
+use iced::widget::{column, container, row, text};
 use iced::{Color, Element, Length};
 use std::path::PathBuf;
 
@@ -377,6 +379,7 @@ fn general_pane(app: &App) -> Element<'_, Message> {
             Message::SettingsChanged(Box::new(st))
         })
         .step(60u32)
+        .style(crate::ui::style::slider)
     };
     column![
         section(
@@ -456,6 +459,7 @@ fn providers_pane(app: &App) -> Element<'_, Message> {
             Message::SettingsChanged(Box::new(st))
         })
         .step(1u32)
+        .style(crate::ui::style::slider)
     };
     let mut col = column![section(
         "Provider order",
@@ -693,6 +697,7 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
             Message::SettingsChanged(Box::new(st))
         })
         .step(1u32)
+        .style(crate::ui::style::slider)
     };
     column![
         crate::ui::menubar_editor::view(app),
@@ -788,6 +793,7 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
             Message::SettingsChanged(Box::new(st))
         })
         .step(1u32)
+        .style(crate::ui::style::slider)
     };
     column![
         section(
