@@ -7,6 +7,7 @@ mod extras;
 mod focus;
 mod gpu;
 mod history;
+mod icons;
 mod ipc;
 mod ipc_snapshot;
 mod layer_overlay;
@@ -376,6 +377,13 @@ fn show_confetti(app: &mut App, provider: String) -> iced::Task<Message> {
 fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
     if matches!(page, Page::QuotaAlert | Page::Confetti) {
         return iced::Task::none();
+    }
+    // As on macOS, Usage & Spend is a pane of the Settings window, not a window of its own.
+    if page == Page::Usage {
+        app.settings_pane = SettingsPane::Spend;
+        app.selected_provider = None;
+        let open = open_page(app, Page::Settings);
+        return iced::Task::batch([open, fetch_costs(app), fetch_scan(app)]);
     }
     if let Some((id, _)) = app.windows.iter().find(|(_, p)| **p == page) {
         let id = *id;
@@ -756,6 +764,13 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
         Message::OpenSettingsPane(p) => {
             app.settings_pane = p;
             app.selected_provider = None;
+            if p == SettingsPane::Spend {
+                let stale = app
+                    .cost_updated
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+                let costs = if stale { fetch_costs(app) } else { iced::Task::none() };
+                return iced::Task::batch([costs, fetch_scan(app)]);
+            }
             iced::Task::none()
         }
         Message::SettingsSearchChanged(s) => {
