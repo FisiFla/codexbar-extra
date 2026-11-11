@@ -8,7 +8,7 @@
 
 use crate::settings::Settings;
 use crate::state::{App, Message, SettingsPane};
-use crate::ui::style::{radio, scrollable};
+use crate::ui::style::scrollable;
 use iced::widget::slider;
 use iced::widget::{column, container, row, text};
 use iced::{Background, Border, Color, Element, Length};
@@ -160,12 +160,6 @@ fn dot_color(app: &App, provider_id: &str) -> Color {
 
 // ---------- control helpers (clone Settings -> SettingsChanged) ----------
 
-fn changed(app: &App, f: impl Fn(&mut Settings)) -> Message {
-    let mut s = app.settings.clone();
-    f(&mut s);
-    Message::SettingsChanged(Box::new(s))
-}
-
 fn switch_row<'a>(
     label: &str,
     cur: bool,
@@ -231,20 +225,129 @@ fn order_text(order: &[String]) -> &'static str {
     })
 }
 
-fn radio_group<'a>(
-    options: &[(&'static str, &'static str)],
-    cur: &'a str,
+/// Popup choice (label shown, value stored); `pick_list` needs `Display`.
+#[derive(Clone, PartialEq)]
+struct Choice<T> {
+    label: String,
+    value: T,
+}
+
+impl<T> std::fmt::Display for Choice<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// Mac Form popup button: plain label with the chevron, no field chrome.
+fn popup<'a, T: Clone + PartialEq + 'a>(
+    choices: Vec<(String, T)>,
+    cur: &T,
+    on_pick: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message> {
+    let opts: Vec<Choice<T>> = choices
+        .into_iter()
+        .map(|(label, value)| Choice { label, value })
+        .collect();
+    let selected = opts.iter().find(|c| &c.value == cur).cloned();
+    crate::ui::style::pick_list(opts, selected, move |c: Choice<T>| on_pick(c.value))
+        .style(crate::ui::style::mac_popup)
+        .into()
+}
+
+/// String-valued settings popup; an unknown current value stays listed so it is never lost.
+fn settings_popup<'a>(
+    options: &[(&str, &str)],
+    cur: &str,
     base: Settings,
     set: fn(&mut Settings, &str),
 ) -> Element<'a, Message> {
-    let mut col = column![].spacing(4);
-    for (label, value) in options {
-        let b = base.clone();
-        col = col.push(radio(*label, *value, Some(cur), move |v: &'a str| {
-            let mut s = b.clone();
-            set(&mut s, v);
-            Message::SettingsChanged(Box::new(s))
-        }));
+    let mut choices: Vec<(String, String)> = options
+        .iter()
+        .map(|(l, v)| (l.to_string(), v.to_string()))
+        .collect();
+    if !cur.is_empty() && !choices.iter().any(|(_, v)| v == cur) {
+        choices.push((cur.to_string(), cur.to_string()));
+    }
+    popup(choices, &cur.to_string(), move |v: String| {
+        let mut st = base.clone();
+        set(&mut st, &v);
+        Message::SettingsChanged(Box::new(st))
+    })
+}
+
+/// Refresh cadence popup (Mac `RefreshFrequency` timed cases; Linux floors at one minute).
+fn refresh_popup<'a>(s: &Settings) -> Element<'a, Message> {
+    let mut secs = vec![60u32, 120, 300, 900, 1800, 3600];
+    if !secs.contains(&s.refresh_seconds) {
+        secs.push(s.refresh_seconds);
+        secs.sort_unstable();
+    }
+    let base = s.clone();
+    popup(
+        secs.into_iter().map(|v| (refresh_label(v), v)).collect(),
+        &s.refresh_seconds,
+        move |v| {
+            let mut st = base.clone();
+            st.refresh_seconds = v;
+            Message::SettingsChanged(Box::new(st))
+        },
+    )
+}
+
+/// Label left, compact control right (Mac Form row with a popup or stepper).
+fn pref<'a>(label: &str, control: Element<'a, Message>) -> Element<'a, Message> {
+    row![
+        text(label.to_string())
+            .size(crate::ui::style::TEXT_BODY)
+            .width(Length::Fill),
+        control,
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center)
+    .into()
+}
+
+/// A row with its caption beneath, kept inside the same separator band.
+fn with_note<'a>(row: Element<'a, Message>, s: &'a str) -> Element<'a, Message> {
+    column![row, note(s)].spacing(3).into()
+}
+
+fn hairline<'a>() -> Element<'a, Message> {
+    container(iced::widget::Space::new(Length::Fill, Length::Fixed(1.0)))
+        .style(|_: &iced::Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.07))),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Mac grouped Form section: header, rows split by hairlines, optional footer note.
+fn section_form<'a>(
+    title: &str,
+    items: Vec<Element<'a, Message>>,
+    footer: Option<&'a str>,
+) -> Element<'a, Message> {
+    let n = items.len();
+    let mut rows = column![].width(Length::Fill);
+    for (i, item) in items.into_iter().enumerate() {
+        rows = rows.push(container(item).padding([8, 0]).width(Length::Fill));
+        if i + 1 < n {
+            rows = rows.push(hairline());
+        }
+    }
+    let mut col = column![
+        text(title.to_string())
+            .size(crate::ui::style::TEXT_HEADLINE)
+            .font(crate::ui::style::font_semibold()),
+        container(rows)
+            .padding([3, 12])
+            .width(Length::Fill)
+            .style(crate::ui::style::panel),
+    ]
+    .spacing(8)
+    .padding([0, 4]);
+    if let Some(f) = footer {
+        col = col.push(container(note(f)).padding([0, 8]));
     }
     col.into()
 }
@@ -324,87 +427,115 @@ pub fn view(app: &App) -> Element<'_, Message> {
             .into(),
         ));
     }
-    let mut pane = scrollable(container(detail_col).padding([20, 20]).width(Length::Fill));
+    let mut pane = scrollable(
+        container(detail_col)
+            .padding(iced::Padding { top: 6.0, right: 20.0, bottom: 20.0, left: 20.0 })
+            .width(Length::Fill),
+    );
     if spend {
         pane = pane.id(crate::ui::spend_view::scroll_id());
     }
     row![
         crate::ui::settings_sidebar::view(app),
-        container(pane).width(Length::Fill).height(Length::Fill),
+        column![toolbar(app, spend), container(pane).width(Length::Fill).height(Length::Fill)],
     ]
+    .into()
+}
+
+/// Mac Settings toolbar: back/forward capsule and the page title (Spend draws its own heading).
+fn toolbar(app: &App, spend: bool) -> Element<'_, Message> {
+    let arrow = |glyph: &'static str, msg: Message, enabled: bool| {
+        crate::ui::style::button(
+            text(glyph)
+                .size(24)
+                .color(if enabled { Color::WHITE } else { Color::from_rgba(1.0, 1.0, 1.0, 0.3) }),
+        )
+        .on_press_maybe(enabled.then_some(msg))
+        .style(crate::ui::style::plain)
+        .padding([0, 12])
+    };
+    let divider = container(iced::widget::Space::new(Length::Fixed(1.0), Length::Fixed(16.0)))
+        .style(|_: &iced::Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.12))),
+            ..Default::default()
+        });
+    let nav = container(
+        row![
+            arrow("‹", Message::SettingsBack, !app.settings_back.is_empty()),
+            divider,
+            arrow("›", Message::SettingsForward, !app.settings_forward.is_empty()),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([3, 2])
+    .style(|_: &iced::Theme| container::Style {
+        background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08))),
+        border: Border::default().rounded(16.0),
+        ..Default::default()
+    });
+    let title = match (&app.selected_provider, spend) {
+        (_, true) => String::new(),
+        (Some(id), _) => crate::model::provider_name(id),
+        (None, _) => pane_title(app.settings_pane).to_string(),
+    };
+    row![
+        nav,
+        text(title)
+            .size(crate::ui::style::TEXT_TITLE3)
+            .font(crate::ui::style::font_semibold()),
+    ]
+    .spacing(14)
+    .align_y(iced::Alignment::Center)
+    .padding([10, 20])
     .into()
 }
 
 fn general_pane(app: &App) -> Element<'_, Message> {
     let s = &app.settings;
-    let mut presets = row![].spacing(4);
-    for p in PROVIDER_PRESETS {
-        presets = presets.push(
-            crate::ui::style::button(text(p))
-                .on_press(changed(app, move |st| st.provider = p.to_string())),
-        );
-    }
-    let refresh_slider = {
-        let base = s.clone();
-        slider(60..=3600, s.refresh_seconds, move |v| {
-            let mut st = base.clone();
-            st.refresh_seconds = v;
-            Message::SettingsChanged(Box::new(st))
-        })
-        .step(60u32)
-        .style(crate::ui::style::slider)
-    };
+    let provider_choices: Vec<(&str, &str)> = PROVIDER_PRESETS.iter().map(|p| (*p, *p)).collect();
     column![
-        section(
+        section_form(
             "CLI",
-            column![
+            vec![
                 labeled(
                     "CodexBar CLI executable",
                     text_field("codexbar", &s.executable, s.clone(), |st, v| st.executable = v),
                 ),
-                labeled(
-                    "Provider",
-                    text_field("codex", &s.provider, s.clone(), |st, v| st.provider = v),
+                with_note(
+                    pref(
+                        "Provider",
+                        settings_popup(&provider_choices, &s.provider, s.clone(), |st, v| st.provider = v.to_string()),
+                    ),
+                    "Choose custom to select and order providers (Providers pane), or enabled to follow your CLI configuration.",
                 ),
-                presets,
-                note("Choose custom to select and order providers (Providers pane), or enabled to follow your CLI configuration."),
-                labeled("Source", radio_group(&SOURCE_OPTIONS, &s.source, s.clone(), |st, v| st.source = v.to_string())),
-            ]
-            .spacing(8)
-            .into(),
+                pref("Source", settings_popup(&SOURCE_OPTIONS, &s.source, s.clone(), |st, v| st.source = v.to_string())),
+            ],
+            None,
         ),
-        section(
+        section_form(
             "Refreshing",
-            column![
-                labeled(
-                    "Refresh interval",
-                    row![container(refresh_slider).width(Length::Fixed(260.0)), text(refresh_label(s.refresh_seconds))]
-                        .spacing(8)
-                        .into(),
-                ),
+            vec![
+                pref("Refresh interval", refresh_popup(s)),
                 check("Refresh when opening usage", s.refresh_on_open, s.clone(), |st, v| st.refresh_on_open = v),
-            ]
-            .spacing(8)
-            .into(),
+            ],
+            None,
         ),
-        section(
+        section_form(
             "Display",
-            column![
+            vec![
                 check("Show account identity", s.show_identity, s.clone(), |st, v| st.show_identity = v),
                 check("Service status", s.show_status, s.clone(), |st, v| st.show_status = v),
                 check("Local spending", s.show_costs, s.clone(), |st, v| st.show_costs = v),
-            ]
-            .spacing(8)
-            .into(),
+            ],
+            None,
         ),
-        section(
+        section_form(
             "System",
-            column![switch_row("Start at login", crate::autostart::status(), Message::SetAutostart)]
-                .spacing(8)
-                .into(),
+            vec![switch_row("Start at login", crate::autostart::status(), Message::SetAutostart)],
+            None,
         ),
     ]
-    .spacing(16)
+    .spacing(20)
     .into()
 }
 
@@ -684,54 +815,50 @@ fn spend_pane(app: &App) -> Element<'_, Message> {
 
 fn menu_pane(app: &App) -> Element<'_, Message> {
     let s = &app.settings;
-    column![section(
-        "Usage",
-        column![
-            labeled(
-                "Quota display",
-                radio_group(
-                    &[("Remaining", "remaining"), ("Used", "used")],
-                    &s.quota_display,
-                    s.clone(),
-                    |st, v| st.quota_display = v.to_string(),
+    column![
+        section_form(
+            "Usage",
+            vec![
+                pref(
+                    "Quota display",
+                    settings_popup(
+                        &[("Remaining", "remaining"), ("Used", "used")],
+                        &s.quota_display,
+                        s.clone(),
+                        |st, v| st.quota_display = v.to_string(),
+                    ),
                 ),
-            ),
-            labeled(
-                "Reset time display",
-                radio_group(
-                    &[
-                        ("Countdown", "countdown"),
-                        ("Absolute time", "absolute"),
-                        ("Both", "both")
-                    ],
-                    &s.reset_display,
-                    s.clone(),
-                    |st, v| st.reset_display = v.to_string(),
+                pref(
+                    "Reset time display",
+                    settings_popup(
+                        &[("Countdown", "countdown"), ("Absolute time", "absolute"), ("Both", "both")],
+                        &s.reset_display,
+                        s.clone(),
+                        |st, v| st.reset_display = v.to_string(),
+                    ),
                 ),
-            ),
-            check("Show pace", s.show_pace, s.clone(), |st, v| st.show_pace =
-                v),
-        ]
-        .spacing(8)
-        .into(),
-    ),
-    section(
-        "System",
-        column![
-            extra_check(
-                crate::stay_awake::LABEL,
-                app.extras.stay_awake,
-                app.extras.clone(),
-                |e, v| e.stay_awake = v
-            ),
-            note(crate::stay_awake::SUBTITLE),
-            note(app.stay_awake.status()),
-            note("Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
-        ]
-        .spacing(8)
-        .into(),
-    ),]
-    .spacing(16)
+                check("Show pace", s.show_pace, s.clone(), |st, v| st.show_pace = v),
+            ],
+            None,
+        ),
+        section_form(
+            "System",
+            vec![column![
+                extra_check(
+                    crate::stay_awake::LABEL,
+                    app.extras.stay_awake,
+                    app.extras.clone(),
+                    |e, v| e.stay_awake = v
+                ),
+                note(crate::stay_awake::SUBTITLE),
+                note(app.stay_awake.status()),
+            ]
+            .spacing(3)
+            .into()],
+            Some("Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
+        ),
+    ]
+    .spacing(20)
     .into()
 }
 
@@ -749,20 +876,19 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
     };
     column![
         crate::ui::menubar_editor::view(app),
-        section(
+        section_form(
             "Tray / bar",
-            column![
-                labeled(
+            vec![
+                pref(
                     "Tray style",
-                    radio_group(
+                    settings_popup(
                         &[("Meters", "meters"), ("Icon", "icon")],
                         &s.tray_style,
                         s.clone(),
                         |st, v| st.tray_style = v.to_string(),
                     ),
                 ),
-                check("Tray icon", s.show_tray, s.clone(), |st, v| st.show_tray =
-                    v),
+                check("Tray icon", s.show_tray, s.clone(), |st, v| st.show_tray = v),
                 check(
                     "Use compact Quick View from the tray",
                     s.compact_quick_view,
@@ -806,12 +932,11 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
                     s.clone(),
                     |st, v| st.follow_omarchy_theme = v
                 ),
-            ]
-            .spacing(8)
-            .into(),
+            ],
+            None,
         ),
     ]
-    .spacing(16)
+    .spacing(20)
     .into()
 }
 
@@ -842,9 +967,9 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
         .style(crate::ui::style::slider)
     };
     column![
-        section(
+        section_form(
             "Alerts",
-            column![
+            vec![
                 check("Notify about low quota, resets, and outages", s.notifications, s.clone(), |st, v| st.notifications = v),
                 labeled(
                     "Remaining quota threshold (%)",
@@ -855,14 +980,12 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
                     .spacing(8)
                     .into(),
                 ),
-                note("Delivered through the desktop notification service (org.freedesktop.Notifications)."),
-            ]
-            .spacing(8)
-            .into(),
+            ],
+            Some("Delivered through the desktop notification service (org.freedesktop.Notifications)."),
         ),
-        section(
+        section_form(
             "On-screen effects",
-            column![
+            vec![
                 extra_check(
                     "Show an on-screen alert when a quota warning fires",
                     x.quota_warning_overlay,
@@ -881,14 +1004,11 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
                     x.clone(),
                     |e, v| e.confetti_on_weekly_reset = v
                 ),
-                note("Click an effect to dismiss it; it also closes by itself after a few seconds. The alert needs the notifications option above. Compositors that ignore always-on-top or transparency show a plain window instead."),
-                note("Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
-            ]
-            .spacing(8)
-            .into(),
+            ],
+            Some("Click an effect to dismiss it; it also closes by itself after a few seconds. The alert needs the notifications option above. Compositors that ignore always-on-top or transparency show a plain window instead. Saved immediately to ~/.config/codexbar/linux-extras.json (linux.json is untouched)."),
         ),
     ]
-    .spacing(16)
+    .spacing(20)
     .into()
 }
 
@@ -933,26 +1053,29 @@ fn plugins_pane(_app: &App) -> Element<'_, Message> {
 fn advanced_pane(app: &App) -> Element<'_, Message> {
     let _ = app;
     column![
-        section(
+        section_form(
             "HTTP server / dashboard",
-            column![
-                note("The CLI provides the web surfaces: `codexbar serve` runs the dashboard server (Bearer token required off-loopback) and `codexbar dashboard` prints a one-shot JSON snapshot. This desktop app does not embed its own HTTP server."),
-                crate::ui::style::button(text("Copy usage summary")).on_press(Message::CopySummary),
-            ]
-            .spacing(8)
-            .into(),
+            vec![pref(
+                "Usage summary",
+                crate::ui::style::button(text("Copy usage summary"))
+                    .on_press(Message::CopySummary)
+                    .into(),
+            )],
+            Some("The CLI provides the web surfaces: `codexbar serve` runs the dashboard server (Bearer token required off-loopback) and `codexbar dashboard` prints a one-shot JSON snapshot. This desktop app does not embed its own HTTP server."),
         ),
-        section(
+        section_form(
             "Desktop IPC",
-            column![
-                text(format!("Socket: {}", crate::ipc::socket_path().display())),
-                note("Other CodexBar surfaces (tray, Omarchy bar, `codexbar-linux --snapshot`) talk to the running app over this socket."),
-            ]
-            .spacing(8)
-            .into(),
+            vec![pref(
+                "Socket",
+                text(crate::ipc::socket_path().display().to_string())
+                    .size(crate::ui::style::TEXT_BODY)
+                    .color(crate::ui::style::SECONDARY)
+                    .into(),
+            )],
+            Some("Other CodexBar surfaces (tray, Omarchy bar, `codexbar-linux --snapshot`) talk to the running app over this socket."),
         ),
     ]
-    .spacing(16)
+    .spacing(20)
     .into()
 }
 
@@ -1015,25 +1138,81 @@ fn debug_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+/// Plain full-width link row with a trailing arrow (Mac About "Links" rows).
+fn link_row<'a>(label: &str, url: &str) -> Element<'a, Message> {
+    crate::ui::style::button(
+        row![
+            text(label.to_string())
+                .size(crate::ui::style::TEXT_BODY)
+                .width(Length::Fill),
+            crate::ui::popover_charts::glyph(
+                crate::ui::popover_charts::Glyph::External,
+                12.0,
+                crate::ui::style::SECONDARY,
+            ),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::OpenUrl(url.to_string()))
+    .style(crate::ui::style::plain)
+    .padding(0)
+    .width(Length::Fill)
+    .into()
+}
+
 fn about_pane(_app: &App) -> Element<'_, Message> {
+    let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
+    let icon = iced::widget::image(iced::widget::image::Handle::from_bytes(
+        &include_bytes!("../../assets/app-icon.png")[..],
+    ))
+    .width(Length::Fixed(64.0))
+    .height(Length::Fixed(64.0));
+    // Mac About: centered hero card (icon, name, version, tagline), then Updates and Links.
+    let hero = container(
+        column![
+            icon,
+            text("CodexBar Extra")
+                .size(crate::ui::style::TEXT_TITLE3)
+                .font(crate::ui::style::font_semibold()),
+            text(version.clone())
+                .size(crate::ui::style::TEXT_CALLOUT)
+                .color(crate::ui::style::SECONDARY),
+            note("Usage and spend for Codex, Claude, and other AI coding providers — Linux desktop build."),
+        ]
+        .spacing(4)
+        .align_x(iced::Alignment::Center),
+    )
+    .padding(20)
+    .center_x(Length::Fill)
+    .style(crate::ui::style::panel);
     column![
-        text("CodexBar Extra")
-            .size(crate::ui::style::TEXT_TITLE2)
-            .font(crate::ui::style::font_semibold()),
-        text(format!("Version {}", env!("CARGO_PKG_VERSION")))
-            .size(crate::ui::style::TEXT_CALLOUT)
-            .color(crate::ui::style::SECONDARY),
-        note("Usage and spend for Codex, Claude, and other AI coding providers — Linux desktop build."),
-        crate::ui::style::button(text("GitHub — this fork (FisiFla/codexbar-extra)"))
-            .on_press(Message::OpenUrl("https://github.com/FisiFla/codexbar-extra".to_string())),
-        crate::ui::style::button(text("GitHub — upstream (steipete/CodexBar)"))
-            .on_press(Message::OpenUrl("https://github.com/steipete/CodexBar".to_string())),
-        crate::ui::style::button(text("Website — codexbar.app"))
-            .on_press(Message::OpenUrl("https://codexbar.app".to_string())),
-        text("Updates unavailable in this build."),
-        note("Update through your package source or by rebuilding from the fork."),
+        container(hero).padding([0, 4]),
+        section_form(
+            "Updates",
+            vec![
+                text(version).size(crate::ui::style::TEXT_BODY).into(),
+                with_note(
+                    text("Updates unavailable in this build.")
+                        .size(crate::ui::style::TEXT_BODY)
+                        .color(crate::ui::style::SECONDARY)
+                        .into(),
+                    "Update through your package source or by rebuilding from the fork.",
+                ),
+            ],
+            None,
+        ),
+        section_form(
+            "Links",
+            vec![
+                link_row("GitHub — this fork", "https://github.com/FisiFla/codexbar-extra"),
+                link_row("GitHub — upstream", "https://github.com/steipete/CodexBar"),
+                link_row("Website", "https://codexbar.app"),
+            ],
+            None,
+        ),
+        container(note("© 2026 Peter Steinberger. MIT License.")).center_x(Length::Fill),
     ]
-    .spacing(8)
+    .spacing(20)
     .into()
 }
 

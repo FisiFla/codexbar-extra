@@ -10,7 +10,6 @@ use iced::widget::{
     container,
     pick_list::{self},
     progress_bar,
-    radio::{self},
     scrollable::{self},
     slider::{self},
     text_input::{self, TextInput},
@@ -200,31 +199,26 @@ pub fn plain(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Segmented-picker segment (mac native segmented): gray track, light selected
-/// segment with a hairline. Blue is reserved for prominence, not segments.
+/// Segmented-picker segment (macOS 26 segmented control, measured on the Mac): faint track,
+/// accent-filled selected segment with white text, primary-coloured unselected labels.
 pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         if selected {
-            let fill = match status {
-                button::Status::Hovered => white(0.24),
-                button::Status::Pressed => white(0.16),
-                _ => white(0.20),
-            };
             button::Style {
-                background: Some(Background::Color(fill)),
+                background: Some(Background::Color(if hovered {
+                    Color::from_rgb(0.2, 0.58, 1.0)
+                } else {
+                    ACCENT
+                })),
                 text_color: Color::WHITE,
-                border: Border {
-                    color: white(0.08),
-                    width: 1.0,
-                    radius: R_SM.into(),
-                },
+                border: Border::default().rounded(R_SM),
                 ..Default::default()
             }
         } else {
-            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
                 background: hovered.then(|| Background::Color(white(0.07))),
-                text_color: SECONDARY,
+                text_color: theme.palette().text,
                 border: Border::default().rounded(R_SM),
                 ..Default::default()
             }
@@ -232,16 +226,13 @@ pub fn segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Sty
     }
 }
 
-/// Source-list row: translucent accent-tinted selection (not a solid block).
+/// Source-list row: neutral gray selection like the Mac Settings sidebar (measured white 0.10).
 pub fn sidebar(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let text = theme.palette().text;
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let (background, text_color) = if selected {
-            (
-                Some(Background::Color(Color::from_rgba(0.039, 0.518, 1.0, 0.32))),
-                Color::WHITE,
-            )
+            (Some(Background::Color(white(0.10))), text)
         } else if hovered {
             (Some(Background::Color(white(0.07))), text)
         } else {
@@ -289,44 +280,6 @@ pub fn meter(fill: Color, height: f32) -> impl Fn(&Theme) -> progress_bar::Style
         background: Background::Color(white(0.22)),
         bar: Background::Color(fill),
         border: Border::default().rounded(height / 2.0),
-    }
-}
-
-/// Fill and hairline colours for the radio (on = accent, off = faint with ring).
-fn control_colors(on: bool, hovered: bool) -> (Color, Color) {
-    match (on, hovered) {
-        (true, true) => (Color::from_rgb(0.2, 0.58, 1.0), Color::TRANSPARENT),
-        (true, false) => (ACCENT, Color::TRANSPARENT),
-        (false, true) => (white(0.10), white(0.30)),
-        (false, false) => (white(0.05), white(0.22)),
-    }
-}
-
-/// 14pt radio: hairline ring, accent fill + white dot when selected.
-pub fn radio<'a, M: Clone, V: Copy + Eq>(
-    label: impl Into<String>,
-    value: V,
-    selected: Option<V>,
-    on_click: impl FnOnce(V) -> M,
-) -> iced::widget::Radio<'a, M> {
-    iced::widget::radio(label, value, selected, on_click)
-        .size(14)
-        .spacing(8)
-        .style(radio_style)
-}
-
-pub fn radio_style(theme: &Theme, status: radio::Status) -> radio::Style {
-    let (selected, hovered) = match status {
-        radio::Status::Active { is_selected } => (is_selected, false),
-        radio::Status::Hovered { is_selected } => (is_selected, true),
-    };
-    let (fill, ring) = control_colors(selected, hovered);
-    radio::Style {
-        background: Background::Color(fill),
-        dot_color: Color::WHITE,
-        border_width: 1.0,
-        border_color: ring,
-        text_color: Some(theme.palette().text),
     }
 }
 
@@ -393,6 +346,26 @@ pub fn pick_list_style(theme: &Theme, status: pick_list::Status) -> pick_list::S
                 white(0.10)
             },
             width: 1.0,
+            radius: 6.0.into(),
+        },
+    }
+}
+
+/// Mac Form popup button: no field chrome at rest, a soft wash on hover/open.
+pub fn mac_popup(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let fill = match status {
+        pick_list::Status::Active => Color::TRANSPARENT,
+        pick_list::Status::Hovered => white(0.07),
+        pick_list::Status::Opened => white(0.12),
+    };
+    pick_list::Style {
+        text_color: theme.palette().text,
+        placeholder_color: white(0.35),
+        handle_color: SECONDARY,
+        background: Background::Color(fill),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
             radius: 6.0.into(),
         },
     }

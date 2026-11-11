@@ -229,7 +229,10 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                     app.chart_hover = Some((key.clone(), hover));
                 }
                 app.selected = i as i32;
-                app.collapsed_charts.clear();
+                app.toggled_charts.clear();
+                if chart != "cost" {
+                    app.toggled_charts.insert(key.clone());
+                }
             }
             return Some(iced::Task::batch([
                 raise,

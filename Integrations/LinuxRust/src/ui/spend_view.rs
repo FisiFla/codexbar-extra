@@ -511,11 +511,15 @@ fn dot(color: Color, size: f32) -> Element<'static, Message> {
 
 /// Rounded segmented picker (selected segment gets the accent fill).
 fn segmented(items: Vec<(String, Message, bool)>) -> Element<'static, Message> {
+    // Mac segmented controls give every segment the width of the widest label.
+    let widest = items.iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+    let seg_w = (widest as f32 * 7.2 + 16.0).max(56.0);
     let mut r = row![].spacing(2).align_y(iced::Alignment::Center);
     for (label, msg, selected) in items {
         r = r.push(
-            crate::ui::style::button(text(label).size(12))
-                .padding([3, 10])
+            crate::ui::style::button(container(text(label).size(13).wrapping(iced::widget::text::Wrapping::None)).center_x(Length::Fill))
+                .width(Length::Fixed(seg_w))
+                .padding([3, 8])
                 .style(crate::ui::style::segment(selected))
                 .on_press(msg),
         );
@@ -523,7 +527,7 @@ fn segmented(items: Vec<(String, Message, bool)>) -> Element<'static, Message> {
     container(r)
         .padding(2)
         .style(|_: &Theme| container::Style {
-            background: Some(white(0.07).into()),
+            background: Some(white(0.10).into()),
             border: iced::Border::default().rounded(8.0),
             ..Default::default()
         })
@@ -639,7 +643,7 @@ fn header(app: &App, today: NaiveDate) -> Element<'static, Message> {
     column![
         row![
             column![
-                title("Usage & Spend", 22),
+                title("Usage & Spend", 17),
                 caption("Local estimated cost history across supported providers."),
             ]
             .spacing(2),
@@ -736,7 +740,7 @@ fn data_controls(app: &App) -> Element<'static, Message> {
 
 /// One stat of the summary card: caption over a semibold value.
 fn stat(label: &str, value: String) -> Element<'static, Message> {
-    column![caption(label), title(value, 20)]
+    column![caption(label), title(value, 17)]
         .spacing(2)
         .width(Length::FillPortion(1))
         .into()
@@ -754,7 +758,7 @@ fn summary_panel(
         .iter()
         .filter(|e| e.error.trim().is_empty())
         .count();
-    let mut col = column![row![
+    let col = column![row![
         stat("Estimated spend", money_lb(total_cost, lb)),
         stat(
             "Tracked tokens",
@@ -783,8 +787,8 @@ fn summary_panel(
     if let Some(d) = app.spend_ui.pin {
         meta = meta.push(capsule(&format!("Selected {}", d.format("%b %-d"))));
     }
-    col = col.push(rule()).push(meta);
-    panel(col)
+    // Mac lays the summary inline on the pane (no card), closed by a hairline.
+    col.push(meta).push(rule()).into()
 }
 
 fn capsule(s: &str) -> Element<'static, Message> {

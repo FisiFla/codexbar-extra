@@ -75,6 +75,12 @@ fn main() -> iced::Result {
         .map(|w| w[1].clone());
 
     iced::daemon("CodexBar", update, view)
+        // macOS body text is 13pt; iced's 16px default leaked into every widget without an
+        // explicit size (text fields, radios, pick lists, chips).
+        .settings(iced::Settings {
+            default_text_size: iced::Pixels(13.0),
+            ..Default::default()
+        })
         .font(std::borrow::Cow::Borrowed(
             &include_bytes!("../assets/fonts/Inter-400.ttf")[..],
         ))
@@ -130,10 +136,13 @@ fn main() -> iced::Result {
                 error: String::new(),
                 cost_error: String::new(),
                 updated: String::new(),
+                updated_epoch: None,
                 windows: BTreeMap::new(),
                 selected: 0,
                 settings_pane: SettingsPane::General,
                 settings_search: String::new(),
+                settings_back: Vec::new(),
+                settings_forward: Vec::new(),
                 settings_sort_alpha: false,
                 selected_provider: None,
                 spend_period_days: 30,
@@ -148,7 +157,7 @@ fn main() -> iced::Result {
                 sessions_busy: false,
                 sessions_loaded: false,
                 cost_payloads: vec![],
-                collapsed_charts: Default::default(),
+                toggled_charts: Default::default(),
                 chart_hover: None,
                 chart_series: Default::default(),
                 history,
@@ -445,6 +454,30 @@ fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
     iced::Task::batch(tasks)
 }
 
+/// Move the Settings window to a pane/provider, recording history for the toolbar arrows.
+fn settings_nav(app: &mut App, pane: SettingsPane, provider: Option<String>) {
+    if app.settings_pane == pane && app.selected_provider == provider {
+        return;
+    }
+    let prev = (app.settings_pane, app.selected_provider.take());
+    app.settings_back.push(prev);
+    app.settings_forward.clear();
+    app.settings_pane = pane;
+    app.selected_provider = provider;
+}
+
+/// Entering Usage & Spend refreshes stale costs and rescans local history.
+fn spend_entry_tasks(app: &mut App) -> iced::Task<Message> {
+    if app.settings_pane != SettingsPane::Spend {
+        return iced::Task::none();
+    }
+    let stale = app
+        .cost_updated
+        .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+    let costs = if stale { fetch_costs(app) } else { iced::Task::none() };
+    iced::Task::batch([costs, fetch_scan(app)])
+}
+
 fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
     match msg {
         Message::None => iced::Task::none(),
@@ -613,6 +646,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             app.stale = false;
             app.error.clear();
             app.updated = chrono::Local::now().format("%H:%M").to_string();
+            app.updated_epoch = Some(chrono::Utc::now().timestamp());
             if app.selected as usize >= app.entries.len() && !app.entries.is_empty() {
                 app.selected = 0;
             }
@@ -653,8 +687,8 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             iced::Task::none()
         }
         Message::ToggleChart(key) => {
-            if !app.collapsed_charts.remove(&key) {
-                app.collapsed_charts.insert(key);
+            if !app.toggled_charts.remove(&key) {
+                app.toggled_charts.insert(key);
             }
             app.chart_hover = None;
             iced::Task::none()
@@ -781,16 +815,23 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             }
         },
         Message::OpenSettingsPane(p) => {
-            app.settings_pane = p;
-            app.selected_provider = None;
-            if p == SettingsPane::Spend {
-                let stale = app
-                    .cost_updated
-                    .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
-                let costs = if stale { fetch_costs(app) } else { iced::Task::none() };
-                return iced::Task::batch([costs, fetch_scan(app)]);
-            }
-            iced::Task::none()
+            settings_nav(app, p, None);
+            spend_entry_tasks(app)
+        }
+        Message::SettingsBack | Message::SettingsForward => {
+            let back = matches!(msg, Message::SettingsBack);
+            let (from, to) = if back {
+                (&mut app.settings_back, &mut app.settings_forward)
+            } else {
+                (&mut app.settings_forward, &mut app.settings_back)
+            };
+            let Some((pane, provider)) = from.pop() else {
+                return iced::Task::none();
+            };
+            to.push((app.settings_pane, app.selected_provider.take()));
+            app.settings_pane = pane;
+            app.selected_provider = provider;
+            spend_entry_tasks(app)
         }
         Message::SettingsSearchChanged(s) => {
             app.settings_search = s;
@@ -801,8 +842,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             iced::Task::none()
         }
         Message::SelectProvider(p) => {
-            app.selected_provider = Some(p);
-            app.settings_pane = SettingsPane::Providers;
+            settings_nav(app, SettingsPane::Providers, Some(p));
             iced::Task::none()
         }
         Message::SettingsChanged(s) => {

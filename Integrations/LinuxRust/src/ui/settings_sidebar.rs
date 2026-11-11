@@ -302,7 +302,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .width(Length::Fixed(SIDEBAR_WIDTH))
     .height(Length::Fill)
     .style(|_| container::Style {
-        background: Some(Color::from_rgb(0.118, 0.118, 0.126).into()),
+        // Mac sidebar sits lighter than the content area (measured #2b2928).
+        background: Some(Color::from_rgb8(42, 41, 41).into()),
         border: Border {
             color: Color::from_rgba(1.0, 1.0, 1.0, 0.07),
             width: 0.0,

@@ -88,10 +88,15 @@ pub struct App {
     pub error: String,
     pub cost_error: String,
     pub updated: String,
+    /// Unix time of the last successful refresh; drives the Mac-style relative "Updated" line.
+    pub updated_epoch: Option<i64>,
     pub windows: BTreeMap<window::Id, Page>,
     pub selected: i32, // -1 overview, else entry index (popover)
     pub settings_pane: SettingsPane,
     pub settings_search: String,
+    /// Settings toolbar back/forward stacks: (pane, selected provider), like the Mac window.
+    pub settings_back: Vec<(SettingsPane, Option<String>)>,
+    pub settings_forward: Vec<(SettingsPane, Option<String>)>,
     pub settings_sort_alpha: bool,
     pub selected_provider: Option<String>,
     pub spend_period_days: i64,
@@ -109,7 +114,9 @@ pub struct App {
     /// Per-day model breakdowns from the same `cost` call (chart sections).
     pub cost_payloads: Vec<crate::cli::CostPayload>,
     /// Collapsed chart sections in the popover (`<provider>:<chart>`); charts default open.
-    pub collapsed_charts: BTreeSet<String>,
+    /// Menu sections flipped from their default: the Cost block starts open, chart
+    /// sections start collapsed like the Mac submenus (a key here means "toggled").
+    pub toggled_charts: BTreeSet<String>,
     /// Hovered bar: (chart key, bar index).
     pub chart_hover: Option<(String, usize)>,
     /// Selected series per chart key (utilization / burndown pickers).
@@ -195,6 +202,8 @@ pub enum Message {
     TrayCmd(TrayCommand),
     IpcCmd(IpcCommand),
     OpenSettingsPane(SettingsPane),
+    SettingsBack,
+    SettingsForward,
     SettingsSearchChanged(String),
     ToggleProviderSort,
     SelectProvider(String),

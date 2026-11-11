@@ -214,11 +214,67 @@ fn updated_line(app: &App) -> String {
         "Refreshing usage…".to_string()
     } else if app.stale {
         "Usage may be out of date".to_string()
+    } else if let Some(at) = app.updated_epoch {
+        format!("Updated {}", relative_ago(at, chrono::Utc::now().timestamp()))
     } else if !app.updated.is_empty() {
         format!("Updated {}", app.updated)
     } else {
         "Waiting for usage…".to_string()
     }
+}
+
+/// Mac `Date.relativeDescription` as the menu shows it ("just now", "2 min ago").
+fn relative_ago(at: i64, now: i64) -> String {
+    let secs = (now - at).max(0);
+    match secs {
+        0..=14 => "just now".into(),
+        15..=59 => format!("{secs} sec ago"),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86_399 => format!("{} hr ago", secs / 3600),
+        _ => {
+            let d = secs / 86_400;
+            format!("{d} day{} ago", if d == 1 { "" } else { "s" })
+        }
+    }
+}
+
+/// Mac `MenuCardView.planDisplay`: Codex Pro tiers get their display names; otherwise
+/// drop boilerplate words (claude/codex/account/plan) and capitalize a lowercase first letter.
+fn plan_display(raw: &str, provider: &str) -> String {
+    let raw = raw.trim();
+    if provider == "codex" {
+        match raw.to_lowercase().as_str() {
+            "pro" => return "Pro 20x".into(),
+            "prolite" | "pro_lite" | "pro-lite" | "pro lite" => return "Pro 5x".into(),
+            _ => {}
+        }
+    }
+    let kept: Vec<&str> = raw
+        .split_whitespace()
+        .filter(|w| !matches!(w.to_lowercase().as_str(), "claude" | "codex" | "account" | "plan"))
+        .collect();
+    let cleaned = if kept.is_empty() { raw.to_string() } else { kept.join(" ") };
+    if cleaned.eq_ignore_ascii_case("oauth") {
+        return "Ollama".into();
+    }
+    let mut chars = cleaned.chars();
+    match chars.next() {
+        Some(c) if c.is_lowercase() => c.to_uppercase().chain(chars).collect(),
+        _ => cleaned,
+    }
+}
+
+/// Mac `UsagePaceText.weeklyDetail`: the CLI's " | "-joined pace summary becomes a left label
+/// ("54% in reserve") and a right label ("Lasts until reset · 1.5× headroom"); the menu never
+/// shows the "Expected N% used" part.
+fn pace_detail(summary: &str) -> (String, Option<String>) {
+    let mut parts = summary
+        .split(" | ")
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.starts_with("Expected "));
+    let left = parts.next().unwrap_or_default().to_string();
+    let rest: Vec<&str> = parts.collect();
+    (left, (!rest.is_empty()).then(|| rest.join(" · ")))
 }
 
 fn format_credits(v: f64) -> String {
@@ -439,28 +495,77 @@ fn tab<'a>(
         .spacing(2)
         .into()
     };
-    crate::ui::style::button(content)
+    crate::ui::style::button(container(content).center_x(Length::Fill))
         .on_press(Message::SelectEntry(index))
         .style(tab_style(selected))
         .padding(if inline { [4, 7] } else { [4, 6] })
+        .width(Length::Fill)
         .into()
 }
 
+/// Quick View window width (main.rs opens it at 340 wide).
+const MENU_WIDTH: f32 = 340.0;
+
+/// Mac `switcherOuterPadding`: 16, else 10, else 6, whichever keeps segments comfortable.
+fn switcher_outer_padding(width: f32, count: usize) -> f32 {
+    let comfortable = if count >= 5 { 50.0 } else { 54.0 };
+    let average = |pad: f32| (width - pad * 2.0 - (count.saturating_sub(1)) as f32) / count as f32;
+    [16.0, 10.0]
+        .into_iter()
+        .find(|&pad| average(pad) >= comfortable)
+        .unwrap_or(6.0)
+}
+
+/// Mac `switcherRowCount` for stacked (icon over label) segments.
+pub(crate) fn switcher_row_count(width: f32, count: usize) -> usize {
+    if count <= 1 {
+        return 1;
+    }
+    let max_rows = count.min(4);
+    if count >= 15 {
+        return max_rows;
+    }
+    let allowed = |per_row: usize| {
+        let pad = switcher_outer_padding(width, per_row);
+        (width - pad * 2.0 - (per_row - 1) as f32) / per_row as f32
+    };
+    if allowed(count) >= 50.0 {
+        return 1;
+    }
+    (2..=max_rows)
+        .find(|&rows| allowed(count.div_ceil(rows)) >= 50.0)
+        .unwrap_or(max_rows)
+}
+
+/// Mac `splitRows`: earlier rows take the remainder, so 7 over 2 rows is 4 + 3.
+pub(crate) fn split_rows(count: usize, rows: usize) -> Vec<usize> {
+    (0..rows)
+        .map(|i| count / rows + usize::from(i < count % rows))
+        .collect()
+}
+
 fn switcher(app: &App) -> Element<'_, Message> {
-    let inline = app.entries.len() + 1 <= 3;
-    let mut tabs = Row::new().spacing(2).padding(iced::Padding {
-        top: 10.0,
-        right: 16.0,
-        bottom: 6.0,
-        left: 16.0,
-    });
+    // Mac shows a segment per enabled provider only; the "all" selection also returns every
+    // unconfigured provider as an error entry, which would otherwise flood the switcher.
+    let shown: Vec<(usize, &Entry)> = app
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| {
+            app.selected == *i as i32
+                || crate::ui::settings_sidebar::provider_enabled(app, &e.provider)
+        })
+        .collect();
+    let count = shown.len() + 1;
+    let inline = count <= 3;
+    let mut tabs: Vec<Element<'_, Message>> = Vec::with_capacity(count);
     let overview_selected = app.selected == -1;
     let overview_color = if overview_selected {
         Color::WHITE
     } else {
         muted()
     };
-    tabs = tabs.push(tab(
+    tabs.push(tab(
         overview_selected,
         overview_glyph(overview_color),
         "Overview".to_string(),
@@ -468,13 +573,13 @@ fn switcher(app: &App) -> Element<'_, Message> {
         -1,
         inline,
     ));
-    for (i, entry) in app.entries.iter().enumerate() {
+    for (i, entry) in shown {
         let selected = app.selected == i as i32;
         let fg = if selected { Color::WHITE } else { muted() };
         // Mac quota strip: weekly remaining, always in the provider accent.
         let value = weekly_remaining(entry);
         let fill = rgb(accent_rgb(&entry.provider));
-        tabs = tabs.push(tab(
+        tabs.push(tab(
             selected,
             crate::icons::icon(&entry.provider, 16.0, fg),
             crate::model::provider_name(&entry.provider),
@@ -483,11 +588,33 @@ fn switcher(app: &App) -> Element<'_, Message> {
             inline,
         ));
     }
-    scrollable(tabs)
-        .style(crate::ui::style::scroll_style)
-        .direction(scrollable::Direction::Horizontal(
-            crate::ui::style::scrollbar(),
-        ))
+    // Mac wraps segments into up to four rows of uniform width instead of scrolling.
+    let rows = if inline { 1 } else { switcher_row_count(MENU_WIDTH, count) };
+    let sizes = split_rows(count, rows);
+    let columns = sizes.iter().copied().max().unwrap_or(1);
+    let pad = switcher_outer_padding(MENU_WIDTH, columns);
+    let mut grid = Column::new()
+        .spacing(if rows > 1 { 4 } else { 2 })
+        .width(Length::Fill);
+    let mut iter = tabs.into_iter();
+    for size in sizes {
+        let mut r = Row::new().spacing(1).width(Length::Fill);
+        for t in iter.by_ref().take(size) {
+            r = r.push(t);
+        }
+        for _ in size..columns {
+            r = r.push(Space::with_width(Length::Fill));
+        }
+        // Rows hug their tabs; without this a fill-height child lets them take the window.
+        grid = grid.push(r.height(Length::Shrink));
+    }
+    container(grid)
+        .padding(iced::Padding {
+            top: 10.0,
+            right: pad,
+            bottom: 6.0,
+            left: pad,
+        })
         .width(Length::Fill)
         .into()
 }
@@ -581,7 +708,7 @@ fn overview_body(app: &App) -> Element<'_, Message> {
         );
         if !entry.plan.is_empty() {
             head = head.push(
-                text(entry.plan.clone())
+                text(plan_display(&entry.plan, &entry.provider))
                     .size(crate::ui::style::TEXT_FOOTNOTE)
                     .font(medium())
                     .color(muted()),
@@ -658,18 +785,15 @@ fn menu_row_style(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Icon + label menu row, optionally with a trailing chevron.
+/// Plain-text menu row (Mac NSMenu items carry no icons), optionally with a trailing chevron.
 fn menu_row<'a>(
-    icon: Glyph,
     label: String,
     msg: Option<Message>,
     trailing: Option<Glyph>,
 ) -> Element<'a, Message> {
-    let tint = if msg.is_some() { Color::WHITE } else { muted() };
     let mut r = Row::new()
         .spacing(10)
         .align_y(Alignment::Center)
-        .push(glyph(icon, 16.0, tint))
         .push(text(label).size(13).width(Length::Fill));
     if let Some(t) = trailing {
         r = r.push(glyph(t, 11.0, muted()));
@@ -706,14 +830,12 @@ fn actions(app: &App) -> Element<'_, Message> {
             Message::OpenSettingsPane(SettingsPane::Providers)
         };
         col = col.push(menu_row(
-            Glyph::Plus,
             "Add Account…".to_string(),
             Some(add_msg),
             None,
         ));
         if let Some(url) = crate::ui::settings_view::dashboard_url(&provider) {
             col = col.push(menu_row(
-                Glyph::External,
                 "Usage Dashboard".to_string(),
                 Some(Message::OpenUrl(url.to_string())),
                 None,
@@ -721,7 +843,6 @@ fn actions(app: &App) -> Element<'_, Message> {
         }
         if let Some(url) = status_url(&provider) {
             col = col.push(menu_row(
-                Glyph::Status,
                 "Status Page".to_string(),
                 Some(Message::OpenUrl(url.to_string())),
                 None,
@@ -739,13 +860,11 @@ fn actions(app: &App) -> Element<'_, Message> {
         }
     }
     col = col.push(menu_row(
-        Glyph::Dashboard,
         "Usage & Spend…".to_string(),
         Some(Message::ShowPage(Page::Usage)),
         None,
     ));
     col = col.push(menu_row(
-        Glyph::Sessions,
         "Agent Sessions…".to_string(),
         Some(Message::ShowPage(Page::Sessions)),
         None,
@@ -761,13 +880,12 @@ fn actions(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// Fixed bottom rows (mac order): Refresh / Settings… / About / Changelog / Quit.
+/// Fixed bottom rows (mac order): Refresh / Settings… / About / Quit.
 fn footer(app: &App) -> Element<'_, Message> {
     let refresh = if app.busy {
-        menu_row(Glyph::Refresh, "Refreshing…".to_string(), None, None)
+        menu_row("Refreshing…".to_string(), None, None)
     } else {
         menu_row(
-            Glyph::Refresh,
             "Refresh".to_string(),
             Some(Message::Refresh),
             None,
@@ -777,26 +895,16 @@ fn footer(app: &App) -> Element<'_, Message> {
         column![
             refresh,
             menu_row(
-                Glyph::Settings,
                 "Settings…".to_string(),
                 Some(Message::ShowPage(Page::Settings)),
                 None,
             ),
             menu_row(
-                Glyph::Info,
                 format!("About CodexBar (v{})", env!("CARGO_PKG_VERSION")),
                 Some(Message::OpenSettingsPane(SettingsPane::About)),
                 None,
             ),
-            menu_row(
-                Glyph::External,
-                "Changelog…".to_string(),
-                Some(Message::OpenUrl(
-                    "https://github.com/FisiFla/codexbar-extra/releases".to_string()
-                )),
-                None,
-            ),
-            menu_row(Glyph::Quit, "Quit".to_string(), Some(Message::Quit), None),
+            menu_row("Quit".to_string(), Some(Message::Quit), None),
         ]
         .spacing(1),
     )
@@ -876,7 +984,7 @@ fn provider_body<'a>(
     }
     if !entry.plan.is_empty() {
         head2 = head2.push(
-            text(entry.plan.clone())
+            text(plan_display(&entry.plan, &entry.provider))
                 .size(crate::ui::style::TEXT_FOOTNOTE)
                 .font(medium())
                 .color(muted()),
@@ -902,7 +1010,6 @@ fn provider_body<'a>(
     // OpenAI-only: Admin API live usage window (mac "Live Usage" card action).
     if entry.provider == "openai" {
         col = col.push(menu_row(
-            Glyph::Chart,
             "Live usage…".to_string(),
             Some(Message::ShowPage(Page::OpenAiLive)),
             None,
@@ -1070,11 +1177,22 @@ fn metric_view(
     );
     col = col.push(usage_meter(amount, fill, pace, warning));
     if s.show_pace && !window.pace.is_empty() {
-        col = col.push(
-            text(window.pace.clone())
+        let (left, right) = pace_detail(&window.pace);
+        let mut line = Row::new().spacing(6).align_y(Alignment::Center);
+        line = line.push(
+            text(left)
                 .size(crate::ui::style::TEXT_CAPTION)
-                .color(muted()),
+                .color(muted())
+                .width(Length::Fill),
         );
+        if let Some(right) = right {
+            line = line.push(
+                text(right)
+                    .size(crate::ui::style::TEXT_CAPTION)
+                    .color(muted()),
+            );
+        }
+        col = col.push(line);
     }
     col.into()
 }
@@ -1231,12 +1349,12 @@ fn detail_text(s: String) -> Element<'static, Message> {
 }
 
 /// Cost block (mac "Cost ›"): Today / Last 30 days lines and the cost-history chart, open by
-/// default. Collapsing it stores `<provider>:cost` in `collapsed_charts`.
+/// default. Collapsing it stores `<provider>:cost` in `toggled_charts`.
 fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<'static, Message> {
     let mut sec = Column::new().spacing(5).width(Length::Fill);
     let payload = cost_payload(app, provider);
     let key = format!("{provider}:cost");
-    let open = payload.is_some() && !app.collapsed_charts.contains(&key);
+    let open = payload.is_some() && !app.toggled_charts.contains(&key);
     sec = if payload.is_some() {
         sec.push(row_header(key, "Cost", open, None, true))
     } else {
@@ -1361,7 +1479,8 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         col
     };
     let section = |key: String, title: &'static str| {
-        let open = !app.collapsed_charts.contains(&key);
+        // Mac shows these behind "›" submenus, so they start collapsed.
+        let open = app.toggled_charts.contains(&key);
         (row_header(key, title, open, Some(Glyph::Chart), false), open)
     };
 
@@ -1666,6 +1785,37 @@ fn chart_canvas(chart: crate::charts::BarChart) -> Element<'static, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pace_detail_splits_like_mac() {
+        assert_eq!(
+            pace_detail("54% in reserve | Expected 55% used | Lasts until reset | 1.5× headroom"),
+            ("54% in reserve".into(), Some("Lasts until reset · 1.5× headroom".into()))
+        );
+        assert_eq!(pace_detail("On pace | Expected 10% used"), ("On pace".into(), None));
+    }
+
+    #[test]
+    fn plan_and_relative_time_match_mac() {
+        assert_eq!(plan_display("free", "codex"), "Free");
+        assert_eq!(plan_display("pro", "codex"), "Pro 20x");
+        assert_eq!(plan_display("Claude Max Account", "claude"), "Max");
+        assert_eq!(plan_display("AI Pro", "gemini"), "AI Pro");
+        assert_eq!(relative_ago(100, 105), "just now");
+        assert_eq!(relative_ago(0, 130), "2 min ago");
+        assert_eq!(relative_ago(0, 7300), "2 hr ago");
+    }
+
+    #[test]
+    fn switcher_wraps_like_mac() {
+        // Mac menu (310 wide) with Overview + 5 providers: two rows of three.
+        assert_eq!(switcher_row_count(310.0, 6), 2);
+        assert_eq!(split_rows(6, 2), vec![3, 3]);
+        // Few segments fit one row; 15+ always use four rows.
+        assert_eq!(switcher_row_count(340.0, 4), 1);
+        assert_eq!(switcher_row_count(340.0, 16), 4);
+        assert_eq!(split_rows(7, 2), vec![4, 3]);
+    }
 
     #[test]
     fn pace_stripe_color_green_under_pace_red_over_white_unknown() {
