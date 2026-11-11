@@ -131,7 +131,7 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
             Page::QuickView => [
                 "quick-view",
                 "quick-view-util",
-                "quick-view-burn",
+                "quick-view-status",
                 "quick-view-tpm",
                 "quick-view-cost",
                 "quick-view-credits",
@@ -201,7 +201,8 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                     .any(|p| p.provider == provider && !p.daily.is_empty())
             };
             let pick = app.entries.iter().position(|e| match chart {
-                "util" | "burn" => !app.history.series_for(&e.provider).is_empty(),
+                "util" => !app.history.series_for(&e.provider).is_empty(),
+                "status" => e.provider == "codex",
                 "credits" => app.history.credit_bars(&e.provider, 0).is_some(),
                 "storage" => app.storage.contains_key(&e.provider),
                 _ => has_cost(&e.provider),
@@ -232,6 +233,11 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                 app.toggled_charts.clear();
                 if chart != "cost" {
                     app.toggled_charts.insert(key.clone());
+                }
+                if chart == "status" {
+                    // Expand the provider's own group (e.g. OpenAI's "Codex") like a click would.
+                    app.toggled_charts.insert(format!("{key}:01KMKF9EBTCD8BN9PG8DJZXRSQ"));
+                    return Some(iced::Task::batch([raise, crate::fetch_status(app, &provider)]));
                 }
             }
             return Some(iced::Task::batch([

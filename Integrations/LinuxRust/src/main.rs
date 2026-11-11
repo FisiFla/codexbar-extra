@@ -23,6 +23,7 @@ mod share;
 mod shots;
 mod spend;
 mod state;
+mod status_feed;
 mod stay_awake;
 mod storage;
 mod throughput;
@@ -131,6 +132,7 @@ fn main() -> iced::Result {
                 credential_draft: String::new(),
                 config_status: Ok(String::new()),
                 hooks: None,
+                status_components: Default::default(),
                 busy: false,
                 cost_busy: false,
                 stale: false,
@@ -226,6 +228,28 @@ fn fetch_usage(app: &App) -> iced::Task<Message> {
     iced::Task::perform(
         async move { cli::fetch_entries(&exe, &provider, &source, show_status, show_identity).await },
         Message::UsageLoaded,
+    )
+}
+
+/// Status-page components on a blocking worker; cached for five minutes per provider.
+pub(crate) fn fetch_status(app: &App, provider: &str) -> iced::Task<Message> {
+    let now = chrono::Utc::now().timestamp();
+    if matches!(app.status_components.get(provider), Some((at, Ok(_))) if now - at < 300) {
+        return iced::Task::none();
+    }
+    let Some(url) = ui::popover::status_url(provider) else {
+        return iced::Task::none();
+    };
+    let provider = provider.to_string();
+    iced::Task::perform(
+        async move {
+            let r = tokio::task::spawn_blocking(move || status_feed::fetch(url))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            (provider, r)
+        },
+        |(p, r)| Message::StatusLoaded(p, r),
     )
 }
 
@@ -696,10 +720,19 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             iced::Task::none()
         }
         Message::ToggleChart(key) => {
-            if !app.toggled_charts.remove(&key) {
-                app.toggled_charts.insert(key);
+            let opened = !app.toggled_charts.remove(&key);
+            if opened {
+                app.toggled_charts.insert(key.clone());
             }
             app.chart_hover = None;
+            match key.strip_suffix(":status") {
+                Some(provider) if opened => fetch_status(app, provider),
+                _ => iced::Task::none(),
+            }
+        }
+        Message::StatusLoaded(provider, result) => {
+            let now = chrono::Utc::now().timestamp();
+            app.status_components.insert(provider, (now, result));
             iced::Task::none()
         }
         Message::ChartSeries { key, index } => {

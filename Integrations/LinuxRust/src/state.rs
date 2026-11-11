@@ -84,6 +84,10 @@ pub struct App {
     pub config_status: Result<String, String>,
     /// Hooks section of the shared config; `None` until the Hooks pane first loads it.
     pub hooks: Option<Result<crate::cli::HooksInfo, String>>,
+    /// Live status-page components per provider: (fetched at, result). Loaded when the
+    /// Status Page row is expanded.
+    pub status_components:
+        BTreeMap<String, (i64, Result<Vec<crate::status_feed::Component>, String>)>,
     pub busy: bool,
     pub cost_busy: bool,
     pub stale: bool,
@@ -197,6 +201,7 @@ pub enum Message {
     ClearCredential(String),
     ConfigDone(Result<String, String>),
     HooksLoaded(Result<crate::cli::HooksInfo, String>),
+    StatusLoaded(String, Result<Vec<crate::status_feed::Component>, String>),
     SetHooksEnabled(bool),
     RefreshHooks,
     Tick,

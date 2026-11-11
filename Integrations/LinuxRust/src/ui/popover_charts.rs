@@ -9,7 +9,6 @@ use iced::{Color, Element, Length};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
     Refresh,
-    Chart,
     ChevronRight,
     ChevronDown,
     Copy,
@@ -33,7 +32,6 @@ impl Glyph {
         }
         match self {
             Glyph::Refresh => s!(r#"<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>"#),
-            Glyph::Chart => s!(r#"<path d="M5 20V11M12 20V4M19 20v-6"/>"#),
             Glyph::ChevronRight => s!(r#"<path d="M9 5l7 7-7 7"/>"#),
             Glyph::ChevronDown => s!(r#"<path d="M5 9l7 7 7-7"/>"#),
             Glyph::External => s!(r#"<path d="M7 17L17 7M8 7h9v9"/>"#),
@@ -160,7 +158,7 @@ mod tests {
     fn every_glyph_is_valid_svg() {
         for g in [
             Glyph::Refresh,
-            Glyph::Chart, Glyph::ChevronRight, Glyph::ChevronDown,
+            Glyph::ChevronRight, Glyph::ChevronDown,
             Glyph::Copy, Glyph::External, Glyph::Puzzle,
         ] {
             let s = g.svg();

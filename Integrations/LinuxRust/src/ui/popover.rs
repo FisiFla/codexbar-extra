@@ -806,6 +806,110 @@ fn menu_row<'a>(
         .into()
 }
 
+/// Mac status submenu (`StatusComponentsMenuView`): dot · name · status per component, groups
+/// expand to their children, then the website link. Fetched when the row first opens.
+fn status_submenu<'a>(app: &'a App, provider: &str, url: &'static str) -> Element<'a, Message> {
+    let key = format!("{provider}:status");
+    let open = app.toggled_charts.contains(&key);
+    let mut col = Column::new()
+        .spacing(1)
+        .push(menu_row(
+            "Status Page".to_string(),
+            Some(Message::ToggleChart(key.clone())),
+            Some(if open {
+                Glyph::ChevronDown
+            } else {
+                Glyph::ChevronRight
+            }),
+        ));
+    if !open {
+        return col.into();
+    }
+    let mut list = Column::new().spacing(6).padding([4, 14]);
+    match app.status_components.get(provider) {
+        None => {
+            list = list.push(text("Loading…").size(12).color(muted()));
+        }
+        Some((_, Err(e))) => {
+            list = list.push(text(e.clone()).size(12).color(muted()));
+        }
+        Some((_, Ok(components))) => {
+            for c in components {
+                if c.children.is_empty() {
+                    list = list.push(status_line(c, None, false));
+                } else {
+                    let gkey = format!("{key}:{}", c.id);
+                    let expanded = app.toggled_charts.contains(&gkey);
+                    list = list.push(
+                        crate::ui::style::button(status_line(c, Some(expanded), false))
+                            .on_press(Message::ToggleChart(gkey))
+                            .style(|theme: &Theme, _| button::Style {
+                                text_color: theme.palette().text,
+                                ..Default::default()
+                            })
+                            .padding(0)
+                            .width(Length::Fill),
+                    );
+                    if expanded {
+                        for child in &c.children {
+                            list = list.push(status_line(child, None, true));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    col = col.push(list);
+    col = col.push(menu_row(
+        "Open Status Page".to_string(),
+        Some(Message::OpenUrl(url.to_string())),
+        None,
+    ));
+    col.into()
+}
+
+fn status_line(
+    c: &crate::status_feed::Component,
+    expanded: Option<bool>,
+    indented: bool,
+) -> Element<'static, Message> {
+    let dot = crate::status_feed::dot_rgb(&c.status)
+        .map(|(r, g, b)| Color::from_rgb(r, g, b))
+        .unwrap_or_else(muted);
+    let mut r = Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push(Space::with_width(Length::Fixed(if indented { 17.0 } else { 0.0 })))
+        .push(
+            container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0))).style(
+                move |_: &Theme| container::Style {
+                    background: Some(Background::Color(dot)),
+                    border: Border::default().rounded(4.0),
+                    ..Default::default()
+                },
+            ),
+        )
+        .push(text(c.name.clone()).size(13));
+    if let Some(open) = expanded {
+        r = r.push(glyph(
+            if open {
+                Glyph::ChevronDown
+            } else {
+                Glyph::ChevronRight
+            },
+            9.0,
+            muted(),
+        ));
+    }
+    r.push(Space::with_width(Length::Fill))
+        .push(
+            text(crate::status_feed::label(&c.status))
+                .size(12)
+                .color(muted()),
+        )
+        .into()
+}
+
 fn selected_entry(app: &App) -> Option<&Entry> {
     if app.selected >= 0 {
         app.entries.get(app.selected as usize)
@@ -842,11 +946,15 @@ fn actions(app: &App) -> Element<'_, Message> {
             ));
         }
         if let Some(url) = status_url(&provider) {
-            col = col.push(menu_row(
-                "Status Page".to_string(),
-                Some(Message::OpenUrl(url.to_string())),
-                None,
-            ));
+            if matches!(provider.as_str(), "codex" | "claude") {
+                col = col.push(status_submenu(app, &provider, url));
+            } else {
+                col = col.push(menu_row(
+                    "Status Page".to_string(),
+                    Some(Message::OpenUrl(url.to_string())),
+                    None,
+                ));
+            }
         }
         if !entry.status.is_empty() {
             col = col.push(
@@ -1017,14 +1125,26 @@ fn provider_body<'a>(
     }
     // Credits. The CLI carries only `remaining` (no limit), so no bar can be
     // drawn yet; the value stays text until the contract grows a limit.
-    if let Some(credits) = entry.credits {
+    // Codex always shows the block (mac "Credits · Balance: Unavailable" + "Buy Credits…").
+    if entry.credits.is_some() || entry.provider == "codex" {
         col = col.push(rule());
         col = col.push(section_title("Credits"));
-        col = col.push(
-            text(format!("{} remaining", format_credits(credits)))
+        col = col.push(match entry.credits {
+            Some(credits) => text(format!("{} remaining", format_credits(credits)))
                 .size(crate::ui::style::TEXT_FOOTNOTE)
                 .color(muted()),
-        );
+            None => text("Credits · Balance: Unavailable")
+                .size(crate::ui::style::TEXT_FOOTNOTE),
+        });
+        if entry.provider == "codex" {
+            if let Some(url) = crate::ui::settings_view::dashboard_url("codex") {
+                col = col.push(menu_row(
+                    "Buy Credits…".to_string(),
+                    Some(Message::OpenUrl(url.to_string())),
+                    None,
+                ));
+            }
+        }
     }
     // Reset credits (hide at 0: model cannot distinguish unknown from none)
     if entry.reset_credits_available > 0 {
@@ -1481,7 +1601,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
     let section = |key: String, title: &'static str| {
         // Mac shows these behind "›" submenus, so they start collapsed.
         let open = app.toggled_charts.contains(&key);
-        (row_header(key, title, open, Some(Glyph::Chart), false), open)
+        (row_header(key, title, open, None, false), open)
     };
 
     let payload = if app.settings.show_costs {
@@ -1570,60 +1690,26 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         }
     }
 
-    // Plan utilization history + quota burndown (local usage history).
+    // Plan Usage (mac submenu): quota burndown (codex/claude), separator, utilization history.
     let series = app.history.series_for(provider);
     if !series.is_empty() {
-        let titles: Vec<String> = series.iter().map(|s| s.label.clone()).collect();
         let key = format!("{provider}:util");
-        let (head, open) = section(key.clone(), "Plan utilization");
+        let (head, open) = section(key.clone(), "Plan Usage");
         col = sep(col).push(head);
         if open {
-            let idx = selected_series(&key, series.len());
-            if series.len() > 1 {
-                col = col.push(series_picker(&key, &titles, idx));
-            }
-            let s = series[idx];
-            let bars = crate::history::utilization_bars(s, tz);
-            let hover = hover_for(&key);
-            col = col.push(chart_canvas(crate::charts::BarChart {
-                hover,
-                key,
-                color: accent,
-                peak_cap: false,
-                fmt: percent_label,
-                axis: percent_label,
-                y_max: Some(100.0),
-                bars: bars.clone(),
-            }));
-            col = col.push(detail_text(popover_charts::detail_line(
-                &bars,
-                hover,
-                percent_label,
-            )));
-            let cadence = if s.window_minutes < 1440 {
-                "Peak used per day"
-            } else {
-                "Peak used per reset period"
-            };
-            col = col.push(
-                text(format!(
-                    "{cadence} · {} samples recorded locally",
-                    s.entries.len()
-                ))
-                .size(11)
-                .color(muted()),
-            );
-        }
-
-        let burns: Vec<(&crate::history::Series, crate::history::Burndown)> = series
-            .iter()
-            .filter_map(|s| crate::history::Burndown::from_series(s, now).map(|b| (*s, b)))
-            .collect();
-        if !burns.is_empty() {
-            let key = format!("{provider}:burn");
-            let (head, open) = section(key.clone(), "Quota burndown");
-            col = col.push(head);
-            if open {
+            let burns: Vec<(&crate::history::Series, crate::history::Burndown)> =
+                if matches!(provider, "codex" | "claude") {
+                    series
+                        .iter()
+                        .filter_map(|s| {
+                            crate::history::Burndown::from_series(s, now).map(|b| (*s, b))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            if !burns.is_empty() {
+                let key = format!("{provider}:burn");
                 let idx = selected_series(&key, burns.len());
                 if burns.len() > 1 {
                     let titles: Vec<String> = burns.iter().map(|b| b.0.label.clone()).collect();
@@ -1659,7 +1745,44 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
                             .color(muted()),
                     );
                 }
+                col = col.push(rule());
             }
+            let titles: Vec<String> = series.iter().map(|s| s.label.clone()).collect();
+            let idx = selected_series(&key, series.len());
+            if series.len() > 1 {
+                col = col.push(series_picker(&key, &titles, idx));
+            }
+            let s = series[idx];
+            let bars = crate::history::utilization_bars(s, tz);
+            let hover = hover_for(&key);
+            col = col.push(chart_canvas(crate::charts::BarChart {
+                hover,
+                key,
+                color: accent,
+                peak_cap: false,
+                fmt: percent_label,
+                axis: percent_label,
+                y_max: Some(100.0),
+                bars: bars.clone(),
+            }));
+            col = col.push(detail_text(popover_charts::detail_line(
+                &bars,
+                hover,
+                percent_label,
+            )));
+            let cadence = if s.window_minutes < 1440 {
+                "Peak used per day"
+            } else {
+                "Peak used per reset period"
+            };
+            col = col.push(
+                text(format!(
+                    "{cadence} · {} samples recorded locally",
+                    s.entries.len()
+                ))
+                .size(11)
+                .color(muted()),
+            );
         }
     }
 
