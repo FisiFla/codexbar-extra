@@ -594,6 +594,48 @@ pub async fn config_clear_credential(
 ) -> Result<serde_json::Value, String> {
     parse_config_output(&run_cli(&config_clear_credential_argv(exe, provider), None).await?)
 }
+/// `hooks` section of the shared config, as `codexbar hooks list --format json` prints it.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct HooksInfo {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub events: Vec<HookRuleInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct HookRuleInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub executable: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
+pub async fn hooks_list(exe: &str) -> Result<HooksInfo, String> {
+    let argv: Vec<String> = [exe, "hooks", "list", "--format", "json"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    serde_json::from_slice(&run_cli(&argv, None).await?).map_err(|e| e.to_string())
+}
+
+pub async fn hooks_set_enabled(exe: &str, enabled: bool) -> Result<(), String> {
+    let verb = if enabled { "enable" } else { "disable" };
+    let argv: Vec<String> = [exe, "hooks", verb, "--format", "json"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    run_cli(&argv, None).await.map(|_| ())
+}
+
 pub async fn fetch_catalog(exe: &str) -> Vec<ProviderCatalogEntry> {
     let out = tokio::process::Command::new(exe)
         .args(["config", "providers", "--format", "json"])
@@ -627,6 +669,17 @@ pub async fn account_action(provider: &str, login: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hooks_list_json_parses() {
+        let raw = br#"{"events":[{"id":"a","enabled":true,"event":"quota_low","provider":"codex","executable":"/bin/notify","arguments":["x"],"timeoutSeconds":5}],"enabled":true}"#;
+        let h: HooksInfo = serde_json::from_slice(raw).unwrap();
+        assert!(h.enabled);
+        assert_eq!(h.events[0].event, "quota_low");
+        assert_eq!(h.events[0].arguments, vec!["x".to_string()]);
+        let empty: HooksInfo = serde_json::from_slice(br#"{"events":[],"enabled":false}"#).unwrap();
+        assert_eq!(empty, HooksInfo::default());
+    }
+
     use super::*;
     use std::io::Write;
     use std::time::Duration;

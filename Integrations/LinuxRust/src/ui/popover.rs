@@ -224,7 +224,7 @@ fn updated_line(app: &App) -> String {
 }
 
 /// Mac `Date.relativeDescription` as the menu shows it ("just now", "2 min ago").
-fn relative_ago(at: i64, now: i64) -> String {
+pub(crate) fn relative_ago(at: i64, now: i64) -> String {
     let secs = (now - at).max(0);
     match secs {
         0..=14 => "just now".into(),
@@ -240,7 +240,7 @@ fn relative_ago(at: i64, now: i64) -> String {
 
 /// Mac `MenuCardView.planDisplay`: Codex Pro tiers get their display names; otherwise
 /// drop boilerplate words (claude/codex/account/plan) and capitalize a lowercase first letter.
-fn plan_display(raw: &str, provider: &str) -> String {
+pub(crate) fn plan_display(raw: &str, provider: &str) -> String {
     let raw = raw.trim();
     if provider == "codex" {
         match raw.to_lowercase().as_str() {

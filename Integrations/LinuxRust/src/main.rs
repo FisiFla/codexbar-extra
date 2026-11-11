@@ -130,6 +130,7 @@ fn main() -> iced::Result {
                 provider_meta: vec![],
                 credential_draft: String::new(),
                 config_status: Ok(String::new()),
+                hooks: None,
                 busy: false,
                 cost_busy: false,
                 stale: false,
@@ -467,7 +468,15 @@ fn settings_nav(app: &mut App, pane: SettingsPane, provider: Option<String>) {
 }
 
 /// Entering Usage & Spend refreshes stale costs and rescans local history.
-fn spend_entry_tasks(app: &mut App) -> iced::Task<Message> {
+fn fetch_hooks(app: &App) -> iced::Task<Message> {
+    let exe = app.settings.executable.clone();
+    iced::Task::perform(async move { cli::hooks_list(&exe).await }, Message::HooksLoaded)
+}
+
+fn pane_entry_tasks(app: &mut App) -> iced::Task<Message> {
+    if app.settings_pane == SettingsPane::Hooks {
+        return fetch_hooks(app);
+    }
     if app.settings_pane != SettingsPane::Spend {
         return iced::Task::none();
     }
@@ -816,7 +825,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
         },
         Message::OpenSettingsPane(p) => {
             settings_nav(app, p, None);
-            spend_entry_tasks(app)
+            pane_entry_tasks(app)
         }
         Message::SettingsBack | Message::SettingsForward => {
             let back = matches!(msg, Message::SettingsBack);
@@ -831,7 +840,7 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             to.push((app.settings_pane, app.selected_provider.take()));
             app.settings_pane = pane;
             app.selected_provider = provider;
-            spend_entry_tasks(app)
+            pane_entry_tasks(app)
         }
         Message::SettingsSearchChanged(s) => {
             app.settings_search = s;
@@ -944,6 +953,21 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 Message::ConfigDone,
             )
         }
+        Message::HooksLoaded(result) => {
+            app.hooks = Some(result);
+            iced::Task::none()
+        }
+        Message::SetHooksEnabled(on) => {
+            let exe = app.settings.executable.clone();
+            iced::Task::perform(
+                async move { cli::hooks_set_enabled(&exe, on).await },
+                |r| match r {
+                    Ok(()) => Message::RefreshHooks,
+                    Err(e) => Message::HooksLoaded(Err(e)),
+                },
+            )
+        }
+        Message::RefreshHooks => fetch_hooks(app),
         Message::ConfigDone(result) => {
             let ok = result.is_ok();
             app.config_status = result;

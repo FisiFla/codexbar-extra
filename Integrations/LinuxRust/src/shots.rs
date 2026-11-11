@@ -254,6 +254,9 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
             if let Some(p) = ALL_PANES.iter().find(|p| format!("{p:?}") == pane) {
                 app.settings_pane = *p;
             }
+            if app.settings_pane == crate::state::SettingsPane::Hooks {
+                return Some(iced::Task::batch([raise, crate::fetch_hooks(app)]));
+            }
         }
         return Some(raise);
     }

@@ -82,6 +82,8 @@ pub struct App {
     /// Unsaved API key / cookie typed in provider detail; cleared after every write.
     pub credential_draft: String,
     pub config_status: Result<String, String>,
+    /// Hooks section of the shared config; `None` until the Hooks pane first loads it.
+    pub hooks: Option<Result<crate::cli::HooksInfo, String>>,
     pub busy: bool,
     pub cost_busy: bool,
     pub stale: bool,
@@ -194,6 +196,9 @@ pub enum Message {
     },
     ClearCredential(String),
     ConfigDone(Result<String, String>),
+    HooksLoaded(Result<crate::cli::HooksInfo, String>),
+    SetHooksEnabled(bool),
+    RefreshHooks,
     Tick,
     ShowPage(Page),
     WindowOpened(window::Id, Page),

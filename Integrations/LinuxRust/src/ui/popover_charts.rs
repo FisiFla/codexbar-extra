@@ -16,6 +16,7 @@ pub enum Glyph {
     Shield,
     Warning,
     External,
+    Puzzle,
 }
 
 impl Glyph {
@@ -36,6 +37,9 @@ impl Glyph {
             Glyph::ChevronRight => s!(r#"<path d="M9 5l7 7-7 7"/>"#),
             Glyph::ChevronDown => s!(r#"<path d="M5 9l7 7 7-7"/>"#),
             Glyph::External => s!(r#"<path d="M7 17L17 7M8 7h9v9"/>"#),
+            Glyph::Puzzle => s!(
+                r#"<path d="M4 7h4a2 2 0 1 1 4 0h4v4a2 2 0 1 1 0 4v4H4v-4a2 2 0 1 0 0-4z"/>"#
+            ),
             Glyph::Copy => s!(
                 r#"<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>"#
             ),
@@ -157,7 +161,7 @@ mod tests {
         for g in [
             Glyph::Refresh,
             Glyph::Chart, Glyph::ChevronRight, Glyph::ChevronDown,
-            Glyph::Copy, Glyph::External,
+            Glyph::Copy, Glyph::External, Glyph::Puzzle,
         ] {
             let s = g.svg();
             assert!(s.starts_with("<svg") && s.ends_with("</svg>"), "{g:?}");

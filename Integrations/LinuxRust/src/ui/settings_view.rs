@@ -118,11 +118,34 @@ pub fn plugins_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("providers"))
 }
 
+/// Shared CLI config, resolved like `CodexBarConfigStore.defaultURL`.
 pub fn config_json_path() -> PathBuf {
-    Settings::path()
-        .parent()
-        .map(|p| p.join("config.json"))
-        .unwrap_or_else(|| PathBuf::from("config.json"))
+    let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let expand = |v: String| match v.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(v),
+    };
+    if let Some(o) = env("CODEXBAR_CONFIG") {
+        return expand(o);
+    }
+    if let Some(x) = env("XDG_CONFIG_HOME").map(expand).filter(|p| p.is_absolute()) {
+        return x.join("codexbar").join("config.json");
+    }
+    let xdg = home.join(".config/codexbar/config.json");
+    let legacy = home.join(".codexbar/config.json");
+    if !xdg.exists() && legacy.exists() {
+        return legacy;
+    }
+    xdg
+}
+
+/// `~/…` form of a path under the home directory (Mac shows paths abbreviated).
+fn tilde(p: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(h) if p.starts_with(&h) => format!("~/{}", p.strip_prefix(&h).unwrap().display()),
+        _ => p.display().to_string(),
+    }
 }
 
 pub fn list_plugins() -> Vec<String> {
@@ -135,27 +158,6 @@ pub fn list_plugins() -> Vec<String> {
     };
     names.sort();
     names
-}
-
-fn status_dot<'a>(c: Color) -> Element<'a, Message> {
-    let dot = container(iced::widget::Space::new(
-        Length::Fixed(8.0),
-        Length::Fixed(8.0),
-    ))
-    .style(move |_| container::Style {
-        background: Some(c.into()),
-        border: iced::Border::default().rounded(4.0),
-        ..Default::default()
-    });
-    container(dot).center_y(Length::Fixed(20.0)).into()
-}
-
-fn dot_color(app: &App, provider_id: &str) -> Color {
-    match app.entries.iter().find(|e| e.provider == provider_id) {
-        Some(e) if !e.error.trim().is_empty() => Color::from_rgb(0.85, 0.30, 0.25),
-        Some(_) => Color::from_rgb(0.30, 0.75, 0.40),
-        None => Color::from_rgb(0.55, 0.55, 0.55),
-    }
 }
 
 // ---------- control helpers (clone Settings -> SettingsChanged) ----------
@@ -335,34 +337,24 @@ fn section_form<'a>(
             rows = rows.push(hairline());
         }
     }
-    let mut col = column![
-        text(title.to_string())
-            .size(crate::ui::style::TEXT_HEADLINE)
-            .font(crate::ui::style::font_semibold()),
+    let mut col = column![].spacing(8).padding([0, 4]);
+    if !title.is_empty() {
+        col = col.push(
+            text(title.to_string())
+                .size(crate::ui::style::TEXT_HEADLINE)
+                .font(crate::ui::style::font_semibold()),
+        );
+    }
+    col = col.push(
         container(rows)
             .padding([3, 12])
             .width(Length::Fill)
             .style(crate::ui::style::panel),
-    ]
-    .spacing(8)
-    .padding([0, 4]);
+    );
     if let Some(f) = footer {
         col = col.push(container(note(f)).padding([0, 8]));
     }
     col.into()
-}
-
-/// Mac grouped section: semibold header, then a rounded group box holding the rows.
-fn section<'a>(title: &str, body: Element<'a, Message>) -> Element<'a, Message> {
-    column![
-        text(title.to_string())
-            .size(crate::ui::style::TEXT_HEADLINE)
-            .font(crate::ui::style::font_semibold()),
-        group_box(body),
-    ]
-    .spacing(8)
-    .padding([0, 4])
-    .into()
 }
 
 fn group_box<'a>(body: Element<'a, Message>) -> Element<'a, Message> {
@@ -370,6 +362,13 @@ fn group_box<'a>(body: Element<'a, Message>) -> Element<'a, Message> {
         .padding([12, 16])
         .width(Length::Fill)
         .style(crate::ui::style::panel)
+        .into()
+}
+
+fn note_owned<'a>(s: String) -> Element<'a, Message> {
+    text(s)
+        .size(crate::ui::style::TEXT_FOOTNOTE)
+        .color(crate::ui::style::SECONDARY)
         .into()
 }
 
@@ -565,48 +564,63 @@ fn providers_pane(app: &App) -> Element<'_, Message> {
         .step(1u32)
         .style(crate::ui::style::slider)
     };
-    let mut col = column![section(
+    let mut col = provider_detail(app, &selected_id);
+    col = col.push(section_form(
         "Provider order",
-        column![
-            labeled("Order (comma-separated)", order_field.into()),
-            note("Used when the provider is set to custom; also orders bars and cards."),
-            labeled(
-                "Account (0 = default)",
+        vec![
+            with_note(
+                pref("Order", container(order_field).width(Length::Fixed(260.0)).into()),
+                "Comma-separated. Used when the provider is set to custom; also orders bars and cards.",
+            ),
+            pref(
+                "Account",
                 row![
-                    container(account_slider).width(Length::Fixed(220.0)),
-                    text(s.account_index.to_string()),
+                    container(account_slider).width(Length::Fixed(200.0)),
+                    text(if s.account_index == 0 {
+                        "Default".to_string()
+                    } else {
+                        s.account_index.to_string()
+                    })
+                    .size(crate::ui::style::TEXT_BODY)
+                    .color(crate::ui::style::SECONDARY)
+                    .width(Length::Fixed(52.0)),
                 ]
                 .spacing(8)
+                .align_y(iced::Alignment::Center)
                 .into(),
             ),
-            check("All accounts", s.all_accounts, s.clone(), |st, v| st
-                .all_accounts =
-                v),
-        ]
-        .spacing(8)
-        .into(),
-    ),]
-    .spacing(16);
-    col = col.push(provider_detail(app, &selected_id));
+            check("All accounts", s.all_accounts, s.clone(), |st, v| st.all_accounts = v),
+        ],
+        None,
+    ));
     col.into()
 }
 
+/// Mac Form value row: primary label left, secondary value right.
 fn detail_row<'a>(label: &str, value: String) -> Element<'a, Message> {
     row![
         text(label.to_string())
             .size(crate::ui::style::TEXT_BODY)
-            .color(crate::ui::style::SECONDARY)
             .width(Length::Fill),
         text(value)
             .size(crate::ui::style::TEXT_BODY)
-            .font(crate::ui::style::font_medium()),
+            .color(crate::ui::style::SECONDARY),
     ]
     .spacing(12)
     .align_y(iced::Alignment::Center)
     .into()
 }
 
-fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
+/// "47 sec ago" for an RFC 3339 timestamp; anything else is shown as given.
+fn updated_text(raw: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(raw.trim()) {
+        Ok(t) => crate::ui::popover::relative_ago(t.timestamp(), chrono::Utc::now().timestamp()),
+        Err(_) => or_dash(raw).to_string(),
+    }
+}
+
+/// Mac provider detail: header card with value rows, then Usage, Credentials and Account forms.
+fn provider_detail<'a>(app: &'a App, id: &str) -> iced::widget::Column<'a, Message> {
     let name = app
         .catalog
         .iter()
@@ -614,164 +628,148 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
         .map(|(_, n)| n.clone())
         .unwrap_or_else(|| crate::model::provider_name(id));
     let entry = app.entries.iter().find(|e| e.provider == id);
-    // Mac detail header: circular glyph badge, title2 name, caption subline.
-    let badge = container(crate::icons::brand::<Message>(id, 24.0, Color::WHITE))
-        .center_x(Length::Fixed(28.0))
-        .center_y(Length::Fixed(28.0))
-        .style(|_: &iced::Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08))),
-            border: Border::default().rounded(14.0),
-            ..Default::default()
-        });
-    let mut body = column![
-        row![
-            badge,
-            column![
-                text(name.clone())
-                    .size(crate::ui::style::TEXT_TITLE2)
-                    .font(crate::ui::style::font_semibold()),
-                row![
-                    status_dot(dot_color(app, id)),
-                    text(entry.map(|e| or_dash(&e.status).to_string()).unwrap_or_else(|| "No usage data yet".to_string()))
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(crate::ui::style::SECONDARY),
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-            ]
-            .spacing(2),
+    let meta = app.provider_meta.iter().find(|p| p.provider == id);
+    let subline = match entry {
+        Some(e) if !e.updated_at.trim().is_empty() => {
+            let plan = crate::ui::popover::plan_display(&e.plan, id);
+            let ago = updated_text(&e.updated_at);
+            if plan.is_empty() { ago } else { format!("{plan} · {ago}") }
+        }
+        Some(_) => "Waiting for usage…".to_string(),
+        None => "No usage data yet".to_string(),
+    };
+    let mut header = row![
+        crate::icons::icon::<Message>(id, 26.0, Color::WHITE),
+        column![
+            text(name)
+                .size(crate::ui::style::TEXT_TITLE2)
+                .font(crate::ui::style::font_semibold()),
+            text(subline)
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .color(crate::ui::style::SECONDARY),
         ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center),
+        .spacing(2)
+        .width(Length::Fill),
+        crate::ui::style::button(crate::ui::popover_charts::glyph(
+            crate::ui::popover_charts::Glyph::Refresh,
+            15.0,
+            crate::ui::style::SECONDARY,
+        ))
+        .style(crate::ui::style::plain)
+        .padding(4)
+        .on_press_maybe((!app.busy).then_some(Message::Refresh)),
     ]
-    .spacing(8);
+    .spacing(12)
+    .align_y(iced::Alignment::Center);
+    if let Some(m) = meta {
+        let pid = id.to_string();
+        header = header.push(
+            iced::widget::toggler(m.enabled)
+                .on_toggle(move |v| Message::SetProviderEnabled(pid.clone(), v))
+                .size(22.0)
+                .style(crate::ui::style::toggler),
+        );
+    }
+    let mut info: Vec<Element<'a, Message>> = vec![container(header).padding([4, 0]).into()];
+    let mut usage: Vec<Element<'a, Message>> = Vec::new();
     match entry {
         Some(e) => {
             if !e.error.trim().is_empty() {
-                body = body.push(
-                    container(
-                        text(e.error.clone())
-                            .size(crate::ui::style::TEXT_CALLOUT)
-                            .color(crate::ui::style::ERROR),
-                    )
-                    .padding([8, 10])
-                    .width(Length::Fill)
-                    .style(|_: &iced::Theme| container::Style {
-                        background: Some(Background::Color(Color::from_rgba(1.0, 0.27, 0.23, 0.12))),
-                        border: Border::default().rounded(crate::ui::style::R_MD),
-                        ..Default::default()
-                    }),
+                info.push(
+                    text(e.error.clone())
+                        .size(crate::ui::style::TEXT_CALLOUT)
+                        .color(crate::ui::style::ERROR)
+                        .into(),
                 );
             }
-            body = body.push(detail_row("Account", or_dash(&e.account_label).to_string()));
-            body = body.push(detail_row("Plan", or_dash(&e.plan).to_string()));
-            body = body.push(detail_row("Updated", or_dash(&e.updated_at).to_string()));
-            let credits = e
-                .credits
-                .map(|c| format!("{c}"))
-                .unwrap_or_else(|| "—".to_string());
-            body = body.push(detail_row("Credits", credits));
-            if e.windows.is_empty() {
-                body = body.push(detail_row("Usage", "—".to_string()));
-            }
+            info.push(detail_row("Updated", format!("Updated {}", updated_text(&e.updated_at))));
+            info.push(detail_row("Status", or_dash(&e.status).to_string()));
+            info.push(detail_row("Account", or_dash(&e.account_label).to_string()));
+            info.push(detail_row("Plan", or_dash(&crate::ui::popover::plan_display(&e.plan, id)).to_string()));
+            let accent = crate::ui::popover::accent_rgb(id);
+            let fill = Color::from_rgb8(accent.0, accent.1, accent.2);
             for w in &e.windows {
-                let accent = crate::ui::popover::accent_rgb(id);
-                let fill = Color::from_rgb8(accent.0, accent.1, accent.2);
-                body = body.push(
+                usage.push(
                     column![
                         row![
-                            text(w.label.clone())
+                            text(format!("{} {}% left", w.label, w.remaining))
                                 .size(crate::ui::style::TEXT_BODY)
-                                .font(crate::ui::style::font_medium())
+                                .font(crate::ui::style::font_semibold())
                                 .width(Length::Fill),
-                            text(format!("{}% left", w.remaining))
-                                .size(crate::ui::style::TEXT_BODY)
-                                .font(crate::ui::style::font_numeric()),
-                        ],
+                            text(w.reset_text.clone())
+                                .size(crate::ui::style::TEXT_FOOTNOTE)
+                                .color(crate::ui::style::SECONDARY),
+                        ]
+                        .align_y(iced::Alignment::Center),
                         iced::widget::progress_bar(0.0..=100.0, w.remaining.clamp(0, 100) as f32)
                             .height(6.0)
                             .style(crate::ui::style::meter(fill, 6.0)),
-                        text(or_dash(&w.reset_text).to_string())
-                            .size(crate::ui::style::TEXT_CAPTION)
-                            .color(crate::ui::style::SECONDARY),
                     ]
-                    .spacing(4),
+                    .spacing(6)
+                    .into(),
                 );
             }
+            if let Some(c) = e.credits {
+                usage.push(detail_row("Credits", format!("{c}")));
+            }
+            if !e.extra_usage_text.trim().is_empty() {
+                usage.push(detail_row("Extra usage", e.extra_usage_text.clone()));
+            }
         }
-        None => {
-            body = body.push(note("No usage data for this provider yet — values show as — until a refresh returns data."));
-            body = body.push(detail_row("Plan", "—".to_string()));
-            body = body.push(detail_row("Usage", "—".to_string()));
-        }
+        None => info.push(note("No usage data for this provider yet — values show as — until a refresh returns data.")),
     }
-    if let Some(meta) = app.provider_meta.iter().find(|p| p.provider == id) {
-        let pid = id.to_string();
-        body = body.push(
-            switch_row("Enabled", meta.enabled, move |v| {
-                Message::SetProviderEnabled(pid.clone(), v)
-            }),
+    let mut col = column![section_form("", info, None)].spacing(20);
+    if !usage.is_empty() {
+        col = col.push(section_form("Usage", usage, None));
+    }
+    if let Some(auth) = meta.map(|m| &m.authentication).filter(|a| a.api_key || a.cookie_header) {
+        let placeholder = if auth.api_key { "API key" } else { "Cookie header" };
+        let has_draft = !app.credential_draft.trim().is_empty();
+        let mut actions = row![].spacing(8);
+        if auth.api_key {
+            actions = actions.push(crate::ui::style::button(text("Save API key")).on_press_maybe(
+                has_draft.then(|| Message::SaveCredential { provider: id.to_string(), cookie: false }),
+            ));
+        }
+        if auth.cookie_header {
+            actions = actions.push(crate::ui::style::button(text("Save cookie header")).on_press_maybe(
+                has_draft.then(|| Message::SaveCredential { provider: id.to_string(), cookie: true }),
+            ));
+        }
+        actions = actions.push(iced::widget::Space::with_width(Length::Fill));
+        actions = actions.push(
+            crate::ui::style::button(text("Clear stored credential"))
+                .style(crate::ui::style::push)
+                .on_press(Message::ClearCredential(id.to_string())),
         );
-        let auth = &meta.authentication;
-        if auth.api_key || auth.cookie_header {
-            let placeholder = if auth.api_key {
-                "API key"
-            } else {
-                "Cookie header"
-            };
-            let mut actions = row![].spacing(8);
-            if auth.api_key {
-                actions = actions.push(
-                    crate::ui::style::button(text("Save API key")).on_press_maybe(
-                        (!app.credential_draft.trim().is_empty()).then(|| {
-                            Message::SaveCredential {
-                                provider: id.to_string(),
-                                cookie: false,
-                            }
-                        }),
-                    ),
-                );
-            }
-            if auth.cookie_header {
-                actions = actions.push(
-                    crate::ui::style::button(text("Save cookie header")).on_press_maybe(
-                        (!app.credential_draft.trim().is_empty()).then(|| {
-                            Message::SaveCredential {
-                                provider: id.to_string(),
-                                cookie: true,
-                            }
-                        }),
-                    ),
-                );
-            }
-            actions = actions.push(
-                crate::ui::style::button(text("Clear stored credential"))
-                    .style(crate::ui::style::push)
-                    .on_press(Message::ClearCredential(id.to_string())),
-            );
-            body = body.push(
-                crate::ui::style::text_input(placeholder, &app.credential_draft)
-                    .secure(true)
-                    .on_input(Message::CredentialDraftChanged),
-            );
-            body = body.push(actions);
-            body = body.push(note("Stored in the shared CodexBar config via the CLI (sent over stdin, never on the command line)."));
-        }
-    }
-    match &app.config_status {
-        Ok(msg) if !msg.is_empty() => body = body.push(note(msg)),
-        Err(e) => {
-            body = body.push(
+        let mut rows: Vec<Element<'a, Message>> = vec![
+            crate::ui::style::text_input(placeholder, &app.credential_draft)
+                .secure(true)
+                .on_input(Message::CredentialDraftChanged)
+                .into(),
+            actions.into(),
+        ];
+        match &app.config_status {
+            Ok(msg) if !msg.is_empty() => rows.push(note(msg)),
+            Err(e) => rows.push(
                 text(e.clone())
-                    .size(12)
-                    .color(Color::from_rgb(0.9, 0.4, 0.35)),
-            )
+                    .size(crate::ui::style::TEXT_FOOTNOTE)
+                    .color(crate::ui::style::ERROR)
+                    .into(),
+            ),
+            _ => {}
         }
-        _ => {}
+        col = col.push(section_form(
+            "Credentials",
+            rows,
+            Some("Stored in the shared CodexBar config via the CLI (sent over stdin, never on the command line)."),
+        ));
     }
+    let mut account: Vec<Element<'a, Message>> = Vec::new();
     if id == "codex" || id == "claude" {
         let pid = id.to_string();
-        body = body.push(
+        account.push(pref(
+            "Sign-in",
             row![
                 crate::ui::style::button(text("Sign in…")).on_press(Message::AccountAction {
                     provider: pid.clone(),
@@ -782,20 +780,24 @@ fn provider_detail<'a>(app: &'a App, id: &str) -> Element<'a, Message> {
                     login: false
                 }),
             ]
-            .spacing(8),
-        );
-        body = body.push(note("Sign-in opens your provider CLI in a terminal. Account selection only changes displayed usage."));
+            .spacing(8)
+            .into(),
+        ));
     }
     if let Some(url) = dashboard_url(id) {
-        body = body.push(
-            crate::ui::style::button(text("Open usage dashboard"))
-                .on_press(Message::OpenUrl(url.to_string())),
-        );
+        account.push(link_row("Usage dashboard", url));
     }
-    body = body.push(note(
-        "Browser-cookie import works only on macOS; on Linux use the provider CLI sign-in or an API key in the CLI config.",
-    ));
-    section("Selected provider", body.into())
+    if let Some(url) = crate::ui::popover::status_url(id) {
+        account.push(link_row("Status page", url));
+    }
+    if !account.is_empty() {
+        col = col.push(section_form(
+            "Account",
+            account,
+            Some("Sign-in opens your provider CLI in a terminal. Browser-cookie import works only on macOS; on Linux use the CLI sign-in or an API key."),
+        ));
+    }
+    col
 }
 
 /// The full Usage & Spend dashboard (it draws its own header), then the cost toggle.
@@ -1012,42 +1014,150 @@ fn notifications_pane(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn hooks_pane(_app: &App) -> Element<'_, Message> {
+fn hooks_pane(app: &App) -> Element<'_, Message> {
+    let warning = row![
+        crate::ui::popover_charts::glyph(
+            crate::ui::popover_charts::Glyph::Warning,
+            14.0,
+            crate::ui::style::SECONDARY,
+        ),
+        note("Hooks can execute local commands on this machine. Only configure commands you trust."),
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center);
+    let (enabled, rules, error) = match &app.hooks {
+        Some(Ok(h)) => (h.enabled, h.events.as_slice(), None),
+        Some(Err(e)) => (false, &[][..], Some(e.as_str())),
+        None => (false, &[][..], None),
+    };
+    let toggle = switch_row("Enable hooks", enabled, Message::SetHooksEnabled);
+    let mut rule_rows: Vec<Element<'_, Message>> = Vec::new();
+    match (&app.hooks, error) {
+        (None, _) => rule_rows.push(note("Loading hooks…")),
+        (_, Some(e)) => rule_rows.push(
+            text(format!("Could not read hooks: {e}"))
+                .size(crate::ui::style::TEXT_FOOTNOTE)
+                .color(crate::ui::style::ERROR)
+                .into(),
+        ),
+        _ if rules.is_empty() => rule_rows.push(note("No hooks configured.")),
+        _ => {
+            for r in rules {
+                let provider = r.provider.clone().unwrap_or_else(|| "any provider".into());
+                let command = std::iter::once(r.executable.as_str())
+                    .chain(r.arguments.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                rule_rows.push(
+                    row![
+                        column![
+                            text(format!("{} · {provider}", r.event)).size(crate::ui::style::TEXT_BODY),
+                            text(command)
+                                .size(crate::ui::style::TEXT_FOOTNOTE)
+                                .color(crate::ui::style::SECONDARY),
+                        ]
+                        .spacing(2)
+                        .width(Length::Fill),
+                        text(if r.enabled { "On" } else { "Off" })
+                            .size(crate::ui::style::TEXT_BODY)
+                            .color(crate::ui::style::SECONDARY),
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+                );
+            }
+        }
+    }
+    let cfg = config_json_path();
+    let dir = cfg.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    rule_rows.push(
+        row![
+            crate::ui::style::button(text("Open config folder"))
+                .on_press(Message::OpenFolder(dir.display().to_string())),
+            crate::ui::style::button(text("Reload")).on_press(Message::RefreshHooks),
+        ]
+        .spacing(8)
+        .into(),
+    );
     column![
-        section(
+        section_form(
             "Hooks",
-            column![
-                note("Hooks run a local executable when quota events happen (quota low/reached/reset, usage updated, provider unavailable/recovered, refresh failed). Only enable hooks you trust — they execute commands on this machine."),
-                text(format!("Config file: {}", config_json_path().display())),
-                note("Hooks live in config.json (shared with the CLI), not in linux.json, so they are managed from the command line:"),
-                text("codexbar hooks list | enable | disable | test | watch"),
-            ]
-            .spacing(8)
-            .into(),
+            vec![
+                with_note(toggle, "Run external commands when quota or provider events occur."),
+                warning.into(),
+            ],
+            None,
+        ),
+        section_form(
+            "Rules",
+            rule_rows,
+            Some("Rules live in the shared config.json. Add and test them with `codexbar hooks list | test | watch`."),
         ),
     ]
-    .spacing(16)
+    .spacing(20)
     .into()
 }
 
 fn plugins_pane(_app: &App) -> Element<'_, Message> {
     let dir = plugins_dir();
     let plugins = list_plugins();
-    let mut body = column![
-        text(format!("Plugins directory: {}", dir.display())),
-        note("Drop a .js or .ts provider plugin in this directory. Plugins run only after approval in the app; approval records the network origins, capabilities, and cookie domains the plugin requested."),
+    let dir_row = row![
+        column![
+            text("Plugins directory").size(crate::ui::style::TEXT_BODY),
+            note_owned(tilde(&dir)),
+        ]
+        .spacing(2)
+        .width(Length::Fill),
+        crate::ui::style::button(text("Show in Files"))
+            .on_press(Message::OpenFolder(dir.display().to_string())),
     ]
-    .spacing(6);
-    if plugins.is_empty() {
-        body = body.push(text("No plugins installed."));
-    } else {
-        for name in &plugins {
-            body = body.push(text(name.clone()));
-        }
-    }
-    column![section("Provider plugins", body.into())]
-        .spacing(16)
+    .spacing(12)
+    .align_y(iced::Alignment::Center);
+    let installed: Element<'_, Message> = if plugins.is_empty() {
+        container(
+            column![
+                crate::ui::popover_charts::glyph(
+                    crate::ui::popover_charts::Glyph::Puzzle,
+                    44.0,
+                    crate::ui::style::SECONDARY,
+                ),
+                text("No Plugins Installed")
+                    .size(crate::ui::style::TEXT_TITLE3)
+                    .font(crate::ui::style::font_semibold())
+                    .color(crate::ui::style::SECONDARY),
+                text("Drop a .js or .ts file into the plugins directory.")
+                    .size(crate::ui::style::TEXT_BODY)
+                    .color(crate::ui::style::SECONDARY)
+                    .align_x(iced::alignment::Horizontal::Center),
+            ]
+            .spacing(10)
+            .align_x(iced::Alignment::Center),
+        )
+        .center_x(Length::Fill)
+        .padding([40, 16])
+        .style(crate::ui::style::panel)
         .into()
+    } else {
+        section_form(
+            "Installed",
+            plugins
+                .into_iter()
+                .map(|n| text(n).size(crate::ui::style::TEXT_BODY).into())
+                .collect(),
+            None,
+        )
+    };
+    column![
+        section_form(
+            "Provider Plugins",
+            vec![dir_row.into()],
+            Some("Plugins are local JavaScript or TypeScript files. Network and cookie access require approval."),
+        ),
+        container(installed).padding([0, 4]),
+    ]
+    .spacing(20)
+    .into()
 }
 
 fn advanced_pane(app: &App) -> Element<'_, Message> {
@@ -1101,40 +1211,43 @@ fn debug_pane(app: &App) -> Element<'_, Message> {
             *c
         })
     };
-    column![section(
-        "Diagnostics",
-        column![
-            text(format!("Usage entries loaded: {}", app.entries.len())),
-            text(format!(
-                "Entries with errors: {}",
-                if app.entries.is_empty() {
-                    "—".to_string()
-                } else {
-                    errors.to_string()
-                }
-            )),
-            text(format!("Last error: {}", or_dash(&app.error))),
-            text(format!("Cost error: {}", or_dash(&app.cost_error))),
-            text(format!(
-                "CLI executable: {}",
-                or_dash(&app.settings.executable)
-            )),
-            labeled(
-                "Settings file (copyable)",
-                crate::ui::style::text_input("", &settings_path).into()
-            ),
-            text(format!("Catalog providers: {}", app.catalog.len())),
-            text(format!(
-                "Busy: {} · Cost busy: {} · Stale: {}",
-                app.busy, app.cost_busy, app.stale
-            )),
-            text(format!("Last updated: {}", or_dash(&app.updated))),
-            note("Run `codexbar diagnose --format json` for a full redacted diagnostic export."),
-        ]
-        .spacing(6)
-        .into(),
-    ),]
-    .spacing(16)
+    let errors_text = if app.entries.is_empty() { "—".to_string() } else { errors.to_string() };
+    column![
+        section_form(
+            "Usage",
+            vec![
+                detail_row("Usage entries loaded", app.entries.len().to_string()),
+                detail_row("Entries with errors", errors_text),
+                detail_row("Catalog providers", app.catalog.len().to_string()),
+                detail_row("Last updated", or_dash(&app.updated).to_string()),
+                detail_row(
+                    "State",
+                    format!("Busy: {} · Cost busy: {} · Stale: {}", app.busy, app.cost_busy, app.stale),
+                ),
+            ],
+            None,
+        ),
+        section_form(
+            "Errors",
+            vec![
+                with_note(detail_row("Last error", String::new()), or_dash(&app.error)),
+                with_note(detail_row("Cost error", String::new()), or_dash(&app.cost_error)),
+            ],
+            None,
+        ),
+        section_form(
+            "Paths",
+            vec![
+                with_note(detail_row("CLI executable", String::new()), or_dash(&app.settings.executable)),
+                with_note(
+                    pref("Settings file", container(crate::ui::style::text_input("", settings_path)).width(Length::Fixed(340.0)).into()),
+                    "Select the field to copy the path.",
+                ),
+            ],
+            Some("Run `codexbar diagnose --format json` for a full redacted diagnostic export."),
+        ),
+    ]
+    .spacing(20)
     .into()
 }
 
