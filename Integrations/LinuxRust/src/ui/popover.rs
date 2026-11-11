@@ -910,6 +910,21 @@ fn status_line(
         .into()
 }
 
+/// Footer row with the Mac's right-aligned shortcut hint (⌘R → Ctrl+R on Linux).
+fn menu_row_hint<'a>(label: String, msg: Option<Message>, hint: &'static str) -> Element<'a, Message> {
+    let r = Row::new()
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .push(text(label).size(13).width(Length::Fill))
+        .push(text(hint).size(12).color(muted()));
+    crate::ui::style::button(r)
+        .on_press_maybe(msg)
+        .style(menu_row_style)
+        .padding([5, 8])
+        .width(Length::Fill)
+        .into()
+}
+
 fn selected_entry(app: &App) -> Option<&Entry> {
     if app.selected >= 0 {
         app.entries.get(app.selected as usize)
@@ -991,28 +1006,24 @@ fn actions(app: &App) -> Element<'_, Message> {
 /// Fixed bottom rows (mac order): Refresh / Settings… / About / Quit.
 fn footer(app: &App) -> Element<'_, Message> {
     let refresh = if app.busy {
-        menu_row("Refreshing…".to_string(), None, None)
+        menu_row_hint("Refreshing…".to_string(), None, "Ctrl+R")
     } else {
-        menu_row(
-            "Refresh".to_string(),
-            Some(Message::Refresh),
-            None,
-        )
+        menu_row_hint("Refresh".to_string(), Some(Message::Refresh), "Ctrl+R")
     };
     container(
         column![
             refresh,
-            menu_row(
+            menu_row_hint(
                 "Settings…".to_string(),
                 Some(Message::ShowPage(Page::Settings)),
-                None,
+                "Ctrl+,",
             ),
             menu_row(
                 format!("About CodexBar (v{})", env!("CARGO_PKG_VERSION")),
                 Some(Message::OpenSettingsPane(SettingsPane::About)),
                 None,
             ),
-            menu_row("Quit".to_string(), Some(Message::Quit), None),
+            menu_row_hint("Quit".to_string(), Some(Message::Quit), "Ctrl+Q"),
         ]
         .spacing(1),
     )

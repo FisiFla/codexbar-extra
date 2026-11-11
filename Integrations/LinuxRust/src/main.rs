@@ -98,6 +98,7 @@ fn main() -> iced::Result {
         .subscription(subscription)
         .theme(|app, id| match app.windows.get(&id) {
             Some(Page::QuotaAlert | Page::Confetti) => ui::overlay_view::clear_theme(),
+            Some(Page::QuickView) => ui::style::popover_theme(),
             _ => ui::style::mac_theme(),
         })
         .run_with(move || {
@@ -454,6 +455,7 @@ fn open_page(app: &mut App, page: Page) -> iced::Task<Message> {
         // macOS Settings minimum is 800x540.
         min_size: (page == Page::Settings).then_some(iced::Size::new(800.0, 540.0)),
         resizable: page != Page::ShareStats,
+        transparent: page == Page::QuickView,
         ..Default::default()
     });
     app.windows.insert(id, page);
@@ -727,6 +729,19 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             app.chart_hover = None;
             match key.strip_suffix(":status") {
                 Some(provider) if opened => fetch_status(app, provider),
+                _ => iced::Task::none(),
+            }
+        }
+        // Mac menu shortcuts (⌘R, ⌘, and ⌘Q) map to Ctrl on Linux; Escape closes the popup.
+        Message::Shortcut(id, key) => {
+            if app.windows.get(&id) != Some(&Page::QuickView) {
+                return iced::Task::none();
+            }
+            match key {
+                'r' => iced::Task::done(Message::Refresh),
+                ',' => iced::Task::done(Message::ShowPage(Page::Settings)),
+                'q' => iced::Task::done(Message::Quit),
+                '\u{1b}' => iced::window::close(id),
                 _ => iced::Task::none(),
             }
         }
@@ -1171,6 +1186,28 @@ fn view(app: &App, id: iced::window::Id) -> iced::Element<Message> {
     }
 }
 
+fn shortcut(
+    event: iced::Event,
+    status: iced::event::Status,
+    id: iced::window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{key::Named, Event, Key};
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    match key.as_ref() {
+        Key::Named(Named::Escape) => Some(Message::Shortcut(id, '\u{1b}')),
+        Key::Character(c) if modifiers.command() && !modifiers.shift() && !modifiers.alt() => {
+            let c = c.chars().next()?.to_ascii_lowercase();
+            matches!(c, 'r' | ',' | 'q').then_some(Message::Shortcut(id, c))
+        }
+        _ => None,
+    }
+}
+
 fn subscription(app: &App) -> iced::Subscription<Message> {
     let tick = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
     let poll = iced::time::every(Duration::from_secs(
@@ -1209,7 +1246,9 @@ fn subscription(app: &App) -> iced::Subscription<Message> {
     } else {
         iced::Subscription::none()
     };
+    let shortcuts = iced::event::listen_with(shortcut);
     iced::Subscription::batch([
+        shortcuts,
         tick,
         poll,
         closed,

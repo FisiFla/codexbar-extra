@@ -99,6 +99,14 @@ pub fn font_numeric() -> Font {
     font_medium()
 }
 
+/// Tray popup theme: the Mac menu's material reads as a translucent sheet; without a blur
+/// protocol the closest is the same graphite at ~88% so the desktop faintly shows through.
+pub fn popover_theme() -> Theme {
+    let mut p = mac_theme().palette();
+    p.background.a = 0.88;
+    Theme::custom("CodexBar Popover".to_string(), p)
+}
+
 /// Dark theme tuned toward macOS: neutral graphite surfaces, system accent colours.
 pub fn mac_theme() -> Theme {
     Theme::custom(

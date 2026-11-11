@@ -202,6 +202,8 @@ pub enum Message {
     ConfigDone(Result<String, String>),
     HooksLoaded(Result<crate::cli::HooksInfo, String>),
     StatusLoaded(String, Result<Vec<crate::status_feed::Component>, String>),
+    /// Keyboard shortcut pressed in a window: Ctrl+R / Ctrl+, / Ctrl+Q, or Escape ('\u{1b}').
+    Shortcut(iced::window::Id, char),
     SetHooksEnabled(bool),
     RefreshHooks,
     Tick,
