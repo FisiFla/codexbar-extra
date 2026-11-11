@@ -134,6 +134,7 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                 "quick-view-status",
                 "quick-view-tpm",
                 "quick-view-cost",
+                "quick-view-tokens",
                 "quick-view-credits",
                 "quick-view-models",
                 "quick-view-storage",
@@ -203,16 +204,23 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
             let pick = app.entries.iter().position(|e| match chart {
                 "util" => !app.history.series_for(&e.provider).is_empty(),
                 "status" => e.provider == "codex",
+                "tokens" => e.provider == "muse" && has_cost(&e.provider),
                 "credits" => app.history.credit_bars(&e.provider, 0).is_some(),
                 "storage" => app.storage.contains_key(&e.provider),
                 _ => has_cost(&e.provider),
             });
             if let Some(i) = pick {
                 let provider = app.entries[i].provider.clone();
-                let key = format!("{provider}:{chart}");
+                // The token-only (Muse) block lives under the cost key.
+                let key = if chart == "tokens" {
+                    format!("{provider}:cost")
+                } else {
+                    format!("{provider}:{chart}")
+                };
                 let payload = app.cost_payloads.iter().find(|p| p.provider == provider);
                 let bars = match chart {
                     "cost" => payload.map(|p| crate::charts::cost_bars(&p.daily)),
+                    "tokens" => payload.map(|p| crate::charts::token_bars(&p.daily)),
                     "models" => payload.map(|p| crate::charts::model_bars(&p.daily, 5).0),
                     "tpm" => payload.map(|p| crate::throughput::daily_bars(&p.daily)),
                     "util" => app.history.series_for(&provider).first().map(|s| {
@@ -231,7 +239,7 @@ pub fn tick(app: &mut App) -> Option<iced::Task<Message>> {
                 }
                 app.selected = i as i32;
                 app.toggled_charts.clear();
-                if chart != "cost" {
+                if chart != "cost" && chart != "tokens" {
                     app.toggled_charts.insert(key.clone());
                 }
                 if chart == "status" {

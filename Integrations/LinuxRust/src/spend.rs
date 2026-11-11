@@ -237,6 +237,8 @@ mod tests {
             last30_days_cost_usd: last30_cost,
             history_coverage_is_established: true,
             provenance: Some("unknown".into()),
+            session_tokens: None,
+            history_label: None,
             daily,
         }
     }

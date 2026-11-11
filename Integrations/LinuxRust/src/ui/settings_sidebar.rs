@@ -27,12 +27,26 @@ pub const SIDEBAR_WIDTH: f32 = 260.0;
 /// Whether the provider is on: enabled in the CLI config (`provider_meta`), or currently
 /// reporting usage without an error (the "all"/custom provider selections fetch providers the
 /// CLI config does not mark enabled).
+/// The config's enabled flag decides. Only before the catalog has loaded do providers that
+/// returned usage stand in, so a disabled provider with working credentials stays hidden.
 pub fn provider_enabled(app: &App, id: &str) -> bool {
-    app.provider_meta.iter().any(|p| p.provider == id && p.enabled)
-        || app
+    if app.provider_meta.is_empty() {
+        return app
             .entries
             .iter()
-            .any(|e| e.provider == id && e.error.trim().is_empty())
+            .any(|e| e.provider == id && e.error.trim().is_empty());
+    }
+    app.provider_meta.iter().any(|p| p.provider == id && p.enabled)
+}
+
+/// Entries the popover shows (switcher tabs, overview rows): enabled providers only, with
+/// their index into `app.entries`.
+pub fn shown_entries(app: &App) -> Vec<(usize, &crate::model::Entry)> {
+    app.entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| provider_enabled(app, &e.provider))
+        .collect()
 }
 
 pub fn enabled_count(catalog: &[(String, String)], enabled: impl Fn(&str) -> bool) -> usize {

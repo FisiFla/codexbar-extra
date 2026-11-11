@@ -191,6 +191,10 @@ pub struct CostPayload {
     #[serde(default)]
     pub provenance: Option<String>,
     #[serde(default)]
+    pub session_tokens: Option<i64>,
+    #[serde(default)]
+    pub history_label: Option<String>,
+    #[serde(default)]
     pub daily: Vec<CostDay>,
 }
 
@@ -463,7 +467,7 @@ pub async fn fetch_costs(
         exe,
         "cost",
         "--provider",
-        "both",
+        "all",
         "--format",
         "json",
         "--days",

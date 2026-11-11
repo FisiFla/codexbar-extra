@@ -244,6 +244,23 @@ pub fn axis_money(v: f64) -> String {
     }
 }
 
+pub fn tokens(v: f64) -> String {
+    format!("{} tokens", crate::throughput::count(v))
+}
+
+pub fn axis_tokens(v: f64) -> String {
+    crate::throughput::count(v)
+}
+
+/// Daily token totals (token-only providers such as Muse Code).
+pub fn token_bars(days: &[CostDay]) -> Vec<ChartBar> {
+    let rows: Vec<(String, f64)> = days
+        .iter()
+        .map(|d| (d.date.clone(), d.total_tokens as f64))
+        .collect();
+    calendar_bars(&rows, |t| Some(*t))
+}
+
 pub fn money(v: f64) -> String {
     format!("${v:.2}")
 }

@@ -232,6 +232,26 @@ fn fetch_usage(app: &App) -> iced::Task<Message> {
     )
 }
 
+fn selected_provider_id(app: &App) -> Option<String> {
+    usize::try_from(app.selected)
+        .ok()
+        .and_then(|i| app.entries.get(i))
+        .map(|e| e.provider.clone())
+}
+
+/// Popover selection follows the provider, not the list index: entries are re-fetched in any
+/// order. A provider that is gone or disabled hands the selection to the first shown tab.
+fn reselect(app: &mut App, prev: Option<String>) {
+    if app.selected == -1 {
+        return;
+    }
+    let shown = ui::settings_sidebar::shown_entries(app);
+    app.selected = prev
+        .and_then(|id| shown.iter().find(|(_, e)| e.provider == id))
+        .or(shown.first())
+        .map_or(-1, |(i, _)| *i as i32);
+}
+
 /// Status-page components on a blocking worker; cached for five minutes per provider.
 pub(crate) fn fetch_status(app: &App, provider: &str) -> iced::Task<Message> {
     let now = chrono::Utc::now().timestamp();
@@ -676,15 +696,14 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
             if let Some(c) = fired.confetti {
                 overlay_tasks.push(show_confetti(app, c.provider));
             }
+            let prev_selected = selected_provider_id(app);
             app.prev_entries = std::mem::replace(&mut app.entries, entries);
             app.busy = false;
             app.stale = false;
             app.error.clear();
             app.updated = chrono::Local::now().format("%H:%M").to_string();
             app.updated_epoch = Some(chrono::Utc::now().timestamp());
-            if app.selected as usize >= app.entries.len() && !app.entries.is_empty() {
-                app.selected = 0;
-            }
+            reselect(app, prev_selected);
             sync_shared(app);
             let obs = history::observations(&app.entries);
             let now = chrono::Utc::now().timestamp();
@@ -783,7 +802,9 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
                 .map(|p| (p.provider.clone(), p.display_name.clone()))
                 .collect();
             descriptors::register_catalog(&app.catalog);
+            let prev_selected = selected_provider_id(app);
             app.provider_meta = c;
+            reselect(app, prev_selected);
             iced::Task::none()
         }
         Message::ShowPage(p) => open_page(app, p),
@@ -814,6 +835,12 @@ fn update(app: &mut App, msg: Message) -> iced::Task<Message> {
         }
         Message::TrayCmd(c) => match c {
             TrayCommand::QuickView => open_page(app, Page::QuickView),
+            TrayCommand::ToggleQuickView => {
+                match app.windows.iter().find(|(_, p)| **p == Page::QuickView) {
+                    Some((id, _)) => iced::window::close(*id),
+                    None => open_page(app, Page::QuickView),
+                }
+            }
             TrayCommand::Usage => open_page(app, Page::Usage),
             TrayCommand::Settings => open_page(app, Page::Settings),
             TrayCommand::Sessions => open_page(app, Page::Sessions),

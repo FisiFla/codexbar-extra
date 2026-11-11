@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrayCommand {
     QuickView,
+    /// Tray left click: open the popup, or close it when it is already open.
+    ToggleQuickView,
     Usage,
     Settings,
     Sessions,

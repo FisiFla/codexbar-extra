@@ -892,12 +892,6 @@ fn menu_bar_pane(app: &App) -> Element<'_, Message> {
                 ),
                 check("Tray icon", s.show_tray, s.clone(), |st, v| st.show_tray = v),
                 check(
-                    "Use compact Quick View from the tray",
-                    s.compact_quick_view,
-                    s.clone(),
-                    |st, v| st.compact_quick_view = v
-                ),
-                check(
                     "Highlight low quota (warning colors)",
                     s.warning_colors,
                     s.clone(),

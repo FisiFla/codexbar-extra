@@ -88,14 +88,6 @@ pub fn use_icon_name(tray_style: &str, no_windows: bool) -> bool {
     tray_style == "icon" || no_windows
 }
 
-/// Left-click target: Quick View in compact mode, Usage otherwise (Qt).
-pub fn activate_command(compact_quick_view: bool) -> TrayCommand {
-    if compact_quick_view {
-        TrayCommand::QuickView
-    } else {
-        TrayCommand::Usage
-    }
-}
 
 /// RGBA bytes (tiny-skia order `R,G,B,A` per pixel) to ksni
 /// ARGB32 in network byte order (`A,R,G,B` per pixel).
@@ -336,7 +328,6 @@ struct TraySnapshot {
     notify_threshold: u32,
     tray_style: String,
     show_tray: bool,
-    compact_quick_view: bool,
     layout: MenuBarLayout,
     entry: Option<Entry>,
     cost: Option<CostEntry>,
@@ -368,7 +359,6 @@ impl TraySnapshot {
             notify_threshold: shared.settings.notify_threshold,
             tray_style: shared.settings.tray_style.clone(),
             show_tray: shared.settings.show_tray,
-            compact_quick_view: shared.settings.compact_quick_view,
         }
     }
 
@@ -398,7 +388,6 @@ fn snapshot_of(shared: &Arc<Mutex<Shared>>) -> TraySnapshot {
 
 struct CodexTray {
     tx: iced::futures::channel::mpsc::UnboundedSender<TrayCommand>,
-    shared: Arc<Mutex<Shared>>,
     snapshot: TraySnapshot,
 }
 
@@ -408,13 +397,6 @@ impl CodexTray {
         // tray must not panic the D-Bus loop over a dead UI bridge.
         if self.tx.unbounded_send(command).is_err() {
             eprintln!("CodexBar tray: UI bridge closed; ignoring tray activation");
-        }
-    }
-
-    fn compact_quick_view_now(&self) -> bool {
-        match self.shared.lock() {
-            Ok(shared) => shared.settings.compact_quick_view,
-            Err(poisoned) => poisoned.into_inner().settings.compact_quick_view,
         }
     }
 }
@@ -530,9 +512,9 @@ impl ksni::Tray for CodexTray {
         ]
     }
 
+    /// Left click toggles the popup, like clicking the Mac menu bar item.
     fn activate(&mut self, _x: i32, _y: i32) {
-        let command = activate_command(self.compact_quick_view_now());
-        self.send(command);
+        self.send(TrayCommand::ToggleQuickView);
     }
 
     // ksni 0.2 spells this hook `watcher_offine`.
@@ -561,7 +543,6 @@ pub fn stream(
         .spawn(move || {
             let tray = CodexTray {
                 tx,
-                shared: thread_shared.clone(),
                 snapshot: snapshot_of(&thread_shared),
             };
             let service = ksni::TrayService::new(tray);
@@ -680,8 +661,6 @@ mod tests {
         assert!(use_icon_name("icon", false));
         assert!(use_icon_name("meters", true));
         assert!(!use_icon_name("meters", false));
-        assert_eq!(activate_command(true), TrayCommand::QuickView);
-        assert_eq!(activate_command(false), TrayCommand::Usage);
     }
 
     #[test]

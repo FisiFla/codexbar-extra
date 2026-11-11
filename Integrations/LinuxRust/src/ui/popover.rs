@@ -547,15 +547,7 @@ pub(crate) fn split_rows(count: usize, rows: usize) -> Vec<usize> {
 fn switcher(app: &App) -> Element<'_, Message> {
     // Mac shows a segment per enabled provider only; the "all" selection also returns every
     // unconfigured provider as an error entry, which would otherwise flood the switcher.
-    let shown: Vec<(usize, &Entry)> = app
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(i, e)| {
-            app.selected == *i as i32
-                || crate::ui::settings_sidebar::provider_enabled(app, &e.provider)
-        })
-        .collect();
+    let shown = crate::ui::settings_sidebar::shown_entries(app);
     let count = shown.len() + 1;
     let inline = count <= 3;
     let mut tabs: Vec<Element<'_, Message>> = Vec::with_capacity(count);
@@ -655,10 +647,15 @@ fn overview_body(app: &App) -> Element<'_, Message> {
     // Mac overview: spend summary header, then flat full provider rows (no
     // title, no card chrome); compact metrics hide reset/meta lines.
     let mut col = Column::new().spacing(12);
-    if !app.spending.is_empty() {
-        let today: f64 = app.spending.iter().map(|c| c.today).sum();
-        let month: f64 = app.spending.iter().map(|c| c.month).sum();
-        let tokens: i64 = app.spending.iter().map(|c| c.tokens).sum();
+    let spending: Vec<&CostEntry> = app
+        .spending
+        .iter()
+        .filter(|c| crate::ui::settings_sidebar::provider_enabled(app, &c.provider))
+        .collect();
+    if !spending.is_empty() {
+        let today: f64 = spending.iter().map(|c| c.today).sum();
+        let month: f64 = spending.iter().map(|c| c.month).sum();
+        let tokens: i64 = spending.iter().map(|c| c.tokens).sum();
         col = col.push(
             Column::new()
                 .spacing(2)
@@ -694,7 +691,7 @@ fn overview_body(app: &App) -> Element<'_, Message> {
             col = col.push(text("Reading local history…").size(12).color(muted()));
         }
     }
-    for (i, entry) in app.entries.iter().enumerate() {
+    for (i, entry) in crate::ui::settings_sidebar::shown_entries(app) {
         col = col.push(rule());
         let name = crate::model::provider_name(&entry.provider);
         let mut lines = Column::new().spacing(6).width(Length::Fill);
@@ -1482,6 +1479,11 @@ fn detail_text(s: String) -> Element<'static, Message> {
 /// Cost block (mac "Cost ›"): Today / Last 30 days lines and the cost-history chart, open by
 /// default. Collapsing it stores `<provider>:cost` in `toggled_charts`.
 fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<'static, Message> {
+    if token_only(provider) {
+        if let Some(payload) = cost_payload(app, provider) {
+            return token_history_section(app, provider, payload);
+        }
+    }
     let mut sec = Column::new().spacing(5).width(Length::Fill);
     let payload = cost_payload(app, provider);
     let key = format!("{provider}:cost");
@@ -1551,6 +1553,77 @@ fn cost_section(app: &App, provider: &str, cost: Option<&CostEntry>) -> Element<
     sec.into()
 }
 
+/// Mac `tokenCost` presentation `.tokensOnly`: local history has tokens but no prices.
+fn token_only(provider: &str) -> bool {
+    provider == "muse"
+}
+
+/// Mac `tokenHistoryInlineDashboard`: Today / history token totals, daily token bars in the
+/// provider accent, and the top model.
+fn token_history_section(
+    app: &App,
+    provider: &str,
+    payload: &crate::cli::CostPayload,
+) -> Element<'static, Message> {
+    let key = format!("{provider}:cost");
+    let open = !app.toggled_charts.contains(&key);
+    let mut sec = Column::new().spacing(5).width(Length::Fill);
+    sec = sec.push(row_header(key.clone(), "Token History", open, None, true));
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today_tokens = payload.session_tokens.unwrap_or_else(|| {
+        payload
+            .daily
+            .iter()
+            .find(|d| d.date == today)
+            .map_or(0, |d| d.total_tokens)
+    });
+    let total = if payload.last30_days_tokens > 0 {
+        payload.last30_days_tokens
+    } else {
+        payload.daily.iter().map(|d| d.total_tokens).sum()
+    };
+    let label = payload
+        .history_label
+        .clone()
+        .unwrap_or_else(|| "Last 30 days".into());
+    for line in [
+        format!("Today: {} tokens", format_count(today_tokens)),
+        format!("{label}: {} tokens", format_count(total)),
+    ] {
+        sec = sec.push(text(line).size(crate::ui::style::TEXT_FOOTNOTE));
+    }
+    if open {
+        let bars = crate::charts::token_bars(&payload.daily);
+        let hover = hover_for(app, &key);
+        let detail = popover_charts::detail_line(&bars, hover, crate::charts::tokens);
+        sec = sec.push(chart_canvas(crate::charts::BarChart {
+            hover,
+            key,
+            bars,
+            color: rgb(accent_rgb(provider)),
+            peak_cap: true,
+            fmt: crate::charts::tokens,
+            axis: crate::charts::axis_tokens,
+            y_max: None,
+        }));
+        sec = sec.push(detail_text(detail));
+        let mut models: Vec<(String, i64)> = Vec::new();
+        for m in payload.daily.iter().flat_map(|d| d.model_breakdowns.iter()) {
+            match models.iter_mut().find(|t| t.0 == m.model_name) {
+                Some(t) => t.1 += m.total_tokens,
+                None => models.push((m.model_name.clone(), m.total_tokens)),
+            }
+        }
+        if let Some((name, _)) = models.iter().max_by_key(|m| m.1) {
+            sec = sec.push(detail_text(format!("Top model: {name}")));
+        }
+        sec = sec.push(detail_text(
+            "Local token history · dollar costs unavailable".to_string(),
+        ));
+    }
+    sec.into()
+}
+
 fn hover_for(app: &App, key: &str) -> Option<usize> {
     app.chart_hover
         .as_ref()
@@ -1615,7 +1688,7 @@ fn chart_sections<'a>(app: &'a App, provider: &str) -> Element<'a, Message> {
         (row_header(key, title, open, None, false), open)
     };
 
-    let payload = if app.settings.show_costs {
+    let payload = if app.settings.show_costs && !token_only(provider) {
         cost_payload(app, provider)
     } else {
         None
